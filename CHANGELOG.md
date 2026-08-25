@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.13.4](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.13.3...v2.13.4) (2026-08-25)
+
+
+### Performance Improvements
+
+* enable custom device limit input in user details ([1e264c6](https://github.com/Shu1t3/rospanel-shu1t3/commit/1e264c619c93822062599f14e0dc1093d8e1920e))
+
 ## [2.13.3](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.13.2...v2.13.3) (2026-08-25)
 
 
