@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.19.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.18.3...v2.19.0) (2026-08-30)
+
+
+### Features
+
+* add compact Happ subscription cards, node selection modal, and expiration notice tooltips ([93c6c97](https://github.com/Shu1t3/rospanel-shu1t3/commit/93c6c9783a645b593fd61d602a0ff80ebde6a6eb))
+* add Happ servers to client subscriptions, access groups, and proxy formats ([67e5d06](https://github.com/Shu1t3/rospanel-shu1t3/commit/67e5d06cd8e9c2d3f92675a64ec5f6bcaf753a63))
+
+
+### Refactoring
+
+* **happ:** use tagged switch in decrypt_test.go ([8ba8a30](https://github.com/Shu1t3/rospanel-shu1t3/commit/8ba8a3060d35b62bd5209f0eb4de37495e7cfbb0))
+
 ## [2.18.3](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.18.2...v2.18.3) (2026-08-30)
 
 
