@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.18.3](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.18.2...v2.18.3) (2026-08-30)
+
+
+### Bug Fixes
+
+* resolve Happ VLESS REALITY outbound configuration and Xray validation failure ([4f092c1](https://github.com/Shu1t3/rospanel-shu1t3/commit/4f092c1628db3d356c7ce53a3f6a2d3af5fa23be))
+
 ## [2.18.2](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.18.1...v2.0.0) (2026-08-30)
 
 ### chore
