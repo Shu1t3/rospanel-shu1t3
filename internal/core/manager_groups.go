@@ -21,12 +21,13 @@ import (
 func (m *Manager) Groups() ([]model.Group, error) { return m.store.Groups() }
 
 // GroupTarget is one server's grantable connections, for the group editor: its
-// built-in lanes and its custom inbounds, each with the token a grant would store.
+// built-in lanes, its custom inbounds, and imported Happ nodes, each with the token a grant would store.
 type GroupTarget struct {
 	ServerID   int64             `json:"server_id"`
 	ServerName string            `json:"server_name"`
 	Lanes      []GroupLaneOpt    `json:"lanes"`
 	Inbounds   []GroupInboundOpt `json:"inbounds"`
+	HappNodes  []GroupHappOpt    `json:"happ_nodes,omitempty"`
 }
 
 // GroupLaneOpt is one built-in lane as a grantable item.
@@ -43,6 +44,17 @@ type GroupInboundOpt struct {
 	Name    string `json:"name"`
 	Token   string `json:"token"`
 	Enabled bool   `json:"enabled"`
+}
+
+// GroupHappOpt is one imported Happ node as a grantable item.
+type GroupHappOpt struct {
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	Protocol string `json:"protocol"`
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	Token    string `json:"token"`
+	Enabled  bool   `json:"enabled"`
 }
 
 // GroupTargets lists every server (master + nodes) with the connections a group can
@@ -77,6 +89,23 @@ func (m *Manager) GroupTargets() ([]GroupTarget, error) {
 	masterSet.NodeLabel = ""
 	out := []GroupTarget{target(model.LocalNodeID, model.LocalNodeName, &masterSet)}
 
+	// Append Happ nodes to master target if any exist
+	if happNodes, err := m.store.ListAllHappNodes(); err == nil && len(happNodes) > 0 {
+		var hOpts []GroupHappOpt
+		for _, hn := range happNodes {
+			hOpts = append(hOpts, GroupHappOpt{
+				ID:       hn.ID,
+				Name:     hn.DisplayName(),
+				Protocol: hn.Protocol,
+				Host:     hn.Host,
+				Port:     hn.Port,
+				Token:    model.HappToken(hn.ID),
+				Enabled:  hn.Enabled,
+			})
+		}
+		out[0].HappNodes = hOpts
+	}
+
 	nodes, err := m.store.ListNodes()
 	if err != nil {
 		return nil, err
@@ -88,8 +117,8 @@ func (m *Manager) GroupTargets() ([]GroupTarget, error) {
 	return out, nil
 }
 
-// sanitizeGrants keeps only well-formed grant tokens (a built-in lane or a custom
-// inbound), dropping anything malformed. A token that references a missing inbound or
+// sanitizeGrants keeps only well-formed grant tokens (a built-in lane, custom
+// inbound, or happ node), dropping anything malformed. A token that references a missing inbound or
 // server is allowed through — it simply grants access to nothing and is swept when
 // that target is deleted.
 func sanitizeGrants(tokens []string) []string {
@@ -105,6 +134,8 @@ func sanitizeGrants(tokens []string) []string {
 			ok = true
 		} else if _, lane, isBuiltin := model.ParseBuiltinToken(t); isBuiltin {
 			ok = lane == model.LaneVLESS || lane == model.LaneReality || lane == model.LaneHysteria
+		} else if _, isHapp := model.ParseHappToken(t); isHapp {
+			ok = true
 		}
 		if ok {
 			seen[t] = true

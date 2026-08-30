@@ -193,6 +193,17 @@ export function GroupsPanel() {
                         onToggle={(g) => setEditing({ ...editing, grants: g })}
                       />
                     ))}
+                    {srv.happ_nodes?.map((h) => (
+                      <GrantRow
+                        key={h.token}
+                        token={h.token}
+                        label={h.name}
+                        badge="Happ"
+                        off={!h.enabled}
+                        grants={editing.grants}
+                        onToggle={(g) => setEditing({ ...editing, grants: g })}
+                      />
+                    ))}
                   </div>
                 </div>
               ))}

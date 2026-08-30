@@ -2385,12 +2385,22 @@ export interface GroupInboundOpt {
   token: string
   enabled: boolean
 }
+export interface GroupHappOpt {
+  id: number
+  name: string
+  protocol: string
+  host: string
+  port: number
+  token: string
+  enabled: boolean
+}
 // GroupTarget is one server's grantable connections, for the group editor.
 export interface GroupTarget {
   server_id: number
   server_name: string
   lanes: GroupLaneOpt[]
   inbounds: GroupInboundOpt[]
+  happ_nodes?: GroupHappOpt[]
 }
 
 export const listGroups = () => api<Group[]>('api/groups')

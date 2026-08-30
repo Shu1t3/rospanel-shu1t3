@@ -52,6 +52,11 @@ func InboundToken(inboundID int64) string {
 	return fmt.Sprintf("inbound:%d", inboundID)
 }
 
+// HappToken is a group-grant token for an imported Happ node.
+func HappToken(nodeID int64) string {
+	return fmt.Sprintf("happ:%d", nodeID)
+}
+
 // ParseInboundToken returns the inbound id a token refers to, or ok=false when it is
 // not an inbound token. Used to sweep grants when an inbound is deleted.
 func ParseInboundToken(token string) (int64, bool) {
@@ -61,6 +66,17 @@ func ParseInboundToken(token string) (int64, bool) {
 	}
 	id, err := strconv.ParseInt(rest, 10, 64)
 	return id, err == nil
+}
+
+// ParseHappToken returns the Happ node id a token refers to, or ok=false when it is
+// not a Happ node token.
+func ParseHappToken(token string) (int64, bool) {
+	rest, ok := strings.CutPrefix(token, "happ:")
+	if !ok {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(rest, 10, 64)
+	return id, err == nil && id > 0
 }
 
 // ParseBuiltinToken returns the (serverID, lane) a built-in token refers to, or
@@ -102,6 +118,11 @@ func (a Access) AllowsBuiltin(serverID int64, lane string) bool {
 // AllowsInbound reports whether the user may use a custom inbound.
 func (a Access) AllowsInbound(inboundID int64) bool {
 	return a.All || a.Tokens[InboundToken(inboundID)]
+}
+
+// AllowsHapp reports whether the user may use an imported Happ node.
+func (a Access) AllowsHapp(nodeID int64) bool {
+	return a.All || a.Tokens[HappToken(nodeID)]
 }
 
 // AccessOf returns a user's access from a userID→Access map, defaulting a MISSING

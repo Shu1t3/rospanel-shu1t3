@@ -18,7 +18,7 @@ import (
 // Protocols switched off in the Connections panel are omitted.
 func ShareLinks(u model.User, srv Server) []string {
 	set := srv.Set
-	links := make([]string, 0, 3+len(srv.Custom))
+	links := make([]string, 0, 3+len(srv.Custom)+len(srv.HappNodes))
 	if set.VLESSEnabled && srv.allowsBuiltin(model.LaneVLESS) {
 		links = append(links, link.VLESS(u, set))
 	}
@@ -34,6 +34,14 @@ func ShareLinks(u model.User, srv Server) []string {
 		}
 		if l := link.Custom(u, in, set); l != "" {
 			links = append(links, l)
+		}
+	}
+	for _, hn := range srv.HappNodes {
+		if !hn.Enabled || !srv.allowsHapp(hn.ID) {
+			continue
+		}
+		if hn.URI != "" {
+			links = append(links, hn.URI)
 		}
 	}
 	return links

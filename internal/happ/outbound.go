@@ -388,3 +388,347 @@ func splitHostPortStr(hostport string) (host string, port int, err error) {
 	}
 	return hostport[:colon], p, nil
 }
+
+// ToSingBox converts a Happ Node into a sing-box outbound config object.
+// Returns (outboundMap, tag, ok).
+func ToSingBox(n *Node) (map[string]any, string, bool) {
+	tag := n.DisplayName()
+	switch n.Protocol {
+	case "shadowsocks", "ss":
+		u, err := url.Parse(n.URI)
+		if err != nil || u.User == nil {
+			return nil, "", false
+		}
+		userinfoB64 := u.User.Username()
+		decoded, err := base64.StdEncoding.DecodeString(userinfoB64)
+		if err != nil {
+			decoded, err = base64.URLEncoding.DecodeString(userinfoB64)
+			if err != nil {
+				decoded = []byte(userinfoB64)
+			}
+		}
+		parts := strings.SplitN(string(decoded), ":", 2)
+		if len(parts) != 2 {
+			return nil, "", false
+		}
+		return map[string]any{
+			"type":        "shadowsocks",
+			"tag":         tag,
+			"server":      n.Host,
+			"server_port": n.Port,
+			"method":      parts[0],
+			"password":    parts[1],
+		}, tag, true
+
+	case "trojan":
+		u, err := url.Parse(n.URI)
+		if err != nil || u.User == nil {
+			return nil, "", false
+		}
+		q := u.Query()
+		sni := q.Get("sni")
+		if sni == "" {
+			sni = n.Host
+		}
+		return map[string]any{
+			"type":        "trojan",
+			"tag":         tag,
+			"server":      n.Host,
+			"server_port": n.Port,
+			"password":    u.User.Username(),
+			"tls": map[string]any{
+				"enabled":     true,
+				"server_name": sni,
+				"insecure":    q.Get("insecure") == "1",
+			},
+		}, tag, true
+
+	case "hysteria2", "hysteria":
+		u, err := url.Parse(n.URI)
+		if err != nil || u.User == nil {
+			return nil, "", false
+		}
+		q := u.Query()
+		sni := q.Get("sni")
+		if sni == "" {
+			sni = n.Host
+		}
+		return map[string]any{
+			"type":        "hysteria2",
+			"tag":         tag,
+			"server":      n.Host,
+			"server_port": n.Port,
+			"password":    u.User.Username(),
+			"tls": map[string]any{
+				"enabled":     true,
+				"server_name": sni,
+				"alpn":        []string{"h3"},
+				"insecure":    q.Get("insecure") == "1",
+			},
+		}, tag, true
+
+	case "vless":
+		u, err := url.Parse(n.URI)
+		if err != nil || u.User == nil {
+			return nil, "", false
+		}
+		q := u.Query()
+		network := q.Get("type")
+		if network == "" {
+			network = "tcp"
+		}
+		security := q.Get("security")
+		sni := q.Get("sni")
+		if sni == "" {
+			sni = q.Get("host")
+		}
+		if sni == "" {
+			sni = n.Host
+		}
+		fp := q.Get("fp")
+
+		out := map[string]any{
+			"type":        "vless",
+			"tag":         tag,
+			"server":      n.Host,
+			"server_port": n.Port,
+			"uuid":        u.User.Username(),
+		}
+		if flow := q.Get("flow"); flow != "" {
+			out["flow"] = flow
+		}
+		switch security {
+		case "tls":
+			tls := map[string]any{
+				"enabled":     true,
+				"server_name": sni,
+				"insecure":    q.Get("insecure") == "1",
+			}
+			if fp != "" {
+				tls["utls"] = map[string]any{"enabled": true, "fingerprint": fp}
+			}
+			if q.Get("alpn") != "" {
+				tls["alpn"] = strings.Split(q.Get("alpn"), ",")
+			}
+			out["tls"] = tls
+		case "reality":
+			pbk := firstNonEmpty(q.Get("pbk"), q.Get("publicKey"), q.Get("pk"))
+			if pbk == "" {
+				return nil, "", false
+			}
+			tls := map[string]any{
+				"enabled":     true,
+				"server_name": sni,
+				"reality": map[string]any{
+					"enabled":    true,
+					"public_key": pbk,
+					"short_id":   firstNonEmpty(q.Get("sid"), q.Get("shortId"), q.Get("shortid")),
+				},
+			}
+			if fp != "" {
+				tls["utls"] = map[string]any{"enabled": true, "fingerprint": fp}
+			}
+			out["tls"] = tls
+		}
+		switch network {
+		case "ws":
+			out["transport"] = map[string]any{
+				"type":    "ws",
+				"path":    q.Get("path"),
+				"headers": headerIfNonEmpty("Host", q.Get("host")),
+			}
+		case "grpc":
+			out["transport"] = map[string]any{
+				"type":         "grpc",
+				"service_name": q.Get("serviceName"),
+			}
+		}
+		return out, tag, true
+
+	case "vmess":
+		b64 := strings.TrimPrefix(n.URI, "vmess://")
+		b64 = strings.TrimRight(b64, "=")
+		for len(b64)%4 != 0 {
+			b64 += "="
+		}
+		data, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			data, err = base64.URLEncoding.DecodeString(b64)
+			if err != nil {
+				return nil, "", false
+			}
+		}
+		var cfg vmessFullConfig
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			return nil, "", false
+		}
+		port := anyToInt(cfg.Port)
+		aid := anyToInt(cfg.Aid)
+		security := cfg.Scy
+		if security == "" {
+			security = "auto"
+		}
+		out := map[string]any{
+			"type":        "vmess",
+			"tag":         tag,
+			"server":      cfg.Add,
+			"server_port": port,
+			"uuid":        cfg.ID,
+			"alter_id":    aid,
+			"security":    security,
+		}
+		if cfg.TLS == "tls" || cfg.TLS == "1" {
+			out["tls"] = map[string]any{
+				"enabled":     true,
+				"server_name": cfg.SNI,
+			}
+		}
+		switch cfg.Net {
+		case "ws":
+			out["transport"] = map[string]any{
+				"type":    "ws",
+				"path":    cfg.Path,
+				"headers": headerIfNonEmpty("Host", cfg.Host),
+			}
+		case "grpc":
+			out["transport"] = map[string]any{
+				"type":         "grpc",
+				"service_name": cfg.Path,
+			}
+		}
+		return out, tag, true
+	}
+	return nil, "", false
+}
+
+// ToClash converts a Happ Node into a Clash proxy YAML line.
+// Returns (name, line, ok).
+func ToClash(n *Node) (string, string, bool) {
+	name := n.DisplayName()
+	switch n.Protocol {
+	case "shadowsocks", "ss":
+		u, err := url.Parse(n.URI)
+		if err != nil || u.User == nil {
+			return "", "", false
+		}
+		userinfoB64 := u.User.Username()
+		decoded, err := base64.StdEncoding.DecodeString(userinfoB64)
+		if err != nil {
+			decoded, err = base64.URLEncoding.DecodeString(userinfoB64)
+			if err != nil {
+				decoded = []byte(userinfoB64)
+			}
+		}
+		parts := strings.SplitN(string(decoded), ":", 2)
+		if len(parts) != 2 {
+			return "", "", false
+		}
+		line := fmt.Sprintf("  - {name: %q, type: ss, server: %q, port: %d, cipher: %q, password: %q, udp: true}",
+			name, n.Host, n.Port, parts[0], parts[1])
+		return name, line, true
+
+	case "trojan":
+		u, err := url.Parse(n.URI)
+		if err != nil || u.User == nil {
+			return "", "", false
+		}
+		q := u.Query()
+		sni := q.Get("sni")
+		if sni == "" {
+			sni = n.Host
+		}
+		line := fmt.Sprintf("  - {name: %q, type: trojan, server: %q, port: %d, password: %q, sni: %q, udp: true, skip-cert-verify: %t}",
+			name, n.Host, n.Port, u.User.Username(), sni, q.Get("insecure") == "1")
+		return name, line, true
+
+	case "hysteria2", "hysteria":
+		u, err := url.Parse(n.URI)
+		if err != nil || u.User == nil {
+			return "", "", false
+		}
+		q := u.Query()
+		sni := q.Get("sni")
+		if sni == "" {
+			sni = n.Host
+		}
+		line := fmt.Sprintf("  - {name: %q, type: hysteria2, server: %q, port: %d, password: %q, sni: %q, alpn: [h3], udp: true, skip-cert-verify: %t}",
+			name, n.Host, n.Port, u.User.Username(), sni, q.Get("insecure") == "1")
+		return name, line, true
+
+	case "vless":
+		u, err := url.Parse(n.URI)
+		if err != nil || u.User == nil {
+			return "", "", false
+		}
+		q := u.Query()
+		network := q.Get("type")
+		if network == "" {
+			network = "tcp"
+		}
+		security := q.Get("security")
+		sni := q.Get("sni")
+		if sni == "" {
+			sni = q.Get("host")
+		}
+		if sni == "" {
+			sni = n.Host
+		}
+		fp := q.Get("fp")
+		if fp == "" {
+			fp = "chrome"
+		}
+
+		if security == "reality" {
+			pbk := firstNonEmpty(q.Get("pbk"), q.Get("publicKey"), q.Get("pk"))
+			if pbk == "" {
+				return "", "", false
+			}
+			sid := firstNonEmpty(q.Get("sid"), q.Get("shortId"), q.Get("shortid"))
+			line := fmt.Sprintf("  - {name: %q, type: vless, server: %q, port: %d, uuid: %q, network: %s, tls: true, udp: true, servername: %q, client-fingerprint: %s, reality-opts: {public-key: %q, short-id: %q}}",
+				name, n.Host, n.Port, u.User.Username(), network, sni, fp, pbk, sid)
+			return name, line, true
+		}
+
+		flow := q.Get("flow")
+		flowOpt := ""
+		if flow != "" {
+			flowOpt = fmt.Sprintf(", flow: %s", flow)
+		}
+		line := fmt.Sprintf("  - {name: %q, type: vless, server: %q, port: %d, uuid: %q, network: %s, tls: true, udp: true, servername: %q, client-fingerprint: %s%s, skip-cert-verify: %t}",
+			name, n.Host, n.Port, u.User.Username(), network, sni, fp, flowOpt, q.Get("insecure") == "1")
+		return name, line, true
+
+	case "vmess":
+		b64 := strings.TrimPrefix(n.URI, "vmess://")
+		b64 = strings.TrimRight(b64, "=")
+		for len(b64)%4 != 0 {
+			b64 += "="
+		}
+		data, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			data, err = base64.URLEncoding.DecodeString(b64)
+			if err != nil {
+				return "", "", false
+			}
+		}
+		var cfg vmessFullConfig
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			return "", "", false
+		}
+		port := anyToInt(cfg.Port)
+		aid := anyToInt(cfg.Aid)
+		security := cfg.Scy
+		if security == "" {
+			security = "auto"
+		}
+		tlsFlag := cfg.TLS == "tls" || cfg.TLS == "1"
+		netType := cfg.Net
+		if netType == "" {
+			netType = "tcp"
+		}
+		line := fmt.Sprintf("  - {name: %q, type: vmess, server: %q, port: %d, uuid: %q, alterId: %d, cipher: %q, network: %s, tls: %t, udp: true, servername: %q}",
+			name, cfg.Add, port, cfg.ID, aid, security, netType, tlsFlag, cfg.SNI)
+		return name, line, true
+	}
+	return "", "", false
+}

@@ -156,7 +156,11 @@ func (rt *Router) subServers(local *model.Settings, userID int64) ([]sub.Server,
 	if err != nil {
 		return nil, err
 	}
-	return sub.Servers(sets, custom, access), nil
+	happNodes, err := rt.mgr.Store().ListEnabledHappNodes()
+	if err != nil {
+		happNodes = nil
+	}
+	return sub.ServersWithHapp(sets, custom, happNodes, access), nil
 }
 
 // localInbounds is the master's own custom inbounds, or none when they can't be

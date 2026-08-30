@@ -11,6 +11,7 @@ package happ
 import (
 	"crypto/sha256"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -45,6 +46,14 @@ type Node struct {
 	LastSeenAt     int64  `json:"last_seen_at"`
 	CreatedAt      int64  `json:"created_at"`
 	UpdatedAt      int64  `json:"updated_at"`
+}
+
+// DisplayName returns the human-readable name or fallback to PROTO HOST:PORT.
+func (n *Node) DisplayName() string {
+	if n.Name != "" {
+		return n.Name
+	}
+	return fmt.Sprintf("%s %s:%d", strings.ToUpper(n.Protocol), n.Host, n.Port)
 }
 
 // XrayTag returns the Xray outbound tag for this node.

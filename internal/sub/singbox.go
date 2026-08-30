@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/Shu1t3/rospanel-shu1t3/internal/happ"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/link"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 )
@@ -77,6 +78,15 @@ func singboxProxies(u model.User, srv Server) (proxies []any, tags []string) {
 			continue
 		}
 		if o, tag, ok := singboxCustom(u, in, set); ok {
+			proxies = append(proxies, o)
+			tags = append(tags, tag)
+		}
+	}
+	for _, hn := range srv.HappNodes {
+		if !hn.Enabled || !srv.allowsHapp(hn.ID) {
+			continue
+		}
+		if o, tag, ok := happ.ToSingBox(hn); ok {
 			proxies = append(proxies, o)
 			tags = append(tags, tag)
 		}

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/branding"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/happ"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/link"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 )
@@ -78,6 +79,14 @@ func clashProxies(u model.User, srv Server) []clashProxy {
 		}
 		if p, ok := clashCustom(u, in, set, sv); ok {
 			out = append(out, p)
+		}
+	}
+	for _, hn := range srv.HappNodes {
+		if !hn.Enabled || !srv.allowsHapp(hn.ID) {
+			continue
+		}
+		if name, line, ok := happ.ToClash(hn); ok {
+			out = append(out, clashProxy{name: name, line: line})
 		}
 	}
 	return out
