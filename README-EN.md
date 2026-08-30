@@ -347,6 +347,18 @@ A node owner can **share capacity** with administrators of other RosPanel instan
 * **Local Detach:** when a tenant deletes a rented node, it is detached only locally; all inbounds created by the tenant on the remote node are cascade-deleted, while the owner's node and other tenants remain intact.
 * **Visual Framing:** rented nodes are distinctively presented with dedicated framing, glowing badges, and allocated resource metrics.
 
+#### 🔄 External Subscriptions & Happ Support (Proxy Chaining & Node Reuse)
+
+Import external proxy subscriptions and seamlessly integrate their endpoints into your infrastructure:
+
+* **Supported Formats & Native Decryption:** import plain URI lists (VLESS, VMess, Trojan, Shadowsocks, Hysteria2), Base64-encoded subscription payloads, and encrypted links `happ://crypt`, `happ://crypt2`, `happ://crypt3`, `happ://crypt4`, `happ://crypt5` (RSA-1024 / RSA-4096 / ChaCha20-Poly1305 keytable). Implemented natively based on research and specifications by [happ-decryptor](https://leeeet.dev/happ-decryptor/) (source code: [LeeeeT/happ-decryptor](https://github.com/LeeeeT/happ-decryptor)).
+* **Automatic Background Sync:** subscriptions auto-refresh every 59 minutes, pulling updated endpoints, domains, ports, and credentials. Manual single and bulk refresh available.
+* **Xray Outbounds & Proxy Chaining:** each enabled endpoint registers in Xray as `happ-<id>`, ready for proxy chaining and egress routing rules.
+* **Inclusion in Client Subscriptions:** active Happ servers automatically propagate to client subscriptions across all formats: Universal Links, Base64, Sing-Box (JSON outbounds + selectors), and Clash Meta / Mihomo (YAML proxies).
+* **Access Groups Integration:** operators can assign specific Happ servers to user access groups with dedicated `Happ` badges.
+* **Informational Stub Detection (`Subscription expired`):** automatic identification of provider notices (`0.0.0.0:1`, `expired`, `quota`) with warning badges `⚠️ Info notice` and explanatory hints (disabled by default to safeguard Xray routing).
+* **Compact Management UI:** subscriptions collapse into single summary rows with active node counters; dedicated modal allows searching and batch toggling ("Enable all" / "Disable all").
+
 #### 💳 Plans and payments (optional)
 
 **Plans**: price, duration, traffic and device limits; price 0 makes a free plan. There's a
@@ -593,6 +605,14 @@ say so.
 PRs and issues are welcome. Commits follow
 [Conventional Commits](https://www.conventionalcommits.org/): release-please uses them to cut
 releases and publish the binary and the Docker image to GHCR.
+
+---
+
+## 🙏 Acknowledgments
+
+* [Xray-core](https://github.com/XTLS/Xray-core) — high-performance modular routing and proxying engine.
+* [happ-decryptor](https://leeeet.dev/happ-decryptor/) / [LeeeeT/happ-decryptor](https://github.com/LeeeeT/happ-decryptor) — reverse engineering and cryptographic scheme specifications for Happ Proxy Subscriptions.
+* [AppsGanin/rospanel](https://github.com/AppsGanin/rospanel) — original architectural foundation of the project.
 
 ---
 

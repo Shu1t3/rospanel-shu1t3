@@ -26,6 +26,13 @@ import (
 //   - happ://crypt3/…   — RSA-4096 PKCS1v15
 //   - happ://crypt4/…   — RSA-4096 PKCS1v15
 //   - happ://crypt5/…   — RSA PKCS1v15 + ChaCha20-Poly1305 (keytable)
+//
+// References & Upstream Specification:
+//   - Online decryptor tool: https://leeeet.dev/happ-decryptor/
+//   - Source code & format updates: https://github.com/LeeeeT/happ-decryptor
+//   - Special thanks to LeeeeT for reverse-engineering and maintaining the Happ
+//     cryptographic scheme specifications. Check the repository above when new
+//     happ://crypt* schemes are released.
 func Decrypt(link string) ([]byte, error) {
 	link = strings.TrimSpace(link)
 

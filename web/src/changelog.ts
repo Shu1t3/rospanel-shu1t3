@@ -1,4 +1,4 @@
-import changelogRaw from "../../CHANGELOG.md?raw";
+import changelogRaw from "virtual:changelog";
 
 // Helper to split and normalize semver version numbers for comparison
 function splitVer(v: string): number[] {

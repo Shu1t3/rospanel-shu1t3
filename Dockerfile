@@ -7,6 +7,7 @@ WORKDIR /web
 COPY web/package*.json ./
 RUN npm install
 COPY web/ ./
+COPY CHANGELOG.md ../CHANGELOG.md
 RUN npm run build
 
 # 2) Build the Go binary (embeds the SPA from /web/dist). CGO is off, so we
