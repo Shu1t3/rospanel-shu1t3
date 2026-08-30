@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.19.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.19.0...v2.19.1) (2026-08-30)
+
+
+### Bug Fixes
+
+* add changelog virtual module for Vite and update Happ support documentation with acknowledgments ([7267116](https://github.com/Shu1t3/rospanel-shu1t3/commit/7267116a64834361152948846389fb9fdbda47d4))
+
 ## [2.19.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.18.3...v2.19.0) (2026-08-30)
 
 
