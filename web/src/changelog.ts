@@ -1,3 +1,73 @@
+import changelogRaw from "../../CHANGELOG.md?raw";
+
+// Helper to split and normalize semver version numbers for comparison
+function splitVer(v: string): number[] {
+  let clean = v.replace(/^v/, "").trim();
+  const metaIdx = clean.search(/[-+]/);
+  if (metaIdx >= 0) {
+    clean = clean.slice(0, metaIdx);
+  }
+  return clean.split(".").map((p) => parseInt(p, 10) || 0);
+}
+
+// compareVersions compares two semver strings descending (newest first).
+export function compareVersions(a: string, b: string): number {
+  const pa = splitVer(a);
+  const pb = splitVer(b);
+  const maxLen = Math.max(pa.length, pb.length);
+  for (let i = 0; i < maxLen; i++) {
+    const na = i < pa.length ? pa[i] : 0;
+    const nb = i < pb.length ? pb[i] : 0;
+    if (na !== nb) {
+      return nb - na; // descending
+    }
+  }
+  const cleanA = a.replace(/^v/, "").trim();
+  const cleanB = b.replace(/^v/, "").trim();
+  return cleanB.localeCompare(cleanA);
+}
+
+interface ParsedReleaseEntry {
+  version: string;
+  date?: string;
+  body: string;
+}
+
+function parseChangelogMarkdown(content: string): Map<string, ParsedReleaseEntry> {
+  const versionMap = new Map<string, ParsedReleaseEntry>();
+  if (!content) return versionMap;
+
+  const versionHeaderRegex =
+    /^##\s+\[?v?([0-9]+\.[0-9]+\.[0-9]+[^\]\s\)]*)\]?(?:\([^)]*\))?(?:\s+\(([0-9]{4}-[0-9]{2}-[0-9]{2})\))?/gm;
+
+  let match: RegExpExecArray | null;
+  const sections: { version: string; date?: string; index: number; headerLength: number }[] = [];
+  while ((match = versionHeaderRegex.exec(content)) !== null) {
+    sections.push({
+      version: match[1],
+      date: match[2] || undefined,
+      index: match.index,
+      headerLength: match[0].length,
+    });
+  }
+
+  for (let i = 0; i < sections.length; i++) {
+    const current = sections[i];
+    const startIndex = current.index + current.headerLength;
+    const endIndex = i + 1 < sections.length ? sections[i + 1].index : content.length;
+    const rawBody = content.slice(startIndex, endIndex).trim();
+    versionMap.set(current.version, {
+      version: current.version,
+      date: current.date,
+      body: rawBody,
+    });
+  }
+
+  return versionMap;
+}
+
+const PARSED_CHANGELOG_ENTRIES = parseChangelogMarkdown(changelogRaw);
+
 // changelog.ts provides human-friendly, plain-language release notes and
 // changelog parsing for non-technical operators and users.
 
@@ -467,11 +537,13 @@ function cleanItemText(raw: string, isRu: boolean): { text: string; scope?: stri
   // Strip markdown links [text](url) -> text
   text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
 
-  // Extract scope like **ui:** or **core:** or (ui):
+  // Extract scope like **ui:** or **core:** or (ui): or **ui**:
   let scope = "";
-  const scopeMatch = text.match(/^\s*(?:\*\*|\()?([a-z0-9_-]+)(?:\*\*|\))?:\s*/i);
+  const scopeMatch =
+    text.match(/^\s*\*\*([a-z0-9_-]+):\*\*\s*/i) ||
+    text.match(/^\s*(?:\*\*|\()?([a-z0-9_-]+)(?:\*\*|\))?:\s*/i);
   if (scopeMatch) {
-    scope = scopeMatch[1].toLowerCase();
+    scope = (scopeMatch[1] || "").toLowerCase();
     text = text.slice(scopeMatch[0].length);
   }
 
@@ -626,6 +698,17 @@ export function getReleaseChangelog(
     return parseRawReleaseNotes(rawNotes, normVer, lang);
   }
 
+  const parsedEntry = PARSED_CHANGELOG_ENTRIES.get(normVer);
+  if (parsedEntry && parsedEntry.body.trim()) {
+    const parsed = parseRawReleaseNotes(parsedEntry.body, normVer, lang);
+    if (parsed.categories.length > 0) {
+      return {
+        ...parsed,
+        date: parsedEntry.date,
+      };
+    }
+  }
+
   // Default fallback when neither curated notes nor raw notes are available
   return {
     version: normVer,
@@ -649,7 +732,12 @@ export function getReleaseChangelog(
   };
 }
 
-// Returns a list of all known versions in curated history (newest first).
+// Returns a list of all known versions from CHANGELOG.md and curated history (newest first).
 export function getRecentVersions(): string[] {
-  return Object.keys(CURATED_CHANGELOGS);
+  const versionSet = new Set<string>([
+    ...Array.from(PARSED_CHANGELOG_ENTRIES.keys()),
+    ...Object.keys(CURATED_CHANGELOGS),
+  ]);
+  return Array.from(versionSet).sort(compareVersions);
 }
+

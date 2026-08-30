@@ -1,8 +1,9 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import {
   getReleaseChangelog,
   getRecentVersions,
+  compareVersions,
   type ReleaseChangelog,
 } from "./changelog";
 import { Badge, cn, IconChevron, Select } from "./ui";
@@ -31,20 +32,25 @@ export function ChangelogDropdown({
 }: ChangelogDropdownProps) {
   const { t, i18n } = useTranslation();
   const [open, setOpen] = useState(defaultOpen);
-  const [selectedVersion, setSelectedVersion] = useState<string>(
-    version.replace(/^v/, "")
-  );
+  const targetVersion = (version || "").replace(/^v/, "").trim();
+  const [selectedVersion, setSelectedVersion] = useState<string>(targetVersion);
 
   // Sync selectedVersion when version prop changes
-  const activeVersion = (selectedVersion || version).replace(/^v/, "");
+  useEffect(() => {
+    if (targetVersion) {
+      setSelectedVersion(targetVersion);
+    }
+  }, [targetVersion]);
+
+  const activeVersion = (selectedVersion || targetVersion).replace(/^v/, "").trim();
 
   const recentVersions = useMemo(() => {
     const list = getRecentVersions();
-    if (activeVersion && !list.includes(activeVersion)) {
-      return [activeVersion, ...list];
-    }
-    return list;
-  }, [activeVersion]);
+    const versionSet = new Set<string>(list);
+    if (targetVersion) versionSet.add(targetVersion);
+    if (activeVersion) versionSet.add(activeVersion);
+    return Array.from(versionSet).sort(compareVersions);
+  }, [targetVersion, activeVersion]);
 
   const versionOptions = useMemo(() => {
     return recentVersions.map((v) => ({
@@ -55,10 +61,11 @@ export function ChangelogDropdown({
 
   // Load friendly changelog
   const changelog: ReleaseChangelog = useMemo(() => {
-    const isTargetVersion = activeVersion === version.replace(/^v/, "");
+    const isTargetVersion = activeVersion === targetVersion;
     const notesToPass = isTargetVersion ? rawNotes : undefined;
     return getReleaseChangelog(activeVersion, notesToPass, i18n.language);
-  }, [activeVersion, version, rawNotes, i18n.language]);
+  }, [activeVersion, targetVersion, rawNotes, i18n.language]);
+
 
   const hasCategories = changelog.categories && changelog.categories.length > 0;
 
