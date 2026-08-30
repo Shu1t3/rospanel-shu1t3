@@ -96,3 +96,63 @@ func TestToXrayOutboundHysteria2(t *testing.T) {
 		t.Errorf("hy2 outbound mismatch: %+v", ob)
 	}
 }
+
+func TestToXrayOutboundVLESSReality(t *testing.T) {
+	node := &Node{
+		ID:       15,
+		Protocol: "vless",
+		Host:     "nl.example.com",
+		Port:     443,
+		URI:      "vless://11111111-2222-3333-4444-555555555555@nl.example.com:443?type=tcp&security=reality&pbk=1234567890abcdef1234567890abcdef1234567890ab&sid=123456&spx=%2F&sni=yahoo.com&fp=chrome#NL-Reality",
+	}
+	ob, err := ToXrayOutbound(node)
+	if err != nil {
+		t.Fatalf("ToXrayOutbound error: %v", err)
+	}
+	if ob.Tag != "happ-15" {
+		t.Errorf("expected tag happ-15, got %q", ob.Tag)
+	}
+	if ob.StreamSettings == nil {
+		t.Fatalf("expected streamSettings, got nil")
+	}
+	if ob.StreamSettings.Security != "reality" {
+		t.Errorf("expected security reality, got %q", ob.StreamSettings.Security)
+	}
+	if ob.StreamSettings.TLSSettings != nil {
+		t.Errorf("expected tlsSettings to be nil for reality, got %+v", ob.StreamSettings.TLSSettings)
+	}
+	rs := ob.StreamSettings.RealitySettings
+	if rs == nil {
+		t.Fatalf("expected realitySettings, got nil")
+	}
+	if rs.PublicKey != "1234567890abcdef1234567890abcdef1234567890ab" {
+		t.Errorf("publicKey mismatch: got %q", rs.PublicKey)
+	}
+	if rs.ShortID != "123456" {
+		t.Errorf("shortId mismatch: got %q", rs.ShortID)
+	}
+	if rs.SpiderX != "/" {
+		t.Errorf("spiderX mismatch: got %q", rs.SpiderX)
+	}
+	if rs.ServerName != "yahoo.com" {
+		t.Errorf("serverName mismatch: got %q", rs.ServerName)
+	}
+	if rs.Fingerprint != "chrome" {
+		t.Errorf("fingerprint mismatch: got %q", rs.Fingerprint)
+	}
+}
+
+func TestToXrayOutboundVLESSRealityMissingPublicKey(t *testing.T) {
+	node := &Node{
+		ID:       16,
+		Protocol: "vless",
+		Host:     "nl.example.com",
+		Port:     443,
+		URI:      "vless://11111111-2222-3333-4444-555555555555@nl.example.com:443?type=tcp&security=reality&sni=yahoo.com#NL-NoPK",
+	}
+	_, err := ToXrayOutbound(node)
+	if err == nil {
+		t.Fatalf("expected error for reality outbound without publicKey, got nil")
+	}
+}
+

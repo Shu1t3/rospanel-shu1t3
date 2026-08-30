@@ -334,10 +334,18 @@ func parseStreamSettings(q url.Values, authority string) (*xray.StreamSettings, 
 			ss.TLSSettings.ALPN = strings.Split(q.Get("alpn"), ",")
 		}
 	case "reality":
+		pbk := firstNonEmpty(q.Get("pbk"), q.Get("publicKey"), q.Get("pk"))
+		if pbk == "" {
+			return nil, fmt.Errorf("reality: missing publicKey (pbk)")
+		}
 		ss.Security = "reality"
-		ss.TLSSettings = &xray.TLSSettings{
+		ss.RealitySettings = &xray.RealitySettings{
 			ServerName:  sni,
 			Fingerprint: fp,
+			PublicKey:   pbk,
+			ShortID:     firstNonEmpty(q.Get("sid"), q.Get("shortId"), q.Get("shortid")),
+			SpiderX:     firstNonEmpty(q.Get("spx"), q.Get("spiderX"), q.Get("spiderx")),
+			Show:        false,
 		}
 	}
 
@@ -351,6 +359,15 @@ func parseStreamSettings(q url.Values, authority string) (*xray.StreamSettings, 
 		ss.GRPCSettings = &xray.GRPCSettings{ServiceName: q.Get("serviceName")}
 	}
 	return ss, nil
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }
 
 func headerIfNonEmpty(key, val string) map[string]string {

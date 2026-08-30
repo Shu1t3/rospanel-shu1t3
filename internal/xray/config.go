@@ -308,20 +308,29 @@ type HTTPUpgradeSettings struct {
 	AcceptProxyProtocol bool `json:"acceptProxyProtocol,omitempty"`
 }
 
-// RealitySettings configures the REALITY security layer. Instead of presenting
-// our own cert, the inbound forwards the TLS handshake of a real site (Dest /
-// ServerNames) and authenticates clients via the X25519 key + shortId.
+// RealitySettings configures the REALITY security layer for both inbounds and
+// outbounds. For an inbound it forwards the TLS handshake of a real site (Dest /
+// ServerNames) and authenticates clients via the X25519 key + shortId. For an
+// outbound (egress client detour) it presents the server's publicKey, shortId,
+// serverName and fingerprint.
 type RealitySettings struct {
-	Show        bool     `json:"show"`
-	Dest        string   `json:"dest"`        // "host:port" of the borrowed site
-	Xver        int      `json:"xver"`        // PROXY protocol version (0 = off)
-	ServerNames []string `json:"serverNames"` // accepted SNIs (the borrowed site)
-	PrivateKey  string   `json:"privateKey"`  // X25519 private (base64 raw-url)
-	ShortIds    []string `json:"shortIds"`
+	Show        bool     `json:"show,omitempty"`
+	Dest        string   `json:"dest,omitempty"`        // "host:port" of the borrowed site (inbound)
+	Xver        int      `json:"xver,omitempty"`        // PROXY protocol version (0 = off)
+	ServerNames []string `json:"serverNames,omitempty"` // accepted SNIs (the borrowed site)
+	PrivateKey  string   `json:"privateKey,omitempty"`  // X25519 private (base64 raw-url) (inbound)
+	ShortIds    []string `json:"shortIds,omitempty"`    // accepted short IDs (inbound)
 	// MaxTimeDiff is the anti-replay window in ms: a client whose handshake clock
 	// differs by more than this is rejected, so a probe can't replay a captured
 	// REALITY auth later. 0 (omitted) disables the check.
 	MaxTimeDiff int `json:"maxTimeDiff,omitempty"`
+
+	// Outbound fields:
+	ServerName  string `json:"serverName,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	PublicKey   string `json:"publicKey,omitempty"`
+	ShortID     string `json:"shortId,omitempty"`
+	SpiderX     string `json:"spiderX,omitempty"`
 }
 
 // GRPCSettings configures the gRPC transport. Authority overrides the :authority
