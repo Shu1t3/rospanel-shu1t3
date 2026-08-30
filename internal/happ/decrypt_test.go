@@ -42,12 +42,15 @@ func TestCrypt1to4RSAKeys(t *testing.T) {
 		}
 		b64Payload := base64.StdEncoding.EncodeToString(cipher)
 
-		prefix := "happ://crypt/"
-		if i == 1 {
+		var prefix string
+		switch i {
+		case 0:
+			prefix = "happ://crypt/"
+		case 1:
 			prefix = "happ://crypt2/"
-		} else if i == 2 {
+		case 2:
 			prefix = "happ://crypt3/"
-		} else if i == 3 {
+		case 3:
 			prefix = "happ://crypt4/"
 		}
 
