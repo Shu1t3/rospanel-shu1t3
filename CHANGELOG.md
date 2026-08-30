@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.18.2](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.18.1...v2.0.0) (2026-08-30)
+
+### chore
+
+fix: improve changelog version synchronization and sorting logic in ChangelogDropdown
+
+
 ## [2.18.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.18.0...v2.18.1) (2026-08-30)
 
 
