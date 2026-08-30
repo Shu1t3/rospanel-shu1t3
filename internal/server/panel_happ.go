@@ -78,6 +78,23 @@ func (rt *Router) syncHappSubscription(w http.ResponseWriter, r *http.Request, i
 	})
 }
 
+// ── POST /api/happ/subscriptions/{id}/toggle-all ─────────────────────────
+
+func (rt *Router) toggleHappSubscriptionNodes(w http.ResponseWriter, r *http.Request, id int64) {
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if err := rt.mgr.SetSubscriptionHappNodesEnabled(id, body.Enabled); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // ── GET /api/happ/nodes ──────────────────────────────────────────────────
 // List all Happ nodes for UI display.
 

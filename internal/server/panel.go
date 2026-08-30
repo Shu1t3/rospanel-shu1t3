@@ -429,6 +429,7 @@ func (rt *Router) panelMux() http.Handler {
 	authed("GET /api/happ/subscriptions", rt.listHappSubscriptions)
 	authedID("DELETE /api/happ/subscriptions/{id}", rt.deleteHappSubscription)
 	authedID("POST /api/happ/subscriptions/{id}/sync", rt.syncHappSubscription)
+	authedID("POST /api/happ/subscriptions/{id}/toggle-all", rt.toggleHappSubscriptionNodes)
 	authed("GET /api/happ/nodes", rt.listHappNodes)
 	authedID("POST /api/happ/nodes/{id}/enabled", rt.setHappNodeEnabled)
 	authedID("DELETE /api/happ/nodes/{id}", rt.deleteHappNode)

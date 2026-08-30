@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import i18n, { currentLang } from "./i18n";
 import {
@@ -51,6 +51,8 @@ import {
   setHappNodeEnabled,
   deleteHappNode,
   syncHappSubscription,
+  deleteHappSubscription,
+  toggleAllHappNodes,
   listHappSubscriptions,
   type HappNode,
   type HappSubscription,
@@ -101,6 +103,7 @@ import {
   DropdownDivider,
   DropdownItem,
   IconBraces,
+  IconChevron,
   IconButton,
   IconTrash,
   IconDots,
@@ -2418,7 +2421,23 @@ function NodeLogsDialog({ node, onClose }: { node: NodeView; onClose: () => void
   );
 }
 
-// HappNodeCard renders one imported Happ proxy node (simplified card with protocol badge, host, enable switch, delete button).
+// isHappInfoStub detects informational/notice stubs from subscription providers (e.g. 0.0.0.0:1 or expiry notices).
+function isHappInfoStub(node: HappNode): boolean {
+  const host = (node.host || "").trim().toLowerCase();
+  const name = (node.name || "").toLowerCase();
+  if (host === "0.0.0.0" || host === "127.0.0.1" || host === "localhost" || node.port <= 1) {
+    return true;
+  }
+  return (
+    name.includes("expired") ||
+    name.includes("истекл") ||
+    name.includes("expiration") ||
+    name.includes("закончился") ||
+    name.includes("traffic limit")
+  );
+}
+
+// HappNodeCard renders one imported Happ proxy node.
 function HappNodeCard({
   node,
   onChanged,
@@ -2428,6 +2447,7 @@ function HappNodeCard({
 }) {
   const { t } = useTranslation();
   const { confirm, confirmNode } = useConfirm();
+  const isStub = isHappInfoStub(node);
 
   const toggleEnabled = async (enabled: boolean) => {
     try {
@@ -2491,7 +2511,22 @@ function HappNodeCard({
             <span className="truncate font-mono text-xs text-ink-muted">
               {node.host}:{node.port}
             </span>
+            {isStub && (
+              <span
+                className="inline-flex items-center gap-1 cursor-help"
+                title={t("nodes.happInfoStubHint", { addr: `${node.host}:${node.port}` })}
+              >
+                <Badge color="orange" size="xs">
+                  ⚠️ {t("nodes.happInfoStubBadge")}
+                </Badge>
+              </span>
+            )}
           </div>
+          {isStub && (
+            <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+              {t("nodes.happInfoStubHint", { addr: `${node.host}:${node.port}` })}
+            </p>
+          )}
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
@@ -2501,6 +2536,297 @@ function HappNodeCard({
           </IconButton>
         </div>
       </div>
+    </div>
+  );
+}
+
+// HappManageModal lets the user filter, search, enable all / disable all, and manage nodes for a subscription.
+function HappManageModal({
+  sub,
+  nodes,
+  open,
+  onClose,
+  onChanged,
+}: {
+  sub: HappSubscription;
+  nodes: HappNode[];
+  open: boolean;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const { t } = useTranslation();
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<"all" | "active" | "inactive" | "stubs">("all");
+  const [toggling, setToggling] = useState(false);
+
+  const subNodes = useMemo(() => nodes.filter((n) => n.subscription_id === sub.id), [nodes, sub.id]);
+  const activeCount = useMemo(() => subNodes.filter((n) => n.enabled).length, [subNodes]);
+  const stubCount = useMemo(() => subNodes.filter(isHappInfoStub).length, [subNodes]);
+
+  const filtered = useMemo(() => {
+    let list = subNodes;
+    if (filter === "active") list = list.filter((n) => n.enabled);
+    else if (filter === "inactive") list = list.filter((n) => !n.enabled);
+    else if (filter === "stubs") list = list.filter(isHappInfoStub);
+
+    const q = search.trim().toLowerCase();
+    if (q) {
+      list = list.filter(
+        (n) =>
+          (n.name || "").toLowerCase().includes(q) ||
+          (n.host || "").toLowerCase().includes(q) ||
+          (n.protocol || "").toLowerCase().includes(q) ||
+          String(n.port).includes(q),
+      );
+    }
+    return list;
+  }, [subNodes, filter, search]);
+
+  const handleToggleAll = async (enabled: boolean) => {
+    setToggling(true);
+    try {
+      await toggleAllHappNodes(sub.id, enabled);
+      notifySuccess(t("common.saved"));
+      onChanged();
+    } catch (e) {
+      notifyError(errMessage(e));
+    } finally {
+      setToggling(false);
+    }
+  };
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={t("nodes.happManageModalTitle", { name: sub.name || `Happ #${sub.id}` })}
+      size="xl"
+    >
+      <div className="flex flex-col gap-4">
+        {/* Quick info & batch actions */}
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 pb-3 dark:border-gray-800">
+          <div className="flex items-center gap-2 text-sm text-ink-muted">
+            <span>
+              {t("nodes.happEnabledCount", { active: activeCount, total: subNodes.length })}
+            </span>
+            <Badge color="teal" size="xs">{t("nodes.happAutoSyncHint")}</Badge>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              size="xs"
+              variant="light"
+              color="teal"
+              disabled={toggling || activeCount === subNodes.length}
+              onClick={() => handleToggleAll(true)}
+            >
+              {t("nodes.happEnableAll")}
+            </Button>
+            <Button
+              size="xs"
+              variant="light"
+              color="gray"
+              disabled={toggling || activeCount === 0}
+              onClick={() => handleToggleAll(false)}
+            >
+              {t("nodes.happDisableAll")}
+            </Button>
+          </div>
+        </div>
+
+        {/* Search and filter tabs */}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex-1">
+            <TextInput
+              value={search}
+              onChange={setSearch}
+              placeholder={t("nodes.happSearchPlaceholder")}
+            />
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {(["all", "active", "inactive", "stubs"] as const).map((f) => {
+              const label =
+                f === "all"
+                  ? `${t("nodes.happFilterAll")} (${subNodes.length})`
+                  : f === "active"
+                  ? `${t("nodes.happFilterActive")} (${activeCount})`
+                  : f === "inactive"
+                  ? `${t("nodes.happFilterInactive")} (${subNodes.length - activeCount})`
+                  : `${t("nodes.happFilterStubs")} (${stubCount})`;
+              if (f === "stubs" && stubCount === 0) return null;
+              return (
+                <button
+                  key={f}
+                  onClick={() => setFilter(f)}
+                  className={cn(
+                    "rounded-lg px-2.5 py-1 text-xs font-medium transition-colors",
+                    filter === f
+                      ? "bg-teal-500/10 text-teal-600 dark:bg-teal-500/20 dark:text-teal-400"
+                      : "text-ink-muted hover:bg-gray-100 dark:hover:bg-gray-800",
+                  )}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Node list inside modal */}
+        <div className="max-h-[60vh] overflow-y-auto rounded-xl border border-gray-200/80 bg-gray-50/40 divide-y divide-gray-100 dark:border-gray-800 dark:bg-gray-900/40 dark:divide-gray-800">
+          {filtered.length === 0 ? (
+            <div className="p-6 text-center text-sm text-ink-muted">
+              {t("common.nothingFound")}
+            </div>
+          ) : (
+            filtered.map((n) => (
+              <HappNodeCard key={n.id} node={n} onChanged={onChanged} />
+            ))
+          )}
+        </div>
+
+        <div className="flex justify-end pt-2">
+          <Button onClick={onClose}>{t("common.done")}</Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// HappSubscriptionCard renders a single Happ subscription in a compact, collapsible container.
+function HappSubscriptionCard({
+  sub,
+  nodes,
+  onChanged,
+}: {
+  sub: HappSubscription;
+  nodes: HappNode[];
+  onChanged: () => void;
+}) {
+  const { t } = useTranslation();
+  const { confirm, confirmNode } = useConfirm();
+  const [expanded, setExpanded] = useState(false);
+  const [managing, setManaging] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+
+  const subNodes = useMemo(() => nodes.filter((n) => n.subscription_id === sub.id), [nodes, sub.id]);
+  const activeCount = useMemo(() => subNodes.filter((n) => n.enabled).length, [subNodes]);
+  const stubCount = useMemo(() => subNodes.filter(isHappInfoStub).length, [subNodes]);
+
+  const sync = async () => {
+    setSyncing(true);
+    try {
+      await syncHappSubscription(sub.id);
+      notifySuccess(t("nodes.happSynced"));
+      onChanged();
+    } catch (e) {
+      notifyError(errMessage(e));
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const removeSub = async () => {
+    const ok = await confirm({
+      title: t("nodes.happDeleteSubConfirm", { name: sub.name || `Happ #${sub.id}` }),
+      confirmLabel: t("common.delete"),
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await deleteHappSubscription(sub.id);
+      notifySuccess(t("nodes.deleted"));
+      onChanged();
+    } catch (e) {
+      notifyError(errMessage(e));
+    }
+  };
+
+  const timeAgo = (ts: number) => {
+    if (!ts) return "";
+    const sec = Math.floor(Date.now() / 1000 - ts);
+    if (sec < 60) return `${sec}s`;
+    if (sec < 3600) return `${Math.floor(sec / 60)}m`;
+    return `${Math.floor(sec / 3600)}h`;
+  };
+
+  return (
+    <div className="rounded-2xl border border-teal-500/20 bg-gradient-to-br from-teal-500/[0.03] via-transparent to-cyan-500/[0.02] shadow-sm dark:border-teal-500/30">
+      {confirmNode}
+      {/* Header row */}
+      <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-3 min-w-0 flex-1">
+          <span
+            className={cn(
+              "h-2.5 w-2.5 shrink-0 rounded-full",
+              activeCount > 0 ? "bg-teal-500 shadow-sm shadow-teal-500/50" : "bg-gray-400 dark:bg-gray-600",
+            )}
+          />
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold text-ink truncate">
+                {sub.name || `Happ Subscription #${sub.id}`}
+              </span>
+              <Badge color="teal" size="xs">
+                {t("nodes.happEnabledCount", { active: activeCount, total: subNodes.length })}
+              </Badge>
+              {stubCount > 0 && (
+                <span title={t("nodes.happFilterStubs")}>
+                  <Badge color="orange" size="xs">
+                    ⚠️ {stubCount} {t("nodes.happFilterStubs")}
+                  </Badge>
+                </span>
+              )}
+              {sub.last_success_at > 0 && (
+                <span className="text-xs text-ink-muted">
+                  {t("nodes.happLastSync")} {timeAgo(sub.last_success_at)}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <Button size="xs" variant="light" color="teal" onClick={() => setManaging(true)}>
+            <IconGear size={14} className="mr-1 inline" />
+            {t("nodes.happConfigureNodes")}
+          </Button>
+          <Button size="xs" variant="light" color="gray" onClick={sync} loading={syncing}>
+            <IconRestart size={14} className="mr-1 inline" />
+            {t("common.refresh")}
+          </Button>
+          <IconButton title={expanded ? t("nodes.happCollapse") : t("nodes.happExpand")} onClick={() => setExpanded(!expanded)}>
+            <IconChevron size={16} className={cn("transition-transform duration-200", expanded ? "rotate-180" : "rotate-0")} />
+          </IconButton>
+          <IconButton title={t("nodes.happDeleteSub")} onClick={removeSub}>
+            <IconTrash size={16} />
+          </IconButton>
+        </div>
+      </div>
+
+      {/* Expandable in-line list */}
+      {expanded && (
+        <div className="border-t border-teal-500/10 p-3 dark:border-teal-500/20">
+          <div className="max-h-80 overflow-y-auto rounded-xl border border-gray-200/60 bg-white divide-y divide-gray-100 dark:border-gray-800 dark:bg-gray-900/60 dark:divide-gray-800">
+            {subNodes.length === 0 ? (
+              <p className="p-4 text-xs text-ink-muted text-center">{t("nodes.happNoNodes")}</p>
+            ) : (
+              subNodes.map((n) => (
+                <HappNodeCard key={n.id} node={n} onChanged={onChanged} />
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      {managing && (
+        <HappManageModal
+          sub={sub}
+          nodes={nodes}
+          open={managing}
+          onClose={() => setManaging(false)}
+          onChanged={onChanged}
+        />
+      )}
     </div>
   );
 }
@@ -2662,11 +2988,24 @@ export function NodesPanel() {
               </Button>
             )}
           </div>
-          <Card className="divide-y divide-gray-100 dark:divide-gray-800">
-            {happNodes.map((n) => (
-              <HappNodeCard key={n.id} node={n} onChanged={loadHapp} />
-            ))}
-          </Card>
+          <div className="space-y-3">
+            {happSubs.length > 0 ? (
+              happSubs.map((sub) => (
+                <HappSubscriptionCard
+                  key={sub.id}
+                  sub={sub}
+                  nodes={happNodes}
+                  onChanged={loadHapp}
+                />
+              ))
+            ) : (
+              <Card className="divide-y divide-gray-100 dark:divide-gray-800">
+                {happNodes.map((n) => (
+                  <HappNodeCard key={n.id} node={n} onChanged={loadHapp} />
+                ))}
+              </Card>
+            )}
+          </div>
         </div>
       )}
 

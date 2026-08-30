@@ -2133,6 +2133,12 @@ export const syncHappSubscription = (id: number) =>
     method: 'POST',
   })
 
+export const toggleAllHappNodes = (id: number, enabled: boolean) =>
+  api<void>(`api/happ/subscriptions/${id}/toggle-all`, {
+    method: 'POST',
+    body: JSON.stringify({ enabled }),
+  })
+
 export const listHappNodes = () =>
   api<HappNode[]>('api/happ/nodes')
 

@@ -122,6 +122,15 @@ func (m *Manager) SetHappNodeEnabled(nodeID int64, enabled bool) error {
 	return nil
 }
 
+// SetSubscriptionHappNodesEnabled enables or disables all nodes of a subscription and reconciles Xray.
+func (m *Manager) SetSubscriptionHappNodesEnabled(subID int64, enabled bool) error {
+	if err := m.store.SetSubscriptionHappNodesEnabled(subID, enabled); err != nil {
+		return err
+	}
+	m.TriggerReconcile()
+	return nil
+}
+
 // DeleteHappNode removes a single node and reconciles Xray.
 func (m *Manager) DeleteHappNode(nodeID int64) error {
 	if err := m.store.DeleteHappNode(nodeID); err != nil {

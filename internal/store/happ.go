@@ -202,10 +202,14 @@ func (s *Store) UpsertHappNodesFull(subscriptionID int64, nodes []happ.Node) (ad
 	for i := range nodes {
 		n := &nodes[i]
 		isNew := !existing[n.IdentityKey]
+		initialEnabled := 1
+		if n.IsInfoStub() {
+			initialEnabled = 0
+		}
 		_, e := tx.Exec(`
 			INSERT INTO happ_nodes
 			    (subscription_id, identity_key, name, protocol, host, port, uri, enabled, last_seen_at, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(identity_key) DO UPDATE SET
 			    name         = excluded.name,
 			    protocol     = excluded.protocol,
@@ -215,7 +219,7 @@ func (s *Store) UpsertHappNodesFull(subscriptionID int64, nodes []happ.Node) (ad
 			    last_seen_at = excluded.last_seen_at,
 			    updated_at   = excluded.updated_at`,
 			subscriptionID, n.IdentityKey, n.Name, n.Protocol, n.Host, n.Port, n.URI,
-			now, now, now,
+			initialEnabled, now, now, now,
 		)
 		if e != nil {
 			err = e
@@ -280,6 +284,17 @@ func (s *Store) SetHappNodeEnabled(id int64, enabled bool) error {
 	}
 	_, err := s.db.Exec(`UPDATE happ_nodes SET enabled = ?, updated_at = ? WHERE id = ?`,
 		v, time.Now().Unix(), id)
+	return err
+}
+
+// SetSubscriptionHappNodesEnabled sets the enabled flag for all nodes belonging to a subscription.
+func (s *Store) SetSubscriptionHappNodesEnabled(subID int64, enabled bool) error {
+	v := 0
+	if enabled {
+		v = 1
+	}
+	_, err := s.db.Exec(`UPDATE happ_nodes SET enabled = ?, updated_at = ? WHERE subscription_id = ?`,
+		v, time.Now().Unix(), subID)
 	return err
 }
 

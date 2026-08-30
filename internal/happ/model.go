@@ -56,6 +56,22 @@ func (n *Node) DisplayName() string {
 	return fmt.Sprintf("%s %s:%d", strings.ToUpper(n.Protocol), n.Host, n.Port)
 }
 
+// IsInfoStub reports whether this node looks like an informational stub / notice
+// (e.g. host is 0.0.0.0, 127.0.0.1, or name mentions expired / notice).
+func (n *Node) IsInfoStub() bool {
+	h := strings.TrimSpace(strings.ToLower(n.Host))
+	name := strings.ToLower(n.Name)
+	if h == "0.0.0.0" || h == "127.0.0.1" || h == "localhost" || n.Port <= 1 {
+		return true
+	}
+	if strings.Contains(name, "expired") || strings.Contains(name, "истекл") ||
+		strings.Contains(name, "expiration") || strings.Contains(name, "закончился") ||
+		strings.Contains(name, "traffic limit") {
+		return true
+	}
+	return false
+}
+
 // XrayTag returns the Xray outbound tag for this node.
 func (n *Node) XrayTag() string {
 	return fmt.Sprintf("happ-%d", n.ID)
