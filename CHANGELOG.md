@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.19.2](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.19.1...v2.19.2) (2026-09-01)
+
+
+### Bug Fixes
+
+* синхронизация с upstream — авто-откат Xray, оповещения о месте на диске и обработка fallback ([887bc5b](https://github.com/Shu1t3/rospanel-shu1t3/commit/887bc5b389409a9e089b5b7fe20784fc26df9b50))
+
 ## [2.19.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.19.0...v2.19.1) (2026-08-30)
 
 
