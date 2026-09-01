@@ -1271,7 +1271,7 @@ function NodeRentalTab({
 
         {shareEnabled && (
           <div className="mt-4 flex flex-col gap-4 border-t border-gray-100 pt-4">
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-[1fr_1.5fr]">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-[160px_1fr]">
               <div className="flex flex-col gap-1">
                 <TextInput
                   label={t("nodes.shareQuota")}

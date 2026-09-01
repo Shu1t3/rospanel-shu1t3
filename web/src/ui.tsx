@@ -866,7 +866,7 @@ function AnchoredPopover({
 }
 
 const triggerCls =
-  'flex w-full items-center justify-between gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-left text-sm text-ink ' +
+  'flex items-center justify-between gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-left text-sm text-ink ' +
   'outline-none transition hover:border-gray-400 focus:border-brand-500 focus:ring-2 focus:ring-brand-100'
 
 export function Select({
@@ -906,7 +906,7 @@ export function Select({
         ref={ref}
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className={cn(triggerCls, className)}
+        className={cn(triggerCls, className || 'w-full')}
       >
         <span className={cn('truncate', !current && 'text-gray-400')}>
           {current ? current.label : placeholder}
@@ -1352,7 +1352,7 @@ export function Checkbox({
   return (
     <label
       className={cn(
-        "flex cursor-pointer select-none items-center gap-3 rounded-xl border px-3 py-2.5 text-sm transition",
+        "relative flex cursor-pointer select-none items-center gap-3 rounded-xl border px-3 py-2.5 text-sm transition",
         checked
           ? "border-accent accent-tint"
           : "border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50",
