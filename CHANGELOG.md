@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.19.3](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.19.2...v2.19.3) (2026-09-01)
+
+
+### Bug Fixes
+
+* improve GroupsPanel UI with scrollable grant list and connection count badge, and refine NodesPanel layout and Select component styling. ([b89d33a](https://github.com/Shu1t3/rospanel-shu1t3/commit/b89d33aaff7e149130d69a27c08366e3e84a3604))
+
 ## [2.19.2](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.19.1...v2.19.2) (2026-09-01)
 
 
