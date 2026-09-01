@@ -6,6 +6,7 @@ import (
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/i18n"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/sysstat"
 )
 
 // Admin alerts about remote nodes.
@@ -59,6 +60,11 @@ type nodeAlertState struct {
 	// recorded on sync and acted on by the sweep.
 	certErr       string
 	lastCertErrAt time.Time
+
+	// diskLowAlerted remembers that admins were alerted about free space on this
+	// server, so the alarm doesn't repeat on every sweep and the all-clear only fires
+	// for an alert they actually saw.
+	diskLowAlerted bool
 }
 
 // nodeAlertMsg is one pending message: which admin-event category gates it and the
@@ -96,7 +102,18 @@ func (m *Manager) SweepNodeAlerts() {
 		logErr("node alerts: cannot list nodes", "err", err)
 		return
 	}
-	now := time.Now()
+	// The master's own figures are read here rather than deep inside: Sampler reports
+	// the real host and cannot be pointed at made-up numbers, so keeping it at the
+	// edge leaves the sweep itself something a test can drive.
+	var local *sysstat.Stats
+	if m.sys != nil {
+		st := m.sys.Read()
+		local = &st
+	}
+	m.sweepAlerts(nodes, local, time.Now())
+}
+
+func (m *Manager) sweepAlerts(nodes []model.Node, local *sysstat.Stats, now time.Time) {
 	live := make(map[int64]struct{}, len(nodes))
 	for i := range nodes {
 		n := &nodes[i]
@@ -108,16 +125,49 @@ func (m *Manager) SweepNodeAlerts() {
 			continue
 		}
 		live[n.ID] = struct{}{}
-		for _, msg := range m.nodeAlertsFor(n, now) {
+		var diskUsed, diskTotal int64
+		if h, ok := m.NodeHostStats(n.ID); ok {
+			diskUsed, diskTotal = h.DiskUsed, h.DiskTotal
+		}
+		for _, msg := range m.nodeAlertsFor(n, now, diskUsed, diskTotal) {
 			m.notifyAdminEvent(msg.bit, msg.html)
+		}
+	}
+	if local != nil {
+		if msg := m.localDiskAlertMsg(live, local.DiskUsed, local.DiskTotal); msg != "" {
+			m.notifyAdminEvent(model.AdminEventXrayDown, msg)
 		}
 	}
 	m.pruneNodeAlerts(live)
 }
 
+// sweepLocalDiskAlert runs the same free-space check over the panel's own machine.
+// It is separate because the master is not in ListNodes — it is a virtual node the API
+// view assembles — so the sweep above never sees it, and the machine the panel itself
+// runs on is the one whose full disk breaks everything at once.
+
+// localDiskAlertMsg advances the master's own disk state and returns what to say, or ""
+// for nothing. Split from the sending half — the same shape nodeAlertsFor has — so the
+// step between "the figures crossed a threshold" and "an admin was told" is one a test
+// can walk, rather than the kind of wiring that is only discovered missing in
+// production.
+func (m *Manager) localDiskAlertMsg(live map[int64]struct{}, used, total int64) string {
+	live[model.LocalNodeID] = struct{}{} // keep the state from being pruned as stale
+	m.nodeAlertMu.Lock()
+	defer m.nodeAlertMu.Unlock()
+	st := m.nodeAlertLocked(model.LocalNodeID)
+	next, msg := diskAlert(st.diskLowAlerted, used, total, model.LocalNodeName, m.botLang())
+	st.diskLowAlerted = next
+	st.known = true
+	return msg
+}
+
 // nodeAlertsFor advances one node's alert state and returns the messages that
 // transition produced. Sending is left to the caller: the state lock is held here.
-func (m *Manager) nodeAlertsFor(n *model.Node, now time.Time) []nodeAlertMsg {
+// diskUsed/diskTotal are read by the caller rather than looked up here: they live
+// behind a different lock, and taking it while holding the alert lock would introduce
+// an ordering between two mutexes that currently have none.
+func (m *Manager) nodeAlertsFor(n *model.Node, now time.Time, diskUsed, diskTotal int64) []nodeAlertMsg {
 	m.nodeAlertMu.Lock()
 	defer m.nodeAlertMu.Unlock()
 	st := m.nodeAlertLocked(n.ID)
@@ -146,6 +196,16 @@ func (m *Manager) nodeAlertsFor(n *model.Node, now time.Time) []nodeAlertMsg {
 		out = append(out, nodeAlertMsg{model.AdminEventXrayDown, msg})
 	}
 	st.online = online
+
+	// Free space, from the figures the node already reports for the panel's own
+	// dashboard. Nothing else watches this: the disk filling up stops SQLite writing,
+	// which shows up as traffic that is not recorded and users that do not sync —
+	// symptoms an operator has no reason to connect to a full disk, on a machine they
+	// have no reason to be logged into.
+	if next, msg := diskAlert(st.diskLowAlerted, diskUsed, diskTotal, nodeLabel(n), lang); msg != "" {
+		st.diskLowAlerted = next
+		out = append(out, nodeAlertMsg{model.AdminEventXrayDown, msg})
+	}
 
 	// Everything below reads what the node reported. While it is silent that report
 	// is stale — its Xray may well be down with the box — so it is not evaluated:
@@ -275,4 +335,34 @@ func certDaysLeft(expiresAt int64, now time.Time) int {
 		return 0
 	}
 	return int(d.Hours() / 24)
+}
+
+// Disk thresholds. Alerting starts at the same 15% the health report already calls a
+// warning, so the panel does not grade one way and shout another. The all-clear waits
+// for 20% rather than 15 on purpose: a disk sitting exactly on the line would
+// otherwise alternate between alarm and all-clear on every sweep, and an alert that
+// cries wolf is one an operator learns to ignore.
+const (
+	diskAlertFreePct = 15
+	diskClearFreePct = 20
+)
+
+// diskAlert decides what to tell admins about free space, given what they were last
+// told. Returns the new alerted state and a message, or "" for nothing to say.
+//
+// A server that reports no disk figures at all (an older node, or one whose stats have
+// not arrived yet) says nothing rather than reading as a full disk.
+func diskAlert(alerted bool, used, total int64, label string, lang i18n.Lang) (bool, string) {
+	if total <= 0 {
+		return alerted, ""
+	}
+	freePct := int(float64(total-used) / float64(total) * 100)
+	switch {
+	case !alerted && freePct < diskAlertFreePct:
+		return true, fmt.Sprintf(i18n.T(lang, "notify.diskLow"), label, freePct,
+			humanBytes(total-used), humanBytes(total))
+	case alerted && freePct >= diskClearFreePct:
+		return false, fmt.Sprintf(i18n.T(lang, "notify.diskBack"), label, freePct)
+	}
+	return alerted, ""
 }

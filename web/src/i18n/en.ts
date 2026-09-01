@@ -313,6 +313,7 @@ const en: Dict = {
     setSupportTokenFirst: "set the support bot token and save the settings first",
     sshCredsRequired: "enter an SSH password or a private key",
     sshHostUserRequired: "enter the server address and the SSH user",
+    methodNotSupported: "the panel does not accept this request method here",
     staleTab:
       "the panel answered this request with a page instead of data — this tab is out of date, reload it",
     streamingUnsupported: "streaming is not supported",

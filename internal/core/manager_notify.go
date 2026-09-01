@@ -455,6 +455,15 @@ func (m *Manager) onXrayWedged(restarted bool) {
 // in two seconds" from "still down" — and an all-clear for an alarm that was
 // throttled away would announce the end of an outage nobody was told about.
 func (m *Manager) onXrayRecover() {
+	// Push the current user set onto whatever config Xray just came back with. The
+	// supervisor can restore config.json.bak to get Xray running again, and that
+	// backup is only refreshed by Apply — a user sync moves the file without touching
+	// it — so the config that recovers the outage can be hours out of date on users.
+	// Nothing else would notice: reconcileLoop is driven by events, not a timer, and
+	// no event fired here. Users added since that backup would simply not be served
+	// until somebody happened to edit something.
+	m.TriggerUserSync()
+
 	m.throttleMu.Lock()
 	alerted, at := m.crashAlerted, m.lastCrashNotify
 	m.crashAlerted = false
@@ -503,4 +512,17 @@ func (m *Manager) notifyCertError(host string, err error) {
 	m.notifyAdminEvent(model.AdminEventCert,
 		i18n.T(m.botLang(), "notify.certFailed",
 			model.LocalNodeName, escHTML(host), escHTML(err.Error())))
+}
+
+// onConfigRolledBack reports that the panel reverted config.json to its backup because
+// Xray would not start with the live one.
+//
+// Its own message rather than a line on the recovery notice: the outage is over either
+// way, but this one means a change the operator made is no longer in effect, and
+// nothing else on the panel says so. Without it they see a brief blip and, later, a
+// setting that quietly is not what they set.
+func (m *Manager) onConfigRolledBack(reason string) {
+	lang := m.botLang()
+	m.notifyAdminEvent(model.AdminEventXrayDown, fmt.Sprintf(
+		i18n.T(lang, "notify.configRolledBack"), model.LocalNodeName, escHTML(reason)))
 }

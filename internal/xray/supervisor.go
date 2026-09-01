@@ -46,6 +46,7 @@ type proc struct {
 	done    chan struct{}
 	started time.Time
 	stop    bool
+	cfg     []byte // snapshot taken immediately before cmd.Start()
 }
 
 // Supervisor owns the Xray child process and the on-disk config.json. It
@@ -99,6 +100,17 @@ type Supervisor struct {
 	// renewed certificate): those are routine, and reporting them as recovery would
 	// make the one message that means "the outage is over" meaningless.
 	onRecover func()
+	// rolledBack flags that the supervisor has already restored config.json.bak for
+	// the current failure. It prevents a loop when the backup is itself unloadable:
+	// after one rollback, subsequent restarts wait for a manual fix or a new Apply.
+	// Reset whenever a new config is successfully Applied.
+	rolledBack bool
+	// lastLoadErr is the error from the last currentConfigUnloadable check, kept so the
+	// rollback notification can tell the operator why their config was refused.
+	lastLoadErr string
+	// onRolledBack is called when config.json was reverted to its backup because Xray
+	// refused the live one. Passes the reason Xray gave.
+	onRolledBack func(reason string)
 
 	verOnce sync.Once
 	version string
@@ -164,6 +176,10 @@ func (s *Supervisor) SetOnCrash(fn func(err error)) { s.onCrash = fn }
 
 // SetOnRecover registers a callback invoked when Xray comes back after a crash.
 func (s *Supervisor) SetOnRecover(fn func()) { s.onRecover = fn }
+
+// SetOnRolledBack registers a callback invoked when the config was reverted to its
+// backup, with the reason the live one was refused.
+func (s *Supervisor) SetOnRolledBack(fn func(reason string)) { s.onRolledBack = fn }
 
 // SetOnWedged registers a callback invoked when the watchdog detects a wedged process
 // (alive but no longer serving). Used to alert the operator — this is an outage the crash
@@ -518,6 +534,7 @@ func (s *Supervisor) Apply(cfg *Config) error {
 	sameAsRunning := s.cur != nil && s.appliedCfg != nil && bytes.Equal(s.appliedCfg, data)
 	if sameAsRunning {
 		s.lastApply = time.Now()
+		s.rolledBack = false
 	}
 	s.mu.Unlock()
 	if sameAsRunning {
@@ -560,6 +577,7 @@ func (s *Supervisor) Apply(cfg *Config) error {
 	}
 	s.mu.Lock()
 	s.lastApply = time.Now()
+	s.rolledBack = false
 	// Remember what the process now runs, so the next Apply can tell a real change
 	// from a re-application of the same thing.
 	s.appliedCfg = data
@@ -626,6 +644,7 @@ func (s *Supervisor) ApplyRaw(data []byte) error {
 	}
 	s.mu.Lock()
 	s.lastApply = time.Now()
+	s.rolledBack = false
 	// Keep the invariant Apply relies on: appliedCfg is whatever the running process
 	// was started with. Nodes only ever come through here, but leaving it stale would
 	// be a trap for the first caller that mixes the two paths.
@@ -919,16 +938,23 @@ func (s *Supervisor) startProc() error {
 	if err != nil {
 		return fmt.Errorf("xray stderr pipe: %w", err)
 	}
+	// Snapshot the config BEFORE handing it to Xray, not after. WriteConfig rewrites
+	// this file on every user sync, and reading it afterwards can catch a revision
+	// that landed in between — which would promote, as "the config that ran", one the
+	// process never read. Read first and the race falls the safe way instead: at worst
+	// a revision behind, and that one was proven when it ran.
+	startedWith, _ := os.ReadFile(s.configPath)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start xray: %w", err)
 	}
-	p := &proc{cmd: cmd, done: make(chan struct{}), started: time.Now()}
+	p := &proc{cmd: cmd, done: make(chan struct{}), started: time.Now(), cfg: startedWith}
 	s.mu.Lock()
 	s.cur = p
 	s.mu.Unlock()
 	go s.tap(stdout, os.Stdout, true)
 	go s.tap(stderr, os.Stderr, false)
 	go s.monitor(p)
+	go s.promoteWhenHealthy(p)
 	slog.Info("xray: started", "pid", cmd.Process.Pid, "config", s.configPath)
 	return nil
 }
@@ -1001,22 +1027,48 @@ func (s *Supervisor) monitor(p *proc) {
 // takes s.runMu only around the actual start, never while sleeping, so an Apply
 // can preempt it.
 func (s *Supervisor) superviseRestart(quickCrash bool) {
-	// Auto-roll back only when Xray crashed *immediately* after a recent Apply (it
-	// never reached healthy uptime) and a backup exists. A healthy-then-crashed run
-	// passes quickCrash=false so a proven-good config is never reverted.
+	// Two reasons to roll back, and a run that reached healthy uptime is neither: a
+	// proven-good config is never reverted, which is what quickCrash gates.
+	//
+	// The first is the original one — an immediate crash right after an Apply. It
+	// covers what -test cannot see, a config that loads but will not run: a port
+	// something else already holds, say.
+	//
+	// The second exists because Apply is not the only way config.json changes.
+	// WriteConfig moves the file ahead of the running process on every user sync and
+	// deliberately skips validation (it would cost 7-8s on the hot path), so an
+	// unloadable config can sit on disk for hours while Xray keeps serving from
+	// memory — and then detonate at the next restart, triggered by something entirely
+	// unrelated like a certificate renewal. lastApply is untouched by that path, so
+	// the first rule sleeps through exactly the case that leaves the tunnels down
+	// until somebody logs in. Asking Xray whether the file is loadable is a
+	// definitive answer where crash-shape heuristics are a guess, and the seven
+	// seconds it costs are seconds we are already down for.
 	s.mu.Lock()
 	firstCrash := s.restarts == 0
 	recentApply := !s.lastApply.IsZero() && time.Since(s.lastApply) < 2*healthyUptime
+	rolledBack := s.rolledBack
 	s.mu.Unlock()
-	if quickCrash && firstCrash && recentApply && s.HasBackup() {
+	if shouldRollback(quickCrash, s.HasBackup(), firstCrash, recentApply, rolledBack,
+		s.currentConfigUnloadable) {
 		slog.Warn("xray: crashed after config change, attempting auto-rollback")
 		s.runMu.Lock()
 		s.mu.Lock()
 		skip := s.closed || s.suspended || s.cur != nil
 		s.mu.Unlock()
 		if !skip {
+			s.mu.Lock()
+			s.rolledBack = true
+			s.mu.Unlock()
 			if err := s.restoreBackupLocked(); err == nil {
 				slog.Info("xray: auto-rollback succeeded")
+				s.mu.Lock()
+				reason := s.lastLoadErr
+				s.lastLoadErr = ""
+				s.mu.Unlock()
+				if s.onRolledBack != nil && reason != "" {
+					go s.onRolledBack(reason)
+				}
 				s.runMu.Unlock()
 				s.recovered()
 				return
@@ -1301,4 +1353,88 @@ func parseStats(data []byte) map[string]Traffic {
 		out[email] = t
 	}
 	return out
+}
+
+// shouldRollback decides whether to revert config.json to its backup after Xray went
+// down. Split out because the rule has five inputs and one of them costs seven seconds
+// to evaluate, so both what it decides and WHEN it bothers asking are worth pinning.
+//
+// unloadable is a function, not a bool, on purpose: it runs Xray over the config file
+// and must not be called when the cheaper terms have already settled the question.
+func shouldRollback(quickCrash, hasBackup, firstCrash, recentApply, rolledBack bool, unloadable func() bool) bool {
+	// A run that reached healthy uptime proved its config; whatever killed it later is
+	// not the config, and reverting would throw away real changes.
+	if !quickCrash || !hasBackup {
+		return false
+	}
+	// The original rule: crashed straight after an Apply. Catches what validation
+	// cannot see — a config that loads but will not run, like a port already held.
+	if firstCrash && recentApply {
+		return true
+	}
+	// Once per generation, or a backup that is itself unusable would loop.
+	return !rolledBack && unloadable()
+}
+
+// currentConfigUnloadable reports whether the config file on disk is one Xray will
+// refuse to start with. Used only when Xray is already down, so the cost of asking is
+// paid out of an outage rather than out of a healthy request path.
+//
+// Answers false when there is no binary to ask, or when the file cannot be read: this
+// gates a rollback, and "we could not tell" must not be treated as "it is broken".
+func (s *Supervisor) currentConfigUnloadable() bool {
+	if s == nil || s.bin == "" {
+		return false
+	}
+	data, err := os.ReadFile(s.configPath)
+	if err != nil {
+		return false
+	}
+	if err := s.ValidateBytes(data); err != nil {
+		slog.Warn("xray: the config on disk does not load", "err", err)
+		// Kept for the rollback that follows: the operator is about to have a change
+		// reverted under them, and this line is the only thing that says why.
+		s.mu.Lock()
+		s.lastLoadErr = err.Error()
+		s.mu.Unlock()
+		return true
+	}
+	return false
+}
+
+// promoteWhenHealthy makes the rollback copy the last config that actually RAN, rather
+// than the last one that was structurally applied.
+//
+// config.json.bak was only ever written by Apply, so it held whatever preceded the last
+// structural change. Everything a user sync wrote afterwards — WriteConfig moves the
+// file without touching the copy — was missing from it, which made the copy an
+// arbitrarily old thing to fall back to. That mattered little while a rollback could
+// only follow an Apply; it matters now that any config the file cannot load reaches for
+// it.
+//
+// Waits out healthyUptime because a config that crashes immediately must never become
+// the thing we roll back TO. Promotion is best-effort and silent: failing to refresh the
+// copy leaves the previous one, which is the conservative half of the trade.
+// promoteAfter is how long a run must last before its config is trusted as the
+// rollback target. A variable so tests need not wait it out; nothing else writes it.
+var promoteAfter = healthyUptime
+
+func (s *Supervisor) promoteWhenHealthy(p *proc) {
+	if len(p.cfg) == 0 {
+		return
+	}
+	select {
+	case <-p.done: // died before proving anything
+		return
+	case <-time.After(promoteAfter):
+	}
+	s.mu.Lock()
+	current := s.cur == p && !s.closed
+	s.mu.Unlock()
+	if !current {
+		return
+	}
+	if err := os.WriteFile(s.configPath+".bak", p.cfg, 0o600); err != nil {
+		slog.Warn("xray: could not refresh the rollback config", "err", err)
+	}
 }
