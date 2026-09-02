@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.20.2](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.20.1...v2.20.2) (2026-09-02)
+
+
+### Refactoring
+
+* remove custom inbounds management logic from ConnectionsEditor ([54dd356](https://github.com/Shu1t3/rospanel-shu1t3/commit/54dd356fe7eedb5540fe5f6dfcdc717b1d310343))
+
 ## [2.20.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.20.0...v2.20.1) (2026-09-02)
 
 
