@@ -13,6 +13,8 @@ import (
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/actor"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/backup"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/core"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/geo"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/i18n"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
@@ -62,6 +64,11 @@ type Panel interface {
 	SetUserNotifier(fn func(chatID int64, html string))
 	SetAdminNotifier(fn func(html string))
 	SetAdminModerationNotifier(fn func(reqID int64, name, plan string))
+	// A sign-in from a new address, and the button under it: end every session of
+	// that admin. The bot never touches admin_sessions itself — the panel records
+	// who pressed it.
+	SetAdminLoginNotifier(fn func(a core.LoginAlert))
+	RevokeAdminSessions(ctx context.Context, adminID int64) (username string, n int64, err error)
 
 	// Audit hooks for the actions the bots perform directly on the store.
 	// (Unlinking is deliberately absent: it is an operator action in the panel, not
@@ -199,6 +206,36 @@ func (s *Service) Run(ctx context.Context) {
 			log.Printf("telegram: admin moderation queue full, dropped prompt")
 		}
 	})
+	// A sign-in from an address the admin had not used: say where from, on what,
+	// and offer the one action that helps if it was somebody else.
+	s.panel.SetAdminLoginNotifier(func(a core.LoginAlert) {
+		set, err := s.store.GetSettings()
+		if err != nil || strings.TrimSpace(set.TGBotToken) == "" {
+			return
+		}
+		lang := s.lang()
+		where := esc(a.IP)
+		if a.Country != "" {
+			where += " " + geo.Flag(a.Country) + " " + esc(a.Country)
+		}
+		if a.Org != "" {
+			where += " · " + esc(a.Org)
+		}
+		client := esc(a.Client)
+		if client == "" {
+			client = i18n.T(lang, "admin.unknownClient")
+		}
+		when := time.Unix(a.At, 0).In(s.panel.Location()).Format("02.01.2006 15:04")
+		msg := i18n.T(lang, "notify.adminLogin", esc(a.Username), where, client, when)
+		rows := [][]InlineButton{{
+			{Text: i18n.T(lang, "admin.btnNotMe"), CallbackData: fmt.Sprintf("sess:%d:kill", a.AdminID)},
+		}}
+		select {
+		case notifyQueue <- adminNotifyTask{menuMsg: msg, menuBtn: rows, isMenu: true}:
+		default:
+			log.Printf("telegram: admin login alert queue full, dropped alert")
+		}
+	})
 
 	var notifyWg sync.WaitGroup
 	for range 4 {
@@ -247,7 +284,6 @@ func (s *Service) Run(ctx context.Context) {
 		}()
 	}
 	defer notifyWg.Wait()
-
 	for {
 		if ctx.Err() != nil {
 			return
@@ -414,7 +450,31 @@ func (s *Service) handleCallback(ctx context.Context, client *Client, cb *Callba
 		s.promptAdd(ctx, client, chatID, msgID)
 	case data == "backup":
 		s.cmdBackup(ctx, client, chatID)
+	case strings.HasPrefix(data, "sess:"):
+		s.handleSessionKill(ctx, client, chatID, msgID, cb.From, strings.TrimPrefix(data, "sess:"))
 	}
+}
+
+// handleSessionKill is the login alert's button: "<adminID>:kill" ends every
+// session of that admin. The message is edited to the outcome so a second tap on
+// a stale alert has nothing left to press.
+func (s *Service) handleSessionKill(ctx context.Context, client *Client, chatID, msgID int64, from *User, payload string) {
+	lang := s.lang()
+	idStr, action, _ := strings.Cut(payload, ":")
+	adminID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || action != "kill" {
+		return
+	}
+	who := "telegram"
+	if from != nil && from.Username != "" {
+		who = "@" + from.Username
+	}
+	username, n, err := s.panel.RevokeAdminSessions(actor.With(ctx, actor.Telegram(who)), adminID)
+	if err != nil {
+		s.edit(ctx, client, chatID, msgID, i18n.T(lang, "admin.sessionsRevokeFailed", esc(err.Error())), nil)
+		return
+	}
+	s.edit(ctx, client, chatID, msgID, i18n.T(lang, "admin.sessionsRevoked", esc(username), n), nil)
 }
 
 // handleModeration approves or rejects a signup awaiting moderation. payload is

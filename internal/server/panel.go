@@ -9,6 +9,7 @@ import (
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/actor"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/auth"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/core"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/link"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
@@ -294,6 +295,10 @@ func (rt *Router) panelMux() http.Handler {
 	authed("POST /api/settings/probe-block", rt.saveProbeBlock)
 	authed("POST /api/settings/watchdog", rt.saveWatchdog)
 	authed("GET /api/security/probes", rt.listProbes)
+	// Where clients may connect from (panel_connpolicy.go).
+	authed("GET /api/security/conn-policy", rt.getConnPolicy)
+	authed("POST /api/security/conn-policy", rt.saveConnPolicy)
+	authed("POST /api/security/unblock", rt.unblockIP)
 	authed("GET /api/settings/status-page", rt.getStatusPage)
 	authed("POST /api/settings/status-page", rt.saveStatusPage)
 	authed("POST /api/settings/dns", rt.setXrayDNS)
@@ -611,6 +616,9 @@ func (rt *Router) login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rt.limiter.success(ip, username)
+	// Judged before this sign-in writes its own row, or every sign-in would find
+	// itself and read as known.
+	newAddress := rt.mgr.AdminLoginIsNew(username, ip)
 	auditLogin(model.AuditLogin)
 
 	token, err := rt.mgr.Store().CreateSessionFrom(id, sessionTTLSec*time.Second, ip, r.UserAgent())
@@ -625,6 +633,13 @@ func (rt *Router) login(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("login: could not record last-login", "user", username, "err", err)
 	}
 	slog.Info("login: authenticated", "user", req.Username, "role", role, "ip", ip)
+	if newAddress {
+		// Off the request path: Telegram may be slow or blocked, and the sign-in is
+		// already done.
+		go rt.mgr.NotifyAdminLogin(core.LoginAlert{
+			AdminID: id, Username: username, IP: ip, Client: core.ClientLabel(r.UserAgent()),
+		})
+	}
 	rt.setSessionCookie(w, token, rt.cookiePath())
 	writeOK(w)
 }

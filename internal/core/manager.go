@@ -14,6 +14,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/awg"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/connguard"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/geo"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/ipblock"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/logbuf"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/nodeapi"
@@ -114,6 +115,7 @@ type Manager struct {
 	userNotify    func(chatID int64, html string)
 	adminNotify   func(html string)
 	adminModerate func(reqID int64, name, plan string)
+	adminLogin    func(LoginAlert) // a sign-in from a new address, with the revoke button
 
 	// notifyThrottle bounds the rate of repeatable system alerts (Xray crash loop,
 	// cert renewal errors) so a stuck condition can't flood the admin chats.
@@ -240,6 +242,15 @@ type Manager struct {
 	// online is who is connected to which server right now (see manager_online.go).
 	online onlineGauge
 
+	// probeBlock drops scanners at the firewall, policyBlock the addresses the source
+	// policy refuses (manager_connpolicy.go). Separate tables: switching one off must
+	// not lift the other's blocks. Nil in a test manager, where both are no-ops.
+	probeBlock  *ipblock.Blocker
+	policyBlock *ipblock.Blocker
+	// policy caches the source policy and the addresses it has recently ruled on
+	// (manager_connpolicy.go); the check runs on the connection path.
+	policy policyState
+
 	// awg is the master's AmneziaWG tunnel (see manager_awg.go); awgLast holds the
 	// counters read at the previous poll, per peer public key.
 	awg     awg.Device
@@ -303,6 +314,8 @@ func New(st *store.Store, sup *xray.Supervisor, opts xray.Options, tls TLSPaths,
 		nodeGeoFiles:   map[int64][]nodeapi.GeoFile{},
 		nodeHostStats:  map[int64]nodeapi.HostStats{},
 		awg:            awg.New(),
+		probeBlock:     ipblock.New(ipblock.TableProbes),
+		policyBlock:    ipblock.New(ipblock.TablePolicy),
 		nodeSyncFails:  map[int64]int{},
 		nodeLogsWanted: map[int64]int64{},
 		nodeAlerts:     map[int64]*nodeAlertState{},

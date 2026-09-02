@@ -47,9 +47,15 @@ const (
 	EventDeviceLimited  = "user.device_limited" // system: too many devices
 	EventDeviceBound    = "user.device_bound"   // a client install claimed a device slot
 	EventDeviceRefused  = "user.device_refused" // system: a new device hit the device cap
+	EventPolicyRefused  = "user.policy_refused" // system: connected from a source the policy refuses
 	EventDeviceUnbound  = "user.device_unbound" // a device was released (admin, or token rotation)
 	EventTelegramLinked = "user.telegram_linked"
 	EventTelegramUnlink = "user.telegram_unlinked"
+	// System: the automatic blocklist measures (model.AbuseMeasures).
+	EventAbuseWarned    = "user.abuse_warned"    // the user's bot was told to stop
+	EventAbuseThrottled = "user.abuse_throttled" // speed capped for a while
+	EventAbuseDisabled  = "user.abuse_disabled"  // switched off for a while
+	EventAbuseLifted    = "user.abuse_lifted"    // the measure ran out or was overruled
 
 	EventPlanChanged    = "plan.changed"
 	EventPlanDowngraded = "plan.downgraded" // system: paid period ended → free plan
@@ -85,9 +91,14 @@ var UserEventCatalog = []string{
 	EventDeviceLimited,
 	EventDeviceBound,
 	EventDeviceRefused,
+	EventPolicyRefused,
 	EventDeviceUnbound,
 	EventTelegramLinked,
 	EventTelegramUnlink,
+	EventAbuseWarned,
+	EventAbuseThrottled,
+	EventAbuseDisabled,
+	EventAbuseLifted,
 	EventPlanChanged,
 	EventPlanDowngraded,
 	EventPlanCancelled,

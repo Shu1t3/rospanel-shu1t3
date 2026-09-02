@@ -28,8 +28,8 @@ func (s *Store) GetSettings() (*model.Settings, error) {
 	var shareEn, shareQuota, shareSpeed int
 	var shareToken string
 	var routingCfg, subRulesJSON, subDPIJSON string
-	var masterHideFull, awgEn int
-	var awgParamsJSON string
+	var masterHideFull, awgEn, hideOffline int
+	var awgParamsJSON, connPolicyJSON string
 	err := s.db.QueryRow(`
 		SELECT id, host, sni, tls_mode, acme_email, cert_path, key_path,
 		       vless_port, config_revision, last_config_error, updated_at,
@@ -66,11 +66,13 @@ func (s *Store) GetSettings() (*model.Settings, error) {
 		       tg_support_group_id, tg_support_greeting, tg_lang, tg_proxy, tg_proxy_mode,
 		       tg_user_events, tg_user_expiring_days,
 		       abuse_enabled, abuse_categories, abuse_custom, abuse_alert_min,
+		       abuse_warn_min, abuse_throttle_min, abuse_throttle_kbps, abuse_disable_min, abuse_hours,
 		       hwid_enabled, hwid_require, hwid_fallback_limit, hwid_ttl_days,
 		       device_count_mode,
 		       sub_show_configs, status_enabled, status_path, sub_rules, maintenance_mode,
 		       probe_detect, watchdog_enabled, probe_block, sub_dpi,
 		       sub_order_mode, master_country, master_sort_weight, master_capacity, master_hide_when_full,
+		       sub_hide_offline, conn_policy,
 		       awg_enabled, awg_port, awg_private_key, awg_public_key, awg_params, awg_name, awg_dns,
 		       share_enabled, share_quota_percent, share_speed_limit, share_token
 		FROM settings WHERE id = 1`,
@@ -110,12 +112,14 @@ func (s *Store) GetSettings() (*model.Settings, error) {
 		&st.TGSupportGroupID, &st.TGSupportGreeting, &st.TGLang, &st.TGProxy, &st.TGProxyMode,
 		&st.TGUserEvents, &st.TGUserExpiringDays,
 		&abuseEn, &st.AbuseCategories, &st.AbuseCustom, &st.AbuseAlertMin,
+		&st.AbuseMeasures.WarnMin, &st.AbuseMeasures.ThrottleMin, &st.AbuseMeasures.ThrottleKbps,
+		&st.AbuseMeasures.DisableMin, &st.AbuseMeasures.Hours,
 		&hwidEn, &hwidRequire, &st.HWIDFallbackLimit, &st.HWIDTTLDays,
 		&st.DeviceCountMode,
 		&subShowConfigs, &statusEn, &st.StatusPath, &subRulesJSON, &maintenanceMode,
 		&probeDetect, &watchdogEnabled, &probeBlock, &subDPIJSON,
 		&st.SubOrderMode, &st.MasterPlacement.Country, &st.MasterPlacement.Weight,
-		&st.MasterPlacement.Capacity, &masterHideFull,
+		&st.MasterPlacement.Capacity, &masterHideFull, &hideOffline, &connPolicyJSON,
 		&awgEn, &st.AWGPort, &st.AWGPrivateKey, &st.AWGPublicKey, &awgParamsJSON, &st.AWGName, &st.AWGDNS,
 		&shareEn, &shareQuota, &shareSpeed, &shareToken,
 	)
@@ -128,6 +132,16 @@ func (s *Store) GetSettings() (*model.Settings, error) {
 	// A blank column (pre-0059, or never saved) reads as the defaults with every
 	// switch off; a corrupt one too — the subscription must keep serving.
 	st.MasterPlacement.HideWhenFull = masterHideFull != 0
+	st.SubHideOffline = hideOffline != 0
+	// A blank column (pre-0063, or never saved) reads as the feature off; so does a
+	// corrupt one — a policy nobody can parse must not start refusing connections.
+	st.ConnPolicy = model.DefaultConnPolicy()
+	if connPolicyJSON != "" {
+		var p model.ConnPolicy
+		if json.Unmarshal([]byte(connPolicyJSON), &p) == nil {
+			st.ConnPolicy = p.Normalized()
+		}
+	}
 	st.AWGEnabled = awgEn != 0
 	st.AWGPrivateKey = decField(st.AWGPrivateKey)
 	if awgParamsJSON != "" {
@@ -294,6 +308,16 @@ func (s *Store) SetAbuseConfig(enabled bool, categories int64, custom string, al
 	return err
 }
 
+// SetAbuseMeasures persists the automatic-response ladder (model.AbuseMeasures).
+func (s *Store) SetAbuseMeasures(a model.AbuseMeasures) error {
+	_, err := s.db.Exec(
+		`UPDATE settings SET abuse_warn_min = ?, abuse_throttle_min = ?, abuse_throttle_kbps = ?,
+		        abuse_disable_min = ?, abuse_hours = ?, updated_at = unixepoch() WHERE id = 1`,
+		a.WarnMin, a.ThrottleMin, a.ThrottleKbps, a.DisableMin, a.Hours,
+	)
+	return err
+}
+
 // SetAdminEvents persists the admin notification bitmask (model.AdminEvent* flags).
 func (s *Store) SetAdminEvents(mask int64) error {
 	_, err := s.db.Exec(
@@ -412,14 +436,14 @@ func (s *Store) SetSubSettings(st *model.Settings) error {
 			sub_base64 = ?, sub_email_in_name = ?, sub_title = ?, sub_routing = ?,
 			sub_routing_happ = ?, sub_routing_incy = ?, sub_routing_mihomo = ?,
 			sub_update_interval = ?, sub_announce = ?, sub_show_configs = ?,
-			sub_order_mode = ?,
+			sub_order_mode = ?, sub_hide_offline = ?,
 			updated_at = unixepoch()
 		WHERE id = 1`,
 		st.SubPath,
 		st.SubBase64, st.SubNameInTitle, st.SubTitle, st.SubRouting,
 		st.SubRoutingHapp, st.SubRoutingIncy, st.SubRoutingMihomo,
 		st.SubUpdateInterval, st.SubAnnounce, boolToInt(st.SubShowConfigs),
-		model.OrderModeOr(st.SubOrderMode),
+		model.OrderModeOr(st.SubOrderMode), boolToInt(st.SubHideOffline),
 	)
 	return err
 }

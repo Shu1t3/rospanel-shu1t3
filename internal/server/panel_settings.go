@@ -66,6 +66,7 @@ func (rt *Router) getSettings(w http.ResponseWriter, _ *http.Request) {
 		"sub_show_configs":     set.SubShowConfigs,
 		"sub_dpi":              set.SubDPI,
 		"sub_order_mode":       set.SubOrderMode,
+		"sub_hide_offline":     set.SubHideOffline,
 		"maintenance_mode":     set.MaintenanceMode,
 		"probe_detect":         set.ProbeDetect,
 		"probe_block":          set.ProbeBlock,
@@ -332,7 +333,13 @@ func (rt *Router) listProbes(w http.ResponseWriter, _ *http.Request) {
 	if probes == nil {
 		probes = []model.ProbeHit{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"probes": probes})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"probes": probes,
+		// How far back the list can reach: a row survives this long after the address
+		// was last seen. The panel says so next to the list rather than hardcoding a
+		// number that would drift from model.ProbeRetentionDays.
+		"retention_days": model.ProbeRetentionDays,
+	})
 }
 
 // getSubRules returns the subscription response rules for the editor.
@@ -377,6 +384,7 @@ func (rt *Router) saveSubSettings(w http.ResponseWriter, r *http.Request) {
 		Announce       string `json:"sub_announce"`
 		ShowConfigs    bool   `json:"sub_show_configs"`
 		OrderMode      string `json:"sub_order_mode"`
+		HideOffline    bool   `json:"sub_hide_offline"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -398,6 +406,7 @@ func (rt *Router) saveSubSettings(w http.ResponseWriter, r *http.Request) {
 		SubAnnounce:       req.Announce,
 		SubShowConfigs:    req.ShowConfigs,
 		SubOrderMode:      strings.TrimSpace(req.OrderMode),
+		SubHideOffline:    req.HideOffline,
 	})
 	if err != nil {
 		writeManagerErr(w, err)
@@ -440,6 +449,7 @@ func (rt *Router) getAbuseSettings(w http.ResponseWriter, _ *http.Request) {
 		"categories": cats,
 		"custom":     custom,
 		"alert_min":  alertMin,
+		"measures":   rt.mgr.AbuseMeasures(),
 		"status":     status,
 	})
 }
@@ -447,19 +457,33 @@ func (rt *Router) getAbuseSettings(w http.ResponseWriter, _ *http.Request) {
 // saveAbuseSettings persists the blocklist config and reconfigures the live matcher.
 func (rt *Router) saveAbuseSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Enabled    bool            `json:"enabled"`
-		Categories map[string]bool `json:"categories"`
-		Custom     string          `json:"custom"`
-		AlertMin   int             `json:"alert_min"`
+		Enabled    bool                 `json:"enabled"`
+		Categories map[string]bool      `json:"categories"`
+		Custom     string               `json:"custom"`
+		AlertMin   int                  `json:"alert_min"`
+		Measures   *model.AbuseMeasures `json:"measures"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
+	}
+	// The ladder is validated first: a bad rung must not half-save the rest.
+	if req.Measures != nil {
+		if err := req.Measures.Validate(); err != nil {
+			writeManagerErr(w, err)
+			return
+		}
 	}
 	if err := rt.mgr.SetAbuseConfig(req.Enabled, req.Categories, req.Custom, req.AlertMin); err != nil {
 		writeManagerErr(w, err)
 		return
 	}
-	auditDetails(r, map[string]any{"enabled": req.Enabled, "alert_min": req.AlertMin})
+	if req.Measures != nil {
+		if err := rt.mgr.SetAbuseMeasures(*req.Measures); err != nil {
+			writeManagerErr(w, err)
+			return
+		}
+	}
+	auditDetails(r, map[string]any{"enabled": req.Enabled, "alert_min": req.AlertMin, "measures": req.Measures})
 	writeOK(w)
 }
 

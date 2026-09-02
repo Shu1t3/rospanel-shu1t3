@@ -18,6 +18,10 @@ export interface User {
   device_limit: number
   active_devices: number
   speed_limit: number // kbit/s, 0 = unlimited
+  // The measure the panel holds against the user for blocklist traffic, and
+  // when it lifts. Absent when there is none.
+  abuse_action?: 'throttle' | 'disable'
+  abuse_until?: number
   plan_id: number
   plan_name?: string
   telegram_linked?: boolean
@@ -153,11 +157,30 @@ export interface AbuseFeedStatus {
   updated?: number
 }
 
+// AbuseMeasures is the ladder of automatic responses (model.AbuseMeasures): a
+// per-rung matches/day threshold, 0 = that rung is off.
+export interface AbuseMeasures {
+  warn_min: number
+  throttle_min: number
+  throttle_kbps: number
+  disable_min: number
+  hours: number
+}
+
+export const EMPTY_ABUSE_MEASURES: AbuseMeasures = {
+  warn_min: 0,
+  throttle_min: 0,
+  throttle_kbps: 1024,
+  disable_min: 0,
+  hours: 24,
+}
+
 export interface AbuseSettingsInfo {
   enabled: boolean
   categories: Record<string, boolean>
   custom: string
   alert_min: number
+  measures: AbuseMeasures
   status: AbuseFeedStatus[]
 }
 
@@ -169,6 +192,7 @@ export const saveAbuseSettings = (cfg: {
   categories: Record<string, boolean>
   custom: string
   alert_min: number
+  measures: AbuseMeasures
 }) =>
   api<{ ok: boolean }>('api/settings/abuse', {
     method: 'POST',
@@ -852,6 +876,8 @@ export interface SubSettings {
   sub_show_configs: boolean
   // How servers are ordered in a subscription: manual | nearest | load | nearest_load.
   sub_order_mode: string
+  // Drop a node from subscriptions while it is offline (off by default).
+  sub_hide_offline: boolean
 }
 
 // HWIDSettings gates device binding: which installs may fetch the subscription and
@@ -1132,7 +1158,7 @@ export interface ProbeHit {
 }
 
 export const getProbes = () =>
-  api<{ probes: ProbeHit[] }>('api/security/probes').then((r) => r.probes)
+  api<{ probes: ProbeHit[]; retention_days: number }>('api/security/probes')
 
 // Routing/egress config snapshots (undo a change that broke the tunnels).
 export interface ConfigSnapshot {
@@ -1428,6 +1454,36 @@ export const login = (username: string, password: string, code?: string) =>
     method: 'POST',
     body: JSON.stringify({ username, password, code }),
   })
+
+// ---- Where clients may connect from (the source policy) ---------------------
+export interface ConnPolicy {
+  mode: 'off' | 'allow' | 'block'
+  countries: string[]
+  asns: number[]
+  enforce: boolean
+  block_hours: number
+}
+export interface BlockedIP {
+  ip: string
+  reason: string // country | asn
+  country: string
+  asn: number
+  org: string
+  user_id: number
+  at: number
+  until: number
+}
+export interface ConnPolicyInfo {
+  policy: ConnPolicy
+  blocked: BlockedIP[]
+  // false when this machine has no nftables: refusals are recorded, not enforced.
+  can_enforce: boolean
+}
+export const getConnPolicy = () => api<ConnPolicyInfo>('api/security/conn-policy')
+export const saveConnPolicy = (p: ConnPolicy) =>
+  api<{ ok: boolean }>('api/security/conn-policy', { method: 'POST', body: JSON.stringify(p) })
+export const unblockIP = (ip: string) =>
+  api<{ ok: boolean }>('api/security/unblock', { method: 'POST', body: JSON.stringify({ ip }) })
 
 // ---- The admin's own open sessions -----------------------------------------
 export interface AdminSession {

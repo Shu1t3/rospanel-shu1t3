@@ -30,6 +30,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/geo"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/hop"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/http80"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/ipblock"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/logbuf"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/nodeapi"
@@ -214,6 +215,10 @@ type Agent struct {
 
 	// awg is this node's AmneziaWG tunnel (see awg.go); awgEmails maps a peer's
 	// public key to the user tag it reports under, awgLast the counters last read.
+	// policyBlock drops the addresses the panel's source policy refused, in this
+	// node's own firewall table.
+	policyBlock *ipblock.Blocker
+
 	awg       awg.Device
 	awgMu     sync.Mutex
 	awgEmails map[string]string
@@ -454,6 +459,7 @@ func newAgent(dataDir string, ident *Identity) (*Agent, error) {
 		seen:         newSeenAddrs(),
 		shaper:       shaper.New(),
 		awg:          awg.New(),
+		policyBlock:  ipblock.New(ipblock.TablePolicy),
 	}
 	// Resume report ids where the last run left off so the panel's forward-only
 	// watermark keeps accepting this node's traffic after a restart.
@@ -1072,6 +1078,14 @@ func (a *Agent) applyState(st *nodeapi.NodeState) error {
 	// generated config's "opera" outbound already points at 127.0.0.1:OperaPort.
 	a.syncOpera(m.OperaEnabled, m.OperaCountry, m.OperaPort)
 	a.syncAWG(m.AWG)
+	// The addresses the panel's source policy refused. Sync, not add: a lifted block
+	// has to come out of the kernel here too.
+	if m.BlockTTLHours > 0 {
+		a.policyBlock.WithTTL(time.Duration(m.BlockTTLHours) * time.Hour)
+	}
+	if err := a.policyBlock.Sync(m.BlockedIPs); err != nil {
+		slog.Warn("node: could not apply the blocked addresses", "err", err)
+	}
 
 	// Substitute the cert-path sentinels with the node's absolute paths and apply.
 	//
@@ -1352,7 +1366,8 @@ func resolveNodeXrayBin(downloadDir string) string {
 	if p, err := exec.LookPath(env("XRAY_BIN", "xray")); err == nil {
 		return p
 	}
-	slog.Info("node: downloading pinned Xray release", "version", xray.PinnedVersion)
+	slog.Info("node: no system Xray — using the node's own copy of the pinned release",
+		"version", xray.PinnedVersion)
 	p, err := xray.EnsureBinary(downloadDir)
 	if err != nil {
 		slog.Error("node: Xray binary unavailable — config will be written but not started", "err", err)

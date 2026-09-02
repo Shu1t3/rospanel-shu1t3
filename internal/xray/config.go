@@ -324,6 +324,10 @@ type RealitySettings struct {
 	// differs by more than this is rejected, so a probe can't replay a captured
 	// REALITY auth later. 0 (omitted) disables the check.
 	MaxTimeDiff int `json:"maxTimeDiff,omitempty"`
+	// MinClientVer is the oldest client the handshake will serve. A client below it
+	// is not told anything — it is handed the donor site, exactly like a probe, so
+	// the app just fails to connect. Always sent: see MinClientVerAny.
+	MinClientVer string `json:"minClientVer,omitempty"`
 
 	// Outbound fields:
 	ServerName  string `json:"serverName,omitempty"`
@@ -332,6 +336,15 @@ type RealitySettings struct {
 	ShortID     string `json:"shortId,omitempty"`
 	SpiderX     string `json:"spiderX,omitempty"`
 }
+
+// MinClientVerAny keeps REALITY serving every client version, which is what this
+// panel did before Xray 26.7.28 and what it keeps doing.
+//
+// Xray 26.7.28 began defaulting "minClientVer" to 26.3.27 when the field is absent.
+// Inheriting that would have cut off every user whose app ships an older core —
+// silently, on an Xray upgrade, with the connection looking dead rather than
+// refused. So the floor is stated rather than inherited.
+const MinClientVerAny = "0.0.0"
 
 // GRPCSettings configures the gRPC transport. Authority overrides the :authority
 // pseudo-header; MultiMode multiplexes several streams over one connection.

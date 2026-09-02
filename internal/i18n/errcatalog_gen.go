@@ -7,6 +7,8 @@ package i18n
 // same code the panel UI translates. The external API renders these; the panel
 // keeps translating in the browser, in whichever language the admin picked.
 var errEN = map[string]string{
+	"err.abuseHours":                    "A measure lasts from 1 hour to 30 days",
+	"err.abuseThrottleSpeed":            "Enter the speed for the throttle",
 	"err.activeSubscription":            "you have an active “{{plan}}” subscription — cancel it first to switch plans",
 	"err.adminBotOff":                   "turn the admin bot on — the test arrives through it, in the linked chat",
 	"err.adminChatUnreachable":          "the linked chat is unreachable — open the admin bot and make sure it is not blocked",
@@ -63,6 +65,7 @@ var errEN = map[string]string{
 	"err.badValue":                      "invalid value",
 	"err.badWebhookURL":                 "invalid webhook URL: {{detail}}",
 	"err.binaryPathUnknown":             "could not determine the panel binary's path",
+	"err.blockNotFound":                 "that address is not blocked",
 	"err.botCannotManageTopics":         "the bot lacks the “Manage topics” right — without it, it cannot open a topic per user",
 	"err.botNotGroupAdmin":              "the bot must be a group administrator — otherwise it cannot see the operators' replies",
 	"err.botRightsCheckFailed":          "could not check the bot's rights: {{detail}}",
@@ -208,6 +211,11 @@ var errEN = map[string]string{
 	"err.planSlugTaken":                 "a plan with this code already exists",
 	"err.planUnavailable":               "the plan is unavailable",
 	"err.planUsedInBilling":             "the plan is referenced in the billing settings — pick a different one first",
+	"err.policyAllowEmpty":              "an \"only these countries\" rule with no country would cut everyone off",
+	"err.policyBlockHours":              "block length: from 0 (the default) to 8760 hours",
+	"err.policyCountry":                 "country \"{{value}}\": two Latin letters (RU, KZ)",
+	"err.policyTooManyASNs":             "at most {{max}} networks (ASNs)",
+	"err.policyTooManyCountries":        "at most {{max}} countries",
 	"err.portRange":                     "the port is outside 1–65535",
 	"err.portReservedByOwner":           "port {{port}} is reserved by the node owner ({{service}})",
 	"err.portTaken":                     "port {{port}} is already taken by {{who}}",
