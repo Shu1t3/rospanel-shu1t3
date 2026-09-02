@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.20.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.20.0...v2.20.1) (2026-09-02)
+
+
+### Bug Fixes
+
+* **store:** specify applied_at explicitly in defensive migration inserts ([6af47fe](https://github.com/Shu1t3/rospanel-shu1t3/commit/6af47fe35eb455eae81f32e12c5cc5126338c796))
+* **store:** устранение ошибки дублирования колонок при миграции 0066_node_rentals.sql ([2fd7371](https://github.com/Shu1t3/rospanel-shu1t3/commit/2fd7371f766aace12a6029c2ea81185094a6c245))
+
 ## [2.20.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.19.3...v2.20.0) (2026-09-02)
 
 
