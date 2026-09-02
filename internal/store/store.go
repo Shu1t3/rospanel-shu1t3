@@ -231,6 +231,45 @@ func (s *Store) migrate() error {
 		return err
 	}
 
+	// Legacy fork migration renumbering:
+	// Prior to syncing with upstream, fork migrations node_rentals, rent_master_host,
+	// reality_default_off, and happ_subscriptions were numbered 0062..0065.
+	// When upstream added their own 0062..0065, these fork migrations were renumbered to 0066..0069.
+	// Migrate legacy records in schema_migrations so already-applied fork migrations
+	// are recorded under their new names and not re-executed.
+	legacyRenames := [][2]string{
+		{"0062_node_rentals.sql", "0066_node_rentals.sql"},
+		{"0063_rent_master_host.sql", "0067_rent_master_host.sql"},
+		{"0064_reality_default_off.sql", "0068_reality_default_off.sql"},
+		{"0065_happ_subscriptions.sql", "0069_happ_subscriptions.sql"},
+	}
+	for _, pair := range legacyRenames {
+		oldVer, newVer := pair[0], pair[1]
+		var countOld int
+		if err := s.db.QueryRow(`SELECT COUNT(1) FROM schema_migrations WHERE version = ?`, oldVer).Scan(&countOld); err == nil && countOld > 0 {
+			_, _ = s.db.Exec(`INSERT OR IGNORE INTO schema_migrations (version, applied_at) SELECT ?, applied_at FROM schema_migrations WHERE version = ?`, newVer, oldVer)
+			_, _ = s.db.Exec(`DELETE FROM schema_migrations WHERE version = ?`, oldVer)
+		}
+	}
+
+	// Defensive idempotency check:
+	// If columns or tables already exist in the database from earlier fork migrations,
+	// ensure the corresponding migration is marked as applied in schema_migrations so it is not re-executed.
+	var shareColCount int
+	if err := s.db.QueryRow(`SELECT COUNT(1) FROM pragma_table_info('nodes') WHERE name = 'share_enabled'`).Scan(&shareColCount); err == nil && shareColCount > 0 {
+		_, _ = s.db.Exec(`INSERT OR IGNORE INTO schema_migrations (version) VALUES ('0066_node_rentals.sql')`)
+	}
+
+	var rentHostColCount int
+	if err := s.db.QueryRow(`SELECT COUNT(1) FROM pragma_table_info('nodes') WHERE name = 'rent_master_host'`).Scan(&rentHostColCount); err == nil && rentHostColCount > 0 {
+		_, _ = s.db.Exec(`INSERT OR IGNORE INTO schema_migrations (version) VALUES ('0067_rent_master_host.sql')`)
+	}
+
+	var happTableCount int
+	if err := s.db.QueryRow(`SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'happ_subscriptions'`).Scan(&happTableCount); err == nil && happTableCount > 0 {
+		_, _ = s.db.Exec(`INSERT OR IGNORE INTO schema_migrations (version) VALUES ('0069_happ_subscriptions.sql')`)
+	}
+
 	entries, err := migrationsFS.ReadDir("migrations")
 	if err != nil {
 		return err
