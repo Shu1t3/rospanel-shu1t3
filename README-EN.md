@@ -8,8 +8,8 @@
 
 ![Release](https://img.shields.io/github/v/release/Shu1t3/rospanel-shu1t3?label=release&sort=semver&color=2ea44f)
 ![Downloads](https://img.shields.io/github/downloads/Shu1t3/rospanel-shu1t3/total?label=downloads&color=6f42c1)
-![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)
-![Xray-core](https://img.shields.io/badge/Xray--core-v26.6.27-2b2b2b)
+![Go](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white)
+![Xray-core](https://img.shields.io/badge/Xray--core-v26.7.28-2b2b2b)
 ![React](https://img.shields.io/badge/UI-React%20%2B%20Vite%20%2B%20Tailwind-61DAFB?logo=react&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Linux-555?logo=linux&logoColor=white)
 ![Deploy](https://img.shields.io/badge/deploy-single%20binary%20%7C%20Docker-2496ED?logo=docker&logoColor=white)
@@ -470,13 +470,40 @@ the statistics and in the user's card, attributed to the **server** the traffic 
 the daily threshold is exceeded a Telegram notification goes out. Categories, the custom list,
 the threshold and updates live in *Settings → Blocklists*.
 
+The alert is not the only response. The same tab configures **automatic measures** — a ladder
+of three steps, each with its own matches-per-day threshold (0 switches the step off): **warn**
+the user through their Telegram bot (once a day), **cap their speed** to a given value, **switch
+access off**. The cap and the switch-off hold for a set time (an hour to 30 days), after which
+the panel restores the previous speed or switches access back on by itself and tells the user;
+the user and the operator hear about every step, and every step lands in the journal. Enabling
+the user or changing their speed by hand overrules the measure — the operator's decision is not
+"lifted" by the panel later. Node traffic counts too: matches are tallied on the master, and
+speed caps and the user set reach the nodes through the usual sync.
+
 Checks run against addresses, not domains, and that isn't a simplification. Modern clients
 resolve DNS outside the tunnel and encrypt SNI (ECH), so all that reaches the server is a bare
 IP.
 
 Matches are kept for **14 days** — enough to handle a complaint.
 
+**Where clients may connect from** (*Settings → General*). A country rule — only these
+countries, or everywhere except these — plus a list of **networks (ASN)** that may never
+connect, which is how a resold account is usually spotted: it appears from a hosting provider
+rather than a home line. Both are checked against what the panel already records for every
+connection, on the master and on every node, so the rule covers every protocol including the
+ones Xray does not carry. **The address is dropped, not the account**: the offender's IP goes
+into an nftables set on every server (with a length the operator sets, self-expiring), while the
+account keeps working from wherever the policy does allow. Enforcement is off until switched on —
+until then a violation is only recorded, in the user's journal and in a list the operator can
+read before letting the rule cut anything, and any block can be lifted by hand. An address the
+geo table cannot place is never refused: that table is incomplete, and cutting real users off a
+working service is the one failure this must not have.
+
 #### 🧰 Operations and security
+
+**Admin sign-in alerts**. A sign-in from an address the admin has not used before sends an alert to
+admin chats (IP, country, network, browser) with a "Not me" button that immediately revokes all
+sessions of that admin.
 
 **Diagnostics** in one click: the Xray process, config application, TLS expiry, disk space, geo
 database freshness, egress health — every check with a hint. A separate **connection self-test**
@@ -485,8 +512,11 @@ credential, TLS or ALPN drift before a user does. **Backup / restore** and reset
 from the panel and the CLI.
 
 **Updates** in one command: the panel verifies SHA256, runs the binary dry, takes a backup and
-only then replaces itself, keeping the previous version next to it. The Xray core is pinned,
-and the supervisor restarts it if it crashes. A **watchdog** covers the harder case a crash
+only then replaces itself, keeping the previous version next to it. The Xray core is pinned to
+an exact release, and a panel update carries it: on the next start the panel and every node
+compare the Xray they have with the pinned one and replace it if it differs — checksum first,
+and a box that can't reach GitHub keeps the release it already runs. The supervisor restarts
+Xray if it crashes. A **watchdog** covers the harder case a crash
 handler can't see — a process that stays alive but stops serving: it probes Xray's API and, if
 it goes unresponsive for several checks in a row, restarts it (with a cooldown against restart
 storms) and alerts the operator. Runs on the master and every node.
@@ -545,7 +575,7 @@ For the full walkthrough see [🌐 Adding a node](#-adding-a-node).
 The single source of truth is **SQLite**; the Xray config is always generated from it and
 applied by the supervisor. The web panel is embedded in the binary.
 
-**Stack:** Go 1.26 · Xray-core · SQLite (modernc, CGO-free) · React + Vite + Tailwind.
+**Stack:** Go 1.27 · Xray-core · SQLite (modernc, CGO-free) · React + Vite + Tailwind.
 
 ---
 

@@ -1,6 +1,6 @@
 module github.com/Shu1t3/rospanel-shu1t3
 
-go 1.26.6
+go 1.27.1
 
 require (
 	github.com/amnezia-vpn/amneziawg-go v1.0.4
