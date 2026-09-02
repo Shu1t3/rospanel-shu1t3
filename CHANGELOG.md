@@ -1,5 +1,32 @@
 # Changelog
 
+## [2.20.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.19.3...v2.20.0) (2026-09-02)
+
+
+### Features
+
+* AmneziaWG as a built-in lane ([94af079](https://github.com/Shu1t3/rospanel-shu1t3/commit/94af0795d12f041f98170cf21a5817778d31fc9e))
+* client-side DPI evasion in the subscription (fragment, noise, record fragment) ([a24a543](https://github.com/Shu1t3/rospanel-shu1t3/commit/a24a543f1ea686a7bf69c7d575d6a9830a64a14f))
+* **docker:** bump Go build image to golang:1.27.1, go.mod directive to 1.27.1, and update documentation ([b461f9f](https://github.com/Shu1t3/rospanel-shu1t3/commit/b461f9f56038c12512ee849f0891d9474a6546bc))
+* import and export users (Marzban, 3x-ui, and this panel's own file) ([1d43f8e](https://github.com/Shu1t3/rospanel-shu1t3/commit/1d43f8e4f6c4753cf2146145575cd42c46b0760b))
+* list and revoke your own panel sessions ([e97a5cb](https://github.com/Shu1t3/rospanel-shu1t3/commit/e97a5cb5b22e5e1bf54a6c03c1295aa68331c03e))
+* move the security lists to the statistics page ([1e5fc83](https://github.com/Shu1t3/rospanel-shu1t3/commit/1e5fc8354aa3d4f566e9a6fd64f83ef270dff044))
+* one Save and one Cancel per settings screen ([4968feb](https://github.com/Shu1t3/rospanel-shu1t3/commit/4968febc3ccd5ce06253bd5cc508095d15f1d11b))
+* operator notes and tags on users, with the client id shown in the list ([3199c21](https://github.com/Shu1t3/rospanel-shu1t3/commit/3199c21067795159734d88adbb7a406e4ec8220e))
+* optionally hide a server from subscriptions while it is offline ([30cd873](https://github.com/Shu1t3/rospanel-shu1t3/commit/30cd8733907332682d2dcf900ab85d198bd1d0a3))
+* order subscription servers by load, weight and capacity ([60f8846](https://github.com/Shu1t3/rospanel-shu1t3/commit/60f884613b3ab8b3c3f0307aa7fc059711e867ca))
+* refuse connections by source country and network ([158f78e](https://github.com/Shu1t3/rospanel-shu1t3/commit/158f78e87711b991c57eb6fab122149ab1ebda74))
+* sign-in alerts and automatic blocklist measures ([7b7ce88](https://github.com/Shu1t3/rospanel-shu1t3/commit/7b7ce88d11b5949006e3e02afdcfa473d25a20fe))
+* update Xray-core to 26.7.28 ([e728ac6](https://github.com/Shu1t3/rospanel-shu1t3/commit/e728ac658c48ce5d371a270a576de95d6d56ef74))
+
+
+### Bug Fixes
+
+* a manager built without a shaper must not crash the tests ([14f29e3](https://github.com/Shu1t3/rospanel-shu1t3/commit/14f29e374fdc41031c43b67be4bd8e455794b54e))
+* **core,server,rentals:** устранение замечаний code review по безопасности, учету трафика и надежности ([4634e1d](https://github.com/Shu1t3/rospanel-shu1t3/commit/4634e1d37475e1cb4227a494391b45b8dd57d153))
+* page the recent-scanners list instead of dumping every row ([28ae26a](https://github.com/Shu1t3/rospanel-shu1t3/commit/28ae26a43f7359ecd63c9c4e8654e7d04dd42029))
+* show a proxy listener's default port as a value while it is off ([45c74c5](https://github.com/Shu1t3/rospanel-shu1t3/commit/45c74c5582d6b552593a940ca217fa6124e18002))
+
 ## [2.19.3](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.19.2...v2.19.3) (2026-09-01)
 
 
