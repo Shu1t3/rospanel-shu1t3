@@ -257,17 +257,17 @@ func (s *Store) migrate() error {
 	// ensure the corresponding migration is marked as applied in schema_migrations so it is not re-executed.
 	var shareColCount int
 	if err := s.db.QueryRow(`SELECT COUNT(1) FROM pragma_table_info('nodes') WHERE name = 'share_enabled'`).Scan(&shareColCount); err == nil && shareColCount > 0 {
-		_, _ = s.db.Exec(`INSERT OR IGNORE INTO schema_migrations (version) VALUES ('0066_node_rentals.sql')`)
+		_, _ = s.db.Exec(`INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES ('0066_node_rentals.sql', unixepoch())`)
 	}
 
 	var rentHostColCount int
 	if err := s.db.QueryRow(`SELECT COUNT(1) FROM pragma_table_info('nodes') WHERE name = 'rent_master_host'`).Scan(&rentHostColCount); err == nil && rentHostColCount > 0 {
-		_, _ = s.db.Exec(`INSERT OR IGNORE INTO schema_migrations (version) VALUES ('0067_rent_master_host.sql')`)
+		_, _ = s.db.Exec(`INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES ('0067_rent_master_host.sql', unixepoch())`)
 	}
 
 	var happTableCount int
 	if err := s.db.QueryRow(`SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'happ_subscriptions'`).Scan(&happTableCount); err == nil && happTableCount > 0 {
-		_, _ = s.db.Exec(`INSERT OR IGNORE INTO schema_migrations (version) VALUES ('0069_happ_subscriptions.sql')`)
+		_, _ = s.db.Exec(`INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES ('0069_happ_subscriptions.sql', unixepoch())`)
 	}
 
 	entries, err := migrationsFS.ReadDir("migrations")
