@@ -239,6 +239,7 @@ func (rt *Router) fallback(w http.ResponseWriter, r *http.Request) {
 }
 
 // index serves the SPA shell (with injected base) for any non-asset panel path.
+
 func (rt *Router) index(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")

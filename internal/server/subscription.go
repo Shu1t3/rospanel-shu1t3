@@ -64,7 +64,7 @@ func handleSub(rt *Router, w http.ResponseWriter, r *http.Request, rest string) 
 		// button fetches YAML from this very URL instead of re-rendering the page.
 		if isBrowser(r) && r.URL.Query().Get("format") == "" {
 			lang := i18n.FromAcceptLanguage(r.Header.Get("Accept-Language"))
-			if err := rt.servePage(w, *u, set, lang); err != nil {
+			if err := rt.servePage(w, *u, set, lang, clientIP(r)); err != nil {
 				// Render errors keep the masquerade; an access read that failed is a
 				// different thing and must not look like a successful, empty answer.
 				if errors.Is(err, errSubUnavailable) {
@@ -87,6 +87,12 @@ func handleSub(rt *Router, w http.ResponseWriter, r *http.Request, rest string) 
 				return
 			}
 			format = action
+		} else if format == "v2ray" && r.URL.Query().Get("format") == "" &&
+			set.SubDPI.JSONClients && model.IsXrayCoreClient(r.Header.Get("User-Agent")) {
+			// Xray-core apps get full configs when the operator asked for it: the
+			// only form in which fragment/noise reach them. A rule or an explicit
+			// ?format= above still wins.
+			format = model.SubActionXrayJSON
 		}
 		// Machine payload, format chosen by the client (User-Agent or ?format=).
 		// Device binding is checked here and not on the page: the page is a browser
@@ -97,7 +103,7 @@ func handleSub(rt *Router, w http.ResponseWriter, r *http.Request, rest string) 
 		}
 		// allServers spans the local server plus each enabled, connected node, so the
 		// payload carries one entry per protocol × server (single-server = local only).
-		allServers, err := rt.subServers(set, u.ID)
+		allServers, err := rt.subServers(set, u.ID, clientIP(r))
 		if err != nil {
 			rt.subUnavailable(w, u.ID, err)
 			return
@@ -125,6 +131,9 @@ func handleSub(rt *Router, w http.ResponseWriter, r *http.Request, rest string) 
 		case "singbox", "sing-box":
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			_, _ = w.Write([]byte(sub.SingBoxJSONMulti(*u, allServers)))
+		case model.SubActionXrayJSON, "xray", "json":
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			_, _ = w.Write([]byte(sub.XrayJSONMulti(*u, allServers, set.SubDPI)))
 		default:
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			links := sub.ShareLinksAll(*u, allServers)
@@ -201,6 +210,10 @@ func handleSub(rt *Router, w http.ResponseWriter, r *http.Request, rest string) 
 	default:
 		// /app/<n> — deep-link hand-off page (opened in the external browser from the
 		// Telegram Mini App so the client scheme actually launches).
+		if rest, ok := strings.CutPrefix(leaf, "awg/"); ok {
+			rt.serveAWG(w, r, u, set, rest)
+			return
+		}
 		if idx, ok := strings.CutPrefix(leaf, "app/"); ok {
 			rt.handleSubApp(w, r, *u, set, idx)
 			return
@@ -493,13 +506,13 @@ func isBrowser(r *http.Request) bool {
 // lang comes from the caller's Accept-Language: the subscription page is the one
 // surface a VPN *user* sees, and the panel knows nothing about their language
 // preference, so the browser decides it per request.
-func (rt *Router) servePage(w http.ResponseWriter, u model.User, set *model.Settings, lang i18n.Lang) error {
+func (rt *Router) servePage(w http.ResponseWriter, u model.User, set *model.Settings, lang i18n.Lang, clientIP string) error {
 	// Span the local server + each enabled node so the page's individual-config list
 	// covers every server (single-server ⇒ just the local set).
 	// A required HWID means the browser cannot fetch the machine payload — so the
 	// page must not offer a download button that answers 403 to its own owner.
 	showDownload := !(set.HWIDEnabled && set.HWIDRequire)
-	servers, err := rt.subServers(set, u.ID)
+	servers, err := rt.subServers(set, u.ID, clientIP)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errSubUnavailable, err)
 	}
@@ -796,4 +809,58 @@ func (rt *Router) subUnavailable(w http.ResponseWriter, userID int64, err error)
 	w.Header().Set("Content-Length", "0")
 	w.Header().Set("Retry-After", "30")
 	w.WriteHeader(http.StatusServiceUnavailable)
+}
+
+// serveAWG hands out one user's AmneziaWG config for one server — "<id>.conf" as
+// the file the Amnezia apps import, "<id>.png" as the same text in a QR — where
+// id is the server (0 = the master, otherwise the node). The server must have the
+// lane on and the user must be allowed on it; anything else is the decoy, so the
+// URL space confirms nothing about the fleet.
+func (rt *Router) serveAWG(w http.ResponseWriter, r *http.Request, u *model.User, set *model.Settings, rest string) {
+	name, ext, ok := strings.Cut(rest, ".")
+	if !ok || (ext != "conf" && ext != "png") {
+		rt.currentDecoy().ServeHTTP(w, r)
+		return
+	}
+	serverID, err := strconv.ParseInt(name, 10, 64)
+	if err != nil || serverID < 0 {
+		rt.currentDecoy().ServeHTTP(w, r)
+		return
+	}
+	servers, err := rt.subServers(set, u.ID, clientIP(r))
+	if err != nil {
+		rt.subUnavailable(w, u.ID, err)
+		return
+	}
+	var srv *sub.Server
+	for i := range servers {
+		if servers[i].Set.ServerID == serverID {
+			srv = &servers[i]
+			break
+		}
+	}
+	if srv == nil || !srv.Set.AWGEnabled || !srv.Access.AllowsBuiltin(serverID, model.LaneAWG) {
+		rt.currentDecoy().ServeHTTP(w, r)
+		return
+	}
+	conf, err := rt.mgr.AWGClientConfig(u, srv.Set)
+	if err != nil {
+		rt.currentDecoy().ServeHTTP(w, r)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	if ext == "png" {
+		png, err := qrcode.Encode(conf, qrcode.Low, 512)
+		if err != nil {
+			rt.currentDecoy().ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(png)
+		return
+	}
+	// The file name is what the app shows as the tunnel's name.
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+sub.AWGFileName(srv.Set)+`"`)
+	_, _ = w.Write([]byte(conf))
 }

@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"strings"
 	"time"
 
@@ -12,7 +13,11 @@ const userCols = `id, name, uuid, password, sub_token, enabled,
 	data_limit, expire_at, used_up, used_down, last_up, last_down, created_at,
 	reset_period, last_reset_at, last_seen, device_limit, speed_limit, tg_chat_id,
 	plan_id, trial_used, tg_link_code, tg_link_code_at, notified_status,
-	notified_expire_at, notified_quota_at, device_over_since`
+	notified_expire_at, notified_quota_at, device_over_since, note, tags, wg_private_key`
+
+// errTagsInvalid is returned by SetUserTags for a list model.NormalizeTags refuses.
+// Callers validate before writing, so reaching this means a bug, not user input.
+var errTagsInvalid = errors.New("store: invalid user tags")
 
 // CreateUser inserts a user with one credential set (UUID for VLESS, password
 // for Trojan + Hysteria2), a subscription token, and optional quota/expiry.
@@ -31,6 +36,97 @@ func (s *Store) CreateUser(name, uuid, password, subToken string, dataLimit, exp
 		return nil, err
 	}
 	return &users[0], nil
+}
+
+// ImportedUser is everything an importer knows about a user coming from another
+// panel: the credentials to keep, the limits and the usage so far.
+type ImportedUser struct {
+	Name        string
+	UUID        string
+	Password    string
+	SubToken    string
+	DataLimit   int64
+	ExpireAt    int64
+	UsedUp      int64
+	UsedDown    int64
+	DeviceLimit int
+	SpeedLimit  int
+	ResetPeriod string
+	Enabled     bool
+	Note        string
+	Tags        []string // already in model.NormalizeTags form
+	// WGPrivateKey carries the user's AmneziaWG identity over, so the configs they
+	// already hold keep working. Empty mints one on first use, as for a new user.
+	WGPrivateKey string
+}
+
+// ImportUser inserts a user with the credentials and counters another panel had
+// for them, in one statement, so a half-imported user cannot exist. The UUID
+// column is UNIQUE: an id already present fails the insert, which is how a second
+// import of the same file is kept from doubling everyone.
+func (s *Store) ImportUser(in ImportedUser) (*model.User, error) {
+	enabled := 0
+	if in.Enabled {
+		enabled = 1
+	}
+	var id int64
+	period := in.ResetPeriod
+	if period == "" {
+		period = "none"
+	}
+	err := s.db.QueryRow(
+		`INSERT INTO users (name, uuid, password, sub_token, enabled, data_limit, expire_at,
+		   used_up, used_down, device_limit, speed_limit, reset_period, note, tags, wg_private_key)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+		in.Name, in.UUID, encField(in.Password), in.SubToken, enabled, in.DataLimit, in.ExpireAt,
+		in.UsedUp, in.UsedDown, in.DeviceLimit, in.SpeedLimit, period, in.Note,
+		model.EncodeTags(in.Tags), encField(in.WGPrivateKey),
+	).Scan(&id)
+	if err != nil {
+		return nil, err
+	}
+	return s.GetUser(id)
+}
+
+// UserUUIDs returns every UUID in use, for an importer to tell "already here"
+// from "new" before it writes anything.
+func (s *Store) UserUUIDs() (map[string]int64, error) {
+	rows, err := s.db.Query(`SELECT id, uuid FROM users`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var id int64
+		var u string
+		if err := rows.Scan(&id, &u); err != nil {
+			return nil, err
+		}
+		out[strings.ToLower(u)] = id
+	}
+	return out, rows.Err()
+}
+
+// SubTokens returns every subscription token in use. The column is uniquely
+// indexed, so an importer carrying tokens from another panel has to know which
+// ones are taken before it writes — a collision is an insert error, and the user
+// it would fail is one nobody could then reach.
+func (s *Store) SubTokens() (map[string]struct{}, error) {
+	rows, err := s.db.Query(`SELECT sub_token FROM users WHERE sub_token != ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]struct{}{}
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			return nil, err
+		}
+		out[t] = struct{}{}
+	}
+	return out, rows.Err()
 }
 
 // ListUsers returns all users, newest first.
@@ -91,7 +187,11 @@ type UserCounts struct {
 // same connections table when it syncs.
 func (s *Store) CountUsers(now int64) (UserCounts, error) {
 	var c UserCounts
-	err := s.db.QueryRow(`
+	// The device clause is WorkingUsers' clause, term for term, because this number sits
+	// next to the user list and any disagreement reads as the panel contradicting itself.
+	// It previously omitted both the mode and the grace, so "hwid" and a user inside
+	// DeviceLimitGrace each made this count one active user fewer than the list showed.
+	err := s.db.QueryRow(`WITH device_count AS (`+deviceCountCTE+`)
 		SELECT COUNT(*),
 		       COALESCE(SUM(u.used_up), 0),
 		       COALESCE(SUM(u.used_down), 0),
@@ -99,7 +199,7 @@ func (s *Store) CountUsers(now int64) (UserCounts, error) {
 		            AND (u.expire_at = 0 OR u.expire_at > ?)
 		            AND (u.data_limit = 0 OR u.used_up + u.used_down < u.data_limit)
 		            AND (u.device_limit = 0
-		                 OR NOT (SELECT ip_counts FROM (`+deviceCountCTE+`))
+		                 OR NOT (SELECT ip_counts FROM device_count)
 		                 OR COALESCE(d.n, 0) <= u.device_limit
 		                 OR u.device_over_since = 0
 		                 OR u.device_over_since > ?)
@@ -410,6 +510,53 @@ func (s *Store) SetUserName(id int64, name string) error {
 	return err
 }
 
+// SetUserWGKey stores a user's AmneziaWG private key (encrypted at rest). Written
+// once, when the first tunnel config is built for them; never rotated on its own.
+func (s *Store) SetUserWGKey(id int64, priv string) error {
+	_, err := s.db.Exec(`UPDATE users SET wg_private_key = ? WHERE id = ?`, encField(priv), id)
+	return err
+}
+
+// SetUserNote replaces the operator's note on a user.
+func (s *Store) SetUserNote(id int64, note string) error {
+	_, err := s.db.Exec(`UPDATE users SET note = ? WHERE id = ?`, note, id)
+	return err
+}
+
+// SetUserTags replaces a user's tag list. Tags are stored in model.NormalizeTags
+// form regardless of what the caller hands in, so a read never sees a variant
+// spelling. The caller is expected to have validated the input first; the check
+// here is a safety net, not the place a bad tag gets reported to a person.
+func (s *Store) SetUserTags(id int64, tags []string) error {
+	norm, ok := model.NormalizeTags(tags)
+	if !ok {
+		return errTagsInvalid
+	}
+	_, err := s.db.Exec(`UPDATE users SET tags = ? WHERE id = ?`, model.EncodeTags(norm), id)
+	return err
+}
+
+// AllUserTags returns every distinct tag in use with how many users carry it —
+// what the list page's tag filter and the tag editor's suggestions are built from.
+func (s *Store) AllUserTags() (map[string]int, error) {
+	rows, err := s.db.Query(`SELECT tags FROM users WHERE tags != ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		for _, t := range model.DecodeTags(raw) {
+			out[t]++
+		}
+	}
+	return out, rows.Err()
+}
+
 // SetSubToken replaces a user's subscription capability token. The old URL stops
 // working immediately; protocol credentials (UUID/password) are unchanged.
 func (s *Store) SetSubToken(id int64, token string) error {
@@ -665,18 +812,21 @@ func (s *Store) queryUsers(query string, args ...any) ([]model.User, error) {
 		var u model.User
 		var created int64
 		var enabled, trialUsed int
+		var tags string
 		if err := rows.Scan(
 			&u.ID, &u.Name, &u.UUID, &u.Password, &u.SubToken, &enabled,
 			&u.DataLimit, &u.ExpireAt, &u.UsedUp, &u.UsedDown, &u.LastUp, &u.LastDown, &created,
 			&u.ResetPeriod, &u.LastResetAt, &u.LastSeen, &u.DeviceLimit, &u.SpeedLimit, &u.TgChatID,
 			&u.PlanID, &trialUsed, &u.TgLinkCode, &u.TgLinkCodeAt, &u.NotifiedStatus,
-			&u.NotifiedExpireAt, &u.NotifiedQuotaAt, &u.DeviceOverSince,
+			&u.NotifiedExpireAt, &u.NotifiedQuotaAt, &u.DeviceOverSince, &u.Note, &tags, &u.WGPrivateKey,
 		); err != nil {
 			return nil, err
 		}
 		u.Enabled = enabled != 0
 		u.TrialUsed = trialUsed != 0
+		u.Tags = model.DecodeTags(tags)
 		u.Password = decField(u.Password)
+		u.WGPrivateKey = decField(u.WGPrivateKey)
 		u.CreatedAt = time.Unix(created, 0)
 		out = append(out, u)
 	}
@@ -717,6 +867,7 @@ func (s *Store) applyUserStatus(users []model.User, now int64) {
 	// do not, and a phone changing network still read as "device limit exceeded" (issue
 	// #66), the bot said so, and the HWID roster it is actually capped by showed one
 	// device. Showing the number and enforcing it are separate decisions.
+
 	for i := range users {
 		u := &users[i]
 		active := counts[u.ID]

@@ -192,8 +192,8 @@ func runServer(dataDir string) {
 	mgr := core.New(st, sup, xray.Options{PanelDest: panelDest(adminAddr)},
 		core.TLSPaths{CertPath: certPath, KeyPath: keyPath, ACMEDir: acmeDir},
 		filepath.Join(dataDir, "opera"))
-	sup.SetOnAccess(mgr.RecordAccess) // track online status + connection IPs
-	mgr.StartSysstat(dataDir)         // host metrics for the dashboard
+	sup.SetOnAccess(mgr.RecordLocalAccess) // track online status + connection IPs
+	mgr.StartSysstat(dataDir)              // host metrics for the dashboard
 	// Blocklists for abuse detection. Cached copies load synchronously (fast, local),
 	// so matching works from the first access-log line; downloads run in background
 	// and a failure leaves the matcher empty rather than holding up the boot.
@@ -341,6 +341,7 @@ func runServer(dataDir string) {
 	// own SIGTERM at the same moment we do. Marking the shutdown before we wait on
 	// anything is what keeps an ordinary restart from paging the operator.
 	sup.Stop()
+	mgr.StopAWG()
 
 	// Drop the per-user speed caps. They live in the kernel's qdisc tree, which
 	// outlives this process until reboot — a panel that was stopped must not keep
@@ -386,6 +387,8 @@ func startRedirector(st *store.Store) *http.Server {
 	}
 	return http80.Start(":80", host)
 }
+
+
 
 // bootstrapTLS configures host/SNI and resolves a cert via ACME, falling back to
 // a self-signed cert if ACME is unavailable so Xray can still open :443.
@@ -459,6 +462,11 @@ func statsPollLoop(ctx context.Context, mgr *core.Manager) {
 				if err := mgr.PollStats(); err != nil {
 					// Expected when Xray isn't running (e.g. local dev) — keep quiet-ish.
 					log.Printf("stats poll: %v", err)
+				}
+			})
+			safeTick("awg poll", func() {
+				if err := mgr.PollAWG(); err != nil {
+					log.Printf("awg poll: %v", err)
 				}
 			})
 		}

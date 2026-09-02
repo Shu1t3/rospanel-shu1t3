@@ -5,6 +5,7 @@ import {
   type BulkAction,
   bulkUsers,
   createUser,
+  exportUsersURL,
   listUsers,
   setResetPeriod,
   setUserEnabled,
@@ -32,7 +33,9 @@ import {
   IconCheck,
   Modal,
   IconButton,
+  IconExport,
   IconExternal,
+  IconImport,
   IconEye,
   Select,
   Skeleton,
@@ -47,6 +50,7 @@ import {
   TD,
 } from "./ui";
 import { UserDetail } from "./UserDetail";
+import { ImportUsersModal } from "./ImportUsersModal";
 
 function UsersSkeleton() {
   return (
@@ -101,11 +105,15 @@ export function UsersPanel({ userBotEnabled }: { userBotEnabled: boolean }) {
   const { t } = useTranslation();
   const [users, setUsers] = useState<User[]>([]);
   const [addOpen, setAddOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [detail, setDetail] = useState<User | null>(null);
   const [loaded, setLoaded] = useState(false);
 
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  // "" = any tag. Derived from the loaded list rather than fetched: the list already
+  // carries every user's tags, so the dropdown can never disagree with the rows.
+  const [tagFilter, setTagFilter] = useState("");
   const [sort, setSort] = useState("new");
   const [page, setPage] = useState(1);
 
@@ -149,11 +157,29 @@ export function UsersPanel({ userBotEnabled }: { userBotEnabled: boolean }) {
     return users.filter(
       (u) =>
         (statusFilter === "all" || u.status === statusFilter) &&
+        (tagFilter === "" || (u.tags ?? []).includes(tagFilter)) &&
         (q === "" ||
           u.name.toLowerCase().includes(q) ||
-          String(u.id) === q),
+          String(u.id) === q ||
+          u.system_email.toLowerCase() === q ||
+          (u.note ?? "").toLowerCase().includes(q) ||
+          (u.tags ?? []).some((tag) => tag.includes(q))),
     );
-  }, [users, query, statusFilter]);
+  }, [users, query, statusFilter, tagFilter]);
+
+  // Every tag in use with how many users carry it, most used first, for the
+  // toolbar filter. A tag that disappears from every user drops out of the list,
+  // and a filter pinned to it falls back to "any" in the effect below.
+  const tagOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const u of users) for (const tag of u.tags ?? []) counts.set(tag, (counts.get(tag) ?? 0) + 1);
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([tag, count]) => ({ tag, count }));
+  }, [users]);
+  useEffect(() => {
+    if (tagFilter && !tagOptions.some((o) => o.tag === tagFilter)) setTagFilter("");
+  }, [tagFilter, tagOptions]);
 
   const sorted = useMemo(() => {
     const arr = [...filtered];
@@ -320,6 +346,21 @@ export function UsersPanel({ userBotEnabled }: { userBotEnabled: boolean }) {
             data={statusFilters()}
           />
         </div>
+        {tagOptions.length > 0 && (
+          <div className="sm:w-44 sm:shrink-0">
+            <Select
+              value={tagFilter}
+              onChange={setTagFilter}
+              data={[
+                { value: "", label: t("usersPanel.anyTag") },
+                ...tagOptions.map((o) => ({
+                  value: o.tag,
+                  label: t("usersPanel.tagN", { tag: o.tag, count: o.count }),
+                })),
+              ]}
+            />
+          </div>
+        )}
         <div className="sm:w-48 sm:shrink-0">
           <Select value={sort} onChange={setSort} data={sorts()} />
         </div>
@@ -331,6 +372,24 @@ export function UsersPanel({ userBotEnabled }: { userBotEnabled: boolean }) {
             cardsLabel={t("usersPanel.viewCards")}
             label={t("nav.users")}
           />
+        </div>
+        {/* Icons, not words: this toolbar already carries a search box, two selects
+            and the view switch, and these two are the least-used controls on it. The
+            words live on as the accessible name and the hover title. */}
+        <div className="flex gap-1 sm:shrink-0">
+          <IconButton
+            color="gray"
+            onClick={() => setImportOpen(true)}
+            title={t("importUsers.buttonHint")}
+          >
+            <IconImport />
+          </IconButton>
+          {/* A plain link, not a fetch: the file is an attachment the browser
+              saves, and it carries every credential — no reason for it to pass
+              through the SPA. */}
+          <IconButton color="gray" href={exportUsersURL()} title={t("importUsers.exportHint")}>
+            <IconExport />
+          </IconButton>
         </div>
       </div>
 
@@ -399,6 +458,7 @@ export function UsersPanel({ userBotEnabled }: { userBotEnabled: boolean }) {
                   >
                     {u.name}
                   </span>
+                  <Code className="shrink-0 text-ink-muted">{u.system_email}</Code>
                 </div>
 
                 <div className="mb-3 flex flex-wrap gap-2">
@@ -422,6 +482,7 @@ export function UsersPanel({ userBotEnabled }: { userBotEnabled: boolean }) {
                       {g.name}
                     </Badge>
                   ))}
+                  <TagList tags={u.tags ?? []} max={4} />
                 </div>
 
                 <div className="flex gap-2 mt-auto">
@@ -479,6 +540,7 @@ export function UsersPanel({ userBotEnabled }: { userBotEnabled: boolean }) {
       {/* The add-user FAB hides while a bulk selection is active (the bulk bar
           takes the bottom slot). */}
       {selected.size === 0 && <AddFab onClick={() => setAddOpen(true)} />}
+      <ImportUsersModal open={importOpen} onClose={() => setImportOpen(false)} onImported={refresh} />
 
       {/* Reserve scroll space so the last cards aren't hidden behind the fixed
           selection bar (taller on mobile, where it stacks into a grid). The
@@ -886,6 +948,10 @@ function UsersTable({
                     >
                       {u.name}
                     </button>
+                    {/* The Xray client id, so the operator can match a log line or a
+                        stats row to the account without opening it. */}
+                    <Code className="shrink-0 text-ink-muted">{u.system_email}</Code>
+                    <TagList tags={u.tags ?? []} />
                   </div>
                 </TD>
                 <TD>
@@ -948,6 +1014,32 @@ function UsersTable({
           })}
       </tbody>
     </TableShell>
+  );
+}
+
+// tagsShown caps how many tag badges a row renders next to the name; the rest fold
+// into "+N" with the full list on hover, for the same reason groupsShown does below.
+const tagsShown = 2;
+
+// TagList renders a user's tags as small muted badges — muted so they read as labels
+// the operator attached, not as a status the panel derived.
+function TagList({ tags, max = tagsShown }: { tags: string[]; max?: number }) {
+  if (tags.length === 0) return null;
+  const shown = tags.slice(0, max);
+  const rest = tags.slice(max);
+  return (
+    <>
+      {shown.map((tag) => (
+        <Badge key={tag} color="gray" size="xs" className="shrink-0">
+          {tag}
+        </Badge>
+      ))}
+      {rest.length > 0 && (
+        <Badge color="gray" size="xs" className="shrink-0" title={rest.join(", ")}>
+          +{rest.length}
+        </Badge>
+      )}
+    </>
   );
 }
 

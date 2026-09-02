@@ -20,6 +20,8 @@ const ACTION_COLORS: Record<string, Color> = {
   "user.registered": "green",
   "user.deleted": "red",
   "user.renamed": "gray",
+  "user.note_changed": "gray",
+  "user.tags_changed": "gray",
   "user.enabled": "green",
   "user.disabled": "orange",
   "user.limits_changed": "brand",
@@ -131,6 +133,9 @@ export function eventDetails(e: UserEvent): string {
   switch (e.action) {
     case "user.created":
     case "user.limits_changed": {
+      if (str(d, "imported_from")) {
+        parts.push(i18n.t("events.det.importedFrom", { source: str(d, "imported_from") }));
+      }
       // Only state a limit the row actually carries — a missing key is "unknown",
       // not "unlimited", and rendering it as the latter would be a false claim.
       if (has(d, "data_limit")) {
@@ -157,6 +162,14 @@ export function eventDetails(e: UserEvent): string {
     }
     case "user.renamed":
       return `${str(d, "from") || "—"} → ${str(d, "to")}`;
+    case "user.tags_changed": {
+      // Both sides are lists; an empty one reads as "—" so a clear is visible.
+      const list = (k: string) => {
+        const v = d[k];
+        return Array.isArray(v) && v.length ? v.join(", ") : "—";
+      };
+      return `${list("from")} → ${list("to")}`;
+    }
     case "user.traffic_reset":
     case "user.quota_reset": {
       const used = num(d, "used_before");

@@ -8,156 +8,144 @@ import (
 	"time"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
 )
 
-func TestPanelSessionsEndpoints(t *testing.T) {
-	rt, st := rolesTestRouter(t)
-	h := rt.panelMux()
-
-	ownerCookie := signIn(t, st, "owner", model.RoleOwner, false)
-	admin1Cookie := signIn(t, st, "admin1", model.RoleAdmin, false)
-	admin2Cookie := signIn(t, st, "admin2", model.RoleAdmin, false)
-	op1Cookie := signIn(t, st, "operator1", model.RoleOperator, false)
-
-	admins, err := st.ListAdmins()
-	if err != nil {
-		t.Fatalf("list admins: %v", err)
-	}
-	var ownerID, admin1ID, admin2ID, op1ID int64
-	for _, a := range admins {
-		switch a.Username {
-		case "owner":
-			ownerID = a.ID
-		case "admin1":
-			admin1ID = a.ID
-		case "admin2":
-			admin2ID = a.ID
-		case "operator1":
-			op1ID = a.ID
-		}
-	}
-
-	// Create second session for admin1
-	admin1Tok2, _ := st.CreateSession(admin1ID, time.Hour, "10.0.0.2", "Admin1Phone")
-	admin1Hash2, _ := st.TokenHash(admin1Tok2)
-
-	// Create second session for op1
-	op1Tok2, _ := st.CreateSession(op1ID, time.Hour, "10.0.0.3", "Op1Tablet")
-	op1Hash2, _ := st.TokenHash(op1Tok2)
-
-	// 1. GET /api/account/sessions
-	req := httptest.NewRequest("GET", "/api/account/sessions", nil)
-	req.AddCookie(admin1Cookie)
+func sessionsOf(t *testing.T, h http.Handler, c *http.Cookie) []store.AdminSession {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/account/sessions", nil)
+	req.AddCookie(c)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /api/account/sessions = %d, want 200", rec.Code)
+		t.Fatalf("list sessions: %d %s", rec.Code, rec.Body.String())
 	}
-	var mySess struct {
-		Sessions []model.AdminSession `json:"sessions"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &mySess); err != nil {
+	var out []store.AdminSession
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(mySess.Sessions) != 2 {
-		t.Fatalf("admin1 sessions count = %d, want 2", len(mySess.Sessions))
+	return out
+}
+
+// The account screen lists the caller's sessions and ends them one at a time or
+// all at once — and the id it sends can never reach another admin's session.
+func TestAccountSessionsListAndRevoke(t *testing.T) {
+	rt, st := rolesTestRouter(t)
+	h := rt.panelMux()
+
+	alice := signIn(t, st, "alice", model.RoleOperator, false)
+	aliceID, _ := st.LookupSession(alice.Value)
+	// A second session of Alice's, from a phone, and one of Bob's.
+	tok2, err := st.CreateSessionFrom(aliceID.ID, time.Hour, "198.51.100.7", "Mozilla/5.0 (iPhone) Safari/605")
+	if err != nil {
+		t.Fatal(err)
 	}
-	hasCurrent := false
-	for _, s := range mySess.Sessions {
-		if s.IsCurrent {
-			hasCurrent = true
+	alice2 := &http.Cookie{Name: sessionCookie, Value: tok2}
+	bob := signIn(t, st, "bob", model.RoleOperator, false)
+	bobSess, _ := st.LookupSession(bob.Value)
+
+	list := sessionsOf(t, h, alice)
+	if len(list) != 2 {
+		t.Fatalf("alice should see her 2 sessions, got %d", len(list))
+	}
+	var current, other *store.AdminSession
+	for i := range list {
+		if list[i].Current {
+			current = &list[i]
+		} else {
+			other = &list[i]
 		}
 	}
-	if !hasCurrent {
-		t.Error("none of the sessions marked as is_current")
+	if current == nil || other == nil || current.ID != aliceID.SessionID {
+		t.Fatalf("exactly one session must be marked current, and it must be this cookie's: %+v", list)
+	}
+	if other.IP != "198.51.100.7" || other.UserAgent == "" {
+		t.Errorf("the phone session lost its origin: %+v", other)
 	}
 
-	// 2. DELETE /api/account/sessions/{hash} (admin1 revokes their second session)
-	req = httptest.NewRequest("DELETE", "/api/account/sessions/"+admin1Hash2, nil)
-	req.AddCookie(admin1Cookie)
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("DELETE /api/account/sessions/{hash} = %d, want 200", rec.Code)
+	// The current session cannot be ended from here.
+	if code := call(h, http.MethodDelete, "/api/account/sessions/"+itoa64(current.ID), alice); code != http.StatusBadRequest {
+		t.Errorf("revoking the current session: %d, want 400", code)
 	}
-	if _, ok := st.LookupSession(admin1Tok2); ok {
-		t.Error("revoked session still resolves")
+	// Bob's cannot be ended by Alice, and the answer does not say it exists.
+	if code := call(h, http.MethodDelete, "/api/account/sessions/"+itoa64(bobSess.SessionID), alice); code != http.StatusNotFound {
+		t.Errorf("revoking bob's session as alice: %d, want 404", code)
 	}
-
-	// 3. Admin1 accessing operator sessions: GET /api/admins/{id}/sessions
-	req = httptest.NewRequest("GET", "/api/admins/"+string(rune('0'+op1ID))+"/sessions", nil)
-	req = httptest.NewRequest("GET", "/api/admins/"+jsonNumber(op1ID)+"/sessions", nil)
-	req.AddCookie(admin1Cookie)
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("Admin GET op sessions = %d, want 200", rec.Code)
+	if code := call(h, http.MethodGet, "/api/me", bob); code != http.StatusOK {
+		t.Errorf("bob's session should be untouched, /api/me gave %d", code)
+	}
+	// Her own other one can.
+	if code := call(h, http.MethodDelete, "/api/account/sessions/"+itoa64(other.ID), alice); code != http.StatusOK {
+		t.Errorf("revoking own other session: %d", code)
+	}
+	if code := call(h, http.MethodGet, "/api/me", alice2); code != http.StatusUnauthorized {
+		t.Errorf("revoked cookie still works: %d", code)
 	}
 
-	// 4. Admin1 CANNOT view Admin2 sessions (400/403)
-	req = httptest.NewRequest("GET", "/api/admins/"+jsonNumber(admin2ID)+"/sessions", nil)
-	req.AddCookie(admin1Cookie)
-	rec = httptest.NewRecorder()
+	// "Everywhere else": two more sessions, one call, the current one survives.
+	for range 2 {
+		if _, err := st.CreateSessionFrom(aliceID.ID, time.Hour, "", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/account/sessions/revoke-others", nil)
+	req.AddCookie(alice)
+	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest { // invalidCode maps to 400 with err.cannotViewAdminSessions
-		t.Fatalf("Admin GET admin2 sessions = %d, want 400 error", rec.Code)
+	var resp struct {
+		Revoked int `json:"revoked"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if rec.Code != http.StatusOK || resp.Revoked != 2 {
+		t.Errorf("revoke-others: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := sessionsOf(t, h, alice); len(got) != 1 || !got[0].Current {
+		t.Errorf("after revoke-others only the current session should remain: %+v", got)
+	}
+	if code := call(h, http.MethodGet, "/api/me", bob); code != http.StatusOK {
+		t.Errorf("revoke-others reached bob: %d", code)
 	}
 
-	// 5. Admin1 CANNOT delete Admin2 session
-	admin2Hash, _ := st.TokenHash(admin2Cookie.Value)
-	req = httptest.NewRequest("DELETE", "/api/admins/"+jsonNumber(admin2ID)+"/sessions/"+admin2Hash, nil)
-	req.AddCookie(admin1Cookie)
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("Admin DELETE admin2 session = %d, want 400 error", rec.Code)
+	// Both revocations left a row in the panel log.
+	rows, err := st.ListAdminAudit(store.AdminAuditFilter{Limit: 50})
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	// Admin1 CANNOT delete Owner session
-	ownerHash, _ := st.TokenHash(ownerCookie.Value)
-	req = httptest.NewRequest("DELETE", "/api/admins/"+jsonNumber(ownerID)+"/sessions/"+ownerHash, nil)
-	req.AddCookie(admin1Cookie)
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("Admin DELETE owner session = %d, want 400 error", rec.Code)
+	n := 0
+	for _, r := range rows {
+		if r.Action == model.AuditSessionRevoked && r.ActorName == "alice" {
+			n++
+		}
 	}
-
-	// 6. Admin1 CAN delete Operator session
-	req = httptest.NewRequest("DELETE", "/api/admins/"+jsonNumber(op1ID)+"/sessions/"+op1Hash2, nil)
-	req.AddCookie(admin1Cookie)
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("Admin DELETE op session = %d, want 200", rec.Code)
-	}
-	if _, ok := st.LookupSession(op1Tok2); ok {
-		t.Error("operator session 2 should be deleted")
-	}
-
-	// 7. Operator CANNOT delete other operator/admin sessions
-	req = httptest.NewRequest("DELETE", "/api/admins/"+jsonNumber(admin1ID)+"/sessions", nil)
-	req.AddCookie(op1Cookie)
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest && rec.Code != http.StatusForbidden {
-		t.Fatalf("Operator DELETE admin sessions = %d, want 400/403", rec.Code)
-	}
-
-	// 8. Owner CAN delete any session
-	req = httptest.NewRequest("DELETE", "/api/admins/"+jsonNumber(admin2ID)+"/sessions/"+admin2Hash, nil)
-	req.AddCookie(ownerCookie)
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("Owner DELETE admin2 session = %d, want 200", rec.Code)
-	}
-	if _, ok := st.LookupSession(admin2Cookie.Value); ok {
-		t.Error("admin2 session should be deleted by owner")
+	if n != 2 {
+		t.Errorf("want 2 %q rows by alice, got %d", model.AuditSessionRevoked, n)
 	}
 }
 
-func jsonNumber(n int64) string {
-	b, _ := json.Marshal(n)
-	return string(b)
+// A request from a session whose last-seen stamp is stale refreshes it, with the
+// address the request came from; a fresh stamp is left alone (one write a minute,
+// not one per request).
+func TestSessionLastSeenIsStampedOncePerInterval(t *testing.T) {
+	rt, st := rolesTestRouter(t)
+	h := rt.panelMux()
+	c := signIn(t, st, "alice", model.RoleOperator, false)
+	a, _ := st.LookupSession(c.Value)
+
+	// Fresh: a request must not move it.
+	before := sessionsOf(t, h, c)[0]
+	if before.IP != "" {
+		t.Fatalf("a session made without an address should have none yet: %+v", before)
+	}
+	// Stale: push the stamp back past the interval and request again.
+	stale := time.Now().Add(-2 * store.SessionTouchInterval).Unix()
+	if err := st.TouchSession(a.SessionID, stale, ""); err != nil {
+		t.Fatal(err)
+	}
+	after := sessionsOf(t, h, c)[0]
+	if after.LastSeenAt <= stale {
+		t.Errorf("stale stamp was not refreshed: %d <= %d", after.LastSeenAt, stale)
+	}
+	if after.IP == "" {
+		t.Errorf("the refresh should record the request's address: %+v", after)
+	}
 }

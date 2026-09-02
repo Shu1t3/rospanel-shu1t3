@@ -54,7 +54,7 @@ func signIn(t *testing.T, st *store.Store, name, role string, gated bool) *http.
 	if err != nil {
 		t.Fatalf("create %s: %v", name, err)
 	}
-	token, err := st.CreateSession(id, time.Hour, "127.0.0.1", "test-agent")
+	token, err := st.CreateSession(id, time.Hour)
 	if err != nil {
 		t.Fatalf("session for %s: %v", name, err)
 	}

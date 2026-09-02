@@ -158,27 +158,6 @@ export function fmtLastSeen(unix: number): string {
   return new Date(unix * 1000).toLocaleString()
 }
 
-export function parseUserAgent(ua: string): string {
-  if (!ua) return '—'
-  let os = ''
-  if (/windows/i.test(ua)) os = 'Windows'
-  else if (/macintosh|mac os x/i.test(ua)) os = 'macOS'
-  else if (/android/i.test(ua)) os = 'Android'
-  else if (/iphone|ipad|ipod/i.test(ua)) os = 'iOS'
-  else if (/linux/i.test(ua)) os = 'Linux'
-
-  let browser = ''
-  if (/edg/i.test(ua)) browser = 'Edge'
-  else if (/chrome|crios/i.test(ua)) browser = 'Chrome'
-  else if (/firefox|fxios/i.test(ua)) browser = 'Firefox'
-  else if (/safari/i.test(ua)) browser = 'Safari'
-  else if (/opera|opr/i.test(ua)) browser = 'Opera'
-
-  if (browser && os) return `${browser} · ${os}`
-  if (browser) return browser
-  if (os) return os
-  return ua.length > 30 ? ua.slice(0, 30) + '…' : ua
-}
 
 // countryFlag turns a 2-letter country code into its emoji flag via regional-indicator
 // symbols; anything else (the "" unknown bucket) gets a globe. Shared because the map

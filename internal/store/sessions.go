@@ -4,17 +4,11 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
-	"errors"
 	"time"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/auth"
-	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 )
-
-// ErrSessionNotFound is returned when a session does not exist or has expired.
-var ErrSessionNotFound = errors.New("session not found")
 
 // sessionPepper returns the per-install HMAC pepper mixed into session token
 // hashes, generating and persisting one on first use.
@@ -48,14 +42,22 @@ func (s *Store) tokenHash(token string) (string, error) {
 	return hex.EncodeToString(mac.Sum(nil)), nil
 }
 
-// TokenHash returns the HMAC-SHA256 of a raw session token under the install pepper.
-func (s *Store) TokenHash(token string) (string, error) {
-	return s.tokenHash(token)
-}
+// MaxSessionUserAgent caps what is kept of the User-Agent header. A browser's is a
+// hundred-odd characters; anything longer is a client making a point, and the
+// column is for telling a phone from a laptop, not for archiving the header.
+const MaxSessionUserAgent = 256
 
 // CreateSession issues a new opaque session token for an admin and stores only
-// its HMAC hash along with client metadata. The raw token is returned to set as a cookie.
-func (s *Store) CreateSession(adminID int64, ttl time.Duration, ip, userAgent string) (string, error) {
+// its HMAC hash. The raw token is returned to set as a cookie. The session records
+// no address or client; login uses CreateSessionFrom, which does.
+func (s *Store) CreateSession(adminID int64, ttl time.Duration) (string, error) {
+	return s.CreateSessionFrom(adminID, ttl, "", "")
+}
+
+// CreateSessionFrom is CreateSession with where the login came from — the client
+// address and User-Agent — so the admin can later recognise the session in their
+// own list, and end one they did not open.
+func (s *Store) CreateSessionFrom(adminID int64, ttl time.Duration, ip, userAgent string) (string, error) {
 	token, err := auth.RandomToken()
 	if err != nil {
 		return "", err
@@ -64,10 +66,14 @@ func (s *Store) CreateSession(adminID int64, ttl time.Duration, ip, userAgent st
 	if err != nil {
 		return "", err
 	}
+	if len(userAgent) > MaxSessionUserAgent {
+		userAgent = userAgent[:MaxSessionUserAgent]
+	}
 	now := time.Now().Unix()
-	expires := time.Now().Add(ttl).Unix()
+	expires := now + int64(ttl.Seconds())
 	if _, err := s.db.Exec(
-		`INSERT INTO admin_sessions (token_hash, admin_id, expires_at, created_at, ip, user_agent, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO admin_sessions (token_hash, admin_id, expires_at, created_at, ip, user_agent, last_seen_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		hash, adminID, expires, now, ip, userAgent, now,
 	); err != nil {
 		return "", err
@@ -88,6 +94,13 @@ type SessionAdmin struct {
 	Username           string
 	Role               string
 	MustChangePassword bool
+
+	// SessionID identifies the session itself (the row, never the token), so a
+	// handler can mark it as "this one" in the admin's own list and keep it out of a
+	// "sign out everywhere else". LastSeenAt is when the row was last stamped; the
+	// middleware uses it to stamp no more often than once a minute.
+	SessionID  int64
+	LastSeenAt int64
 }
 
 // LookupSession resolves a raw session token to its admin. Expired sessions are
@@ -100,102 +113,97 @@ func (s *Store) LookupSession(token string) (SessionAdmin, bool) {
 	var a SessionAdmin
 	var mustChange int
 	var expires int64
-	var lastSeen int64
 	err = s.db.QueryRow(`
-		SELECT a.id, a.username, a.role, a.must_change_password, s.expires_at, s.last_seen_at
+		SELECT a.id, a.username, a.role, a.must_change_password, s.expires_at, s.id, s.last_seen_at
 		FROM admin_sessions s JOIN admins a ON a.id = s.admin_id
 		WHERE s.token_hash = ?`, hash,
-	).Scan(&a.ID, &a.Username, &a.Role, &mustChange, &expires, &lastSeen)
+	).Scan(&a.ID, &a.Username, &a.Role, &mustChange, &expires, &a.SessionID, &a.LastSeenAt)
 	if err != nil {
 		return SessionAdmin{}, false
 	}
-	now := time.Now().Unix()
-	if now > expires {
+	if time.Now().Unix() > expires {
 		_ = s.DeleteSession(token)
 		return SessionAdmin{}, false
-	}
-	// Throttle last_seen_at updates to once every 60 seconds to avoid unnecessary DB writes.
-	if now-lastSeen > 60 {
-		_, _ = s.db.Exec(`UPDATE admin_sessions SET last_seen_at = ? WHERE token_hash = ?`, now, hash)
 	}
 	a.MustChangePassword = mustChange != 0
 	return a, true
 }
 
-// ListSessions returns every active (non-expired) session for the given admin,
-// or for all admins when adminID is 0, ordered by last_seen_at DESC, created_at DESC.
-func (s *Store) ListSessions(adminID int64) ([]model.AdminSession, error) {
-	now := time.Now().Unix()
-	var rows *sql.Rows
-	var err error
-	if adminID > 0 {
-		rows, err = s.db.Query(`
-			SELECT s.token_hash, s.admin_id, a.username, a.role, s.ip, s.user_agent, s.created_at, s.expires_at, s.last_seen_at
-			FROM admin_sessions s
-			JOIN admins a ON a.id = s.admin_id
-			WHERE s.admin_id = ? AND s.expires_at > ?
-			ORDER BY s.last_seen_at DESC, s.created_at DESC`,
-			adminID, now,
-		)
-	} else {
-		rows, err = s.db.Query(`
-			SELECT s.token_hash, s.admin_id, a.username, a.role, s.ip, s.user_agent, s.created_at, s.expires_at, s.last_seen_at
-			FROM admin_sessions s
-			JOIN admins a ON a.id = s.admin_id
-			WHERE s.expires_at > ?
-			ORDER BY s.last_seen_at DESC, s.created_at DESC`,
-			now,
-		)
-	}
+// TouchSession records that a session was just used, and from which address.
+//
+// The address is overwritten, not kept from login: the question the session list
+// answers is "where is this session being used from NOW", and a cookie that moved
+// to another machine is exactly what a changed address reveals. Callers throttle
+// this (see SessionTouchInterval) — one write per request would put the panel's
+// own chatter on the same SQLite writer as everything else.
+func (s *Store) TouchSession(id, now int64, ip string) error {
+	_, err := s.db.Exec(`UPDATE admin_sessions SET last_seen_at = ?, ip = ? WHERE id = ?`, now, ip, id)
+	return err
+}
+
+// SessionTouchInterval is how long a session's last-seen stamp is allowed to lag
+// behind reality. A minute is coarse enough that a busy panel tab (the dashboard
+// streams every couple of seconds) costs one write a minute, and fine enough that
+// "last used" reads as live.
+const SessionTouchInterval = 60 * time.Second
+
+// AdminSession is one open session as the admin sees it in their own list. There
+// is no token in it, and no hash: the id is the only handle, and it is only ever
+// accepted together with the admin it belongs to.
+type AdminSession struct {
+	ID         int64  `json:"id"`
+	IP         string `json:"ip"`         // last address it was used from
+	UserAgent  string `json:"user_agent"` // the browser, as it introduced itself
+	CreatedAt  int64  `json:"created_at"`
+	LastSeenAt int64  `json:"last_seen_at"`
+	ExpiresAt  int64  `json:"expires_at"`
+	// Current marks the session that made the request, so the list can say "this
+	// device" and the revoke button can stay off it. Set by the handler.
+	Current bool `json:"current"`
+}
+
+// ListAdminSessions returns an admin's live sessions, most recently used first.
+func (s *Store) ListAdminSessions(adminID int64) ([]AdminSession, error) {
+	rows, err := s.db.Query(`
+		SELECT id, ip, user_agent, created_at, last_seen_at, expires_at
+		FROM admin_sessions
+		WHERE admin_id = ? AND expires_at >= ?
+		ORDER BY last_seen_at DESC, id DESC`, adminID, time.Now().Unix())
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-
-	var out []model.AdminSession
+	out := []AdminSession{}
 	for rows.Next() {
-		var sess model.AdminSession
-		if err := rows.Scan(
-			&sess.TokenHash, &sess.AdminID, &sess.Username, &sess.Role,
-			&sess.IP, &sess.UserAgent, &sess.CreatedAt, &sess.ExpiresAt, &sess.LastSeenAt,
-		); err != nil {
+		var x AdminSession
+		if err := rows.Scan(&x.ID, &x.IP, &x.UserAgent, &x.CreatedAt, &x.LastSeenAt, &x.ExpiresAt); err != nil {
 			return nil, err
 		}
-		if sess.LastSeenAt == 0 {
-			sess.LastSeenAt = sess.CreatedAt
-		}
-		out = append(out, sess)
-	}
-	if out == nil {
-		out = []model.AdminSession{}
+		out = append(out, x)
 	}
 	return out, rows.Err()
 }
 
-// GetSessionByHash returns the active session matching the given token_hash.
-func (s *Store) GetSessionByHash(tokenHash string) (model.AdminSession, error) {
-	now := time.Now().Unix()
-	var sess model.AdminSession
-	err := s.db.QueryRow(`
-		SELECT s.token_hash, s.admin_id, a.username, a.role, s.ip, s.user_agent, s.created_at, s.expires_at, s.last_seen_at
-		FROM admin_sessions s
-		JOIN admins a ON a.id = s.admin_id
-		WHERE s.token_hash = ? AND s.expires_at > ?`,
-		tokenHash, now,
-	).Scan(
-		&sess.TokenHash, &sess.AdminID, &sess.Username, &sess.Role,
-		&sess.IP, &sess.UserAgent, &sess.CreatedAt, &sess.ExpiresAt, &sess.LastSeenAt,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return model.AdminSession{}, ErrSessionNotFound
-	}
+// DeleteAdminSessionByID revokes one session by id, but only if it belongs to
+// adminID: the id comes from the wire, and an admin must not be able to end a
+// colleague's session by guessing a small integer. Reports whether a row went.
+func (s *Store) DeleteAdminSessionByID(adminID, id int64) (bool, error) {
+	res, err := s.db.Exec(`DELETE FROM admin_sessions WHERE id = ? AND admin_id = ?`, id, adminID)
 	if err != nil {
-		return model.AdminSession{}, err
+		return false, err
 	}
-	if sess.LastSeenAt == 0 {
-		sess.LastSeenAt = sess.CreatedAt
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// DeleteOtherAdminSessions revokes every session of an admin except keepID — "sign
+// out everywhere else". Returns how many were ended.
+func (s *Store) DeleteOtherAdminSessions(adminID, keepID int64) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM admin_sessions WHERE admin_id = ? AND id <> ?`, adminID, keepID)
+	if err != nil {
+		return 0, err
 	}
-	return sess, nil
+	return res.RowsAffected()
 }
 
 // DeleteSession revokes a session by its raw token.
@@ -204,18 +212,7 @@ func (s *Store) DeleteSession(token string) error {
 	if err != nil {
 		return err
 	}
-	return s.DeleteSessionByHash(hash)
-}
-
-// DeleteSessionByHash revokes a session by its token_hash.
-func (s *Store) DeleteSessionByHash(tokenHash string) error {
-	_, err := s.db.Exec(`DELETE FROM admin_sessions WHERE token_hash = ?`, tokenHash)
-	return err
-}
-
-// DeleteSessionForAdminByHash revokes a session matching adminID and token_hash.
-func (s *Store) DeleteSessionForAdminByHash(adminID int64, tokenHash string) error {
-	_, err := s.db.Exec(`DELETE FROM admin_sessions WHERE admin_id = ? AND token_hash = ?`, adminID, tokenHash)
+	_, err = s.db.Exec(`DELETE FROM admin_sessions WHERE token_hash = ?`, hash)
 	return err
 }
 

@@ -27,6 +27,8 @@ import {
   setDecoy as saveDecoy,
   setGeoCadence as saveGeoCadence,
   setMasterName,
+  setMasterPlacement,
+  type Placement,
   setNodeDNS,
   setServerProxy,
   setNodeEnabled,
@@ -120,6 +122,7 @@ import {
   TextInput,
   useConfirm,
 } from "./ui";
+import { PlacementFields, placementOf } from "./PlacementFields";
 
 // DialogTabs is the in-modal tab strip used by the server settings dialogs, so a
 // server's many sections (domain / routing / DNS / …) don't stack into one long
@@ -1422,6 +1425,9 @@ function NodeSettingsDialog({
   const [name, setName] = useState(node.name);
   const [decoy, setDecoy] = useState(node.decoy_template);
   const [coef, setCoef] = useState(String(node.traffic_coefficient || 1));
+  const [pl, setPl] = useState<Placement>(placementOf(node));
+  const [plBase, setPlBase] = useState<Placement>(placementOf(node));
+  const plDirty = JSON.stringify(pl) !== JSON.stringify(plBase);
   const [genBase, setGenBase] = useState({
     name: node.name,
     decoy: node.decoy_template,
@@ -1442,7 +1448,7 @@ function NodeSettingsDialog({
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState(node.is_rented ? "connections" : "general");
   const genDirty =
-    name !== genBase.name || decoy !== genBase.decoy || coef !== genBase.coef || proxyDirty;
+    name !== genBase.name || decoy !== genBase.decoy || coef !== genBase.coef || proxyDirty || plDirty;
   const dnsDirty = dns !== dnsBase;
 
   const warpBadge: StatusBadge = !r.warpEnabled
@@ -1469,6 +1475,7 @@ function NodeSettingsDialog({
           host: node.host,
           decoy_template: decoy,
           traffic_coefficient: clampCoefficient(coef),
+          placement: pl,
         });
         if (proxyDirty) {
           await setServerProxy(node.id, proxy);
@@ -1476,6 +1483,7 @@ function NodeSettingsDialog({
         }
       }
       setGenBase({ name, decoy, coef });
+      setPlBase(pl);
       notifySuccess(t("nodes.generalSaved"));
       onRefresh();
     } catch (e) {
@@ -1595,6 +1603,7 @@ function NodeSettingsDialog({
                 />
                 <p className="text-xs text-ink-muted">{t("nodes.coefficientHint")}</p>
               </div>
+              <PlacementFields value={pl} onChange={setPl} online={node.online_users ?? 0} />
               <SystemProxyEditor
                 host={node.host}
                 value={proxy}
@@ -1608,6 +1617,7 @@ function NodeSettingsDialog({
                 setName(genBase.name);
                 setDecoy(genBase.decoy);
                 setCoef(genBase.coef);
+                setPl(plBase);
                 setProxy(proxyBase);
               }}
               dirty={genDirty}
@@ -1713,6 +1723,9 @@ function MasterSettingsDialog({
   const [loaded, setLoaded] = useState(false);
   const [name, setName] = useState(node.master_label ?? "");
   const [decoy, setDecoy] = useState(node.decoy_template);
+  const [pl, setPl] = useState<Placement>(placementOf(node));
+  const [plBase, setPlBase] = useState<Placement>(placementOf(node));
+  const plDirty = JSON.stringify(pl) !== JSON.stringify(plBase);
   const [genBase, setGenBase] = useState({
     name: node.master_label ?? "",
     decoy: node.decoy_template,
@@ -1724,7 +1737,7 @@ function MasterSettingsDialog({
   const proxyIssue = systemProxyIssue(proxy);
   const [dns, setDns] = useState(canonicalDns(node.xray_dns ?? ""));
   const [dnsBase, setDnsBase] = useState(canonicalDns(node.xray_dns ?? ""));
-  const genDirty = name !== genBase.name || decoy !== genBase.decoy || proxyDirty;
+  const genDirty = name !== genBase.name || decoy !== genBase.decoy || proxyDirty || plDirty;
   const dnsDirty = dns !== dnsBase;
   // Live egress status for the badges (master's egress runs locally, so the panel
   // knows the real state — unlike a node).
@@ -1845,6 +1858,10 @@ function MasterSettingsDialog({
     setSavingGeneral(true);
     try {
       await setMasterName(name.trim());
+      if (plDirty) {
+        await setMasterPlacement(pl);
+        setPlBase(pl);
+      }
       await saveDecoy(decoy);
       // Only when it actually changed: the proxy write reconciles Xray, which a
       // rename has no business doing.
@@ -1915,6 +1932,7 @@ function MasterSettingsDialog({
                   onChange={setDecoy}
                   data={decoys.map((d) => ({ value: d, label: decoyLabel(d) }))}
                 />
+                <PlacementFields value={pl} onChange={setPl} online={node.online_users ?? 0} />
                 <SystemProxyEditor
                   host={node.host}
                   value={proxy}
@@ -1927,6 +1945,7 @@ function MasterSettingsDialog({
                 onReset={() => {
                   setName(genBase.name);
                   setDecoy(genBase.decoy);
+                  setPl(plBase);
                   setProxy(proxyBase);
                 }}
                 dirty={genDirty}

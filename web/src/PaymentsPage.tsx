@@ -250,6 +250,7 @@ export function PaymentsPage() {
               onChange={setPendingView}
               tableLabel={t("usersPanel.viewTable")}
               cardsLabel={t("usersPanel.viewCards")}
+              label={t("pay.awaiting")}
             />
           </span>
         }
@@ -291,6 +292,7 @@ export function PaymentsPage() {
             onChange={setHistoryView}
             tableLabel={t("usersPanel.viewTable")}
             cardsLabel={t("usersPanel.viewCards")}
+            label={t("pay.history")}
           />
         }
       >
@@ -382,7 +384,7 @@ function PendingTable({
 }) {
   const { t } = useTranslation();
   return (
-    <TableShell>
+    <TableShell bare>
       <THead
         cols={[
           { label: t("pay.colOrder") },

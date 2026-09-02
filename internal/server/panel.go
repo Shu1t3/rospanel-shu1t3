@@ -90,6 +90,11 @@ func makeUserView(u model.User, set *model.Settings, userBotUsername string, cus
 			v.Links = append(v.Links, namedLink{link.CustomLabel(in, set), l})
 		}
 	}
+	// AmneziaWG has no share-link form; what the card carries is the address of the
+	// user's config file for this server, which the Amnezia apps import as is.
+	if set.AWGEnabled && set.AWGPort != 0 && access.AllowsBuiltin(model.LocalNodeID, model.LaneAWG) {
+		v.Links = append(v.Links, namedLink{set.ProtoLabel(model.ProtoAWG), sub.AWGConfURL(set, u.SubToken, model.LocalNodeID)})
+	}
 	return v
 }
 
@@ -126,6 +131,7 @@ func (rt *Router) subSettings(local *model.Settings) []*model.Settings {
 	// client can tell the master's entries from the nodes'.
 	local.NodeLabel = local.MasterLabel
 	local.ServerID = model.LocalNodeID
+	local.ServerPlacement = local.MasterPlacement
 	sets := []*model.Settings{local}
 	if nodes, err := rt.mgr.NodeLinkSettings(); err == nil {
 		sets = append(sets, nodes...)
@@ -146,7 +152,7 @@ func (rt *Router) subSettings(local *model.Settings) []*model.Settings {
 // failure as fatal (see genOptsFor), so the credential is withheld and the links cannot
 // work anyway. Failing the fetch locks nobody out: a client that cannot refresh keeps the
 // config it already has and tries again later.
-func (rt *Router) subServers(local *model.Settings, userID int64) ([]sub.Server, error) {
+func (rt *Router) subServers(local *model.Settings, userID int64, clientIP string) ([]sub.Server, error) {
 	sets := rt.subSettings(local)
 	custom, err := rt.mgr.Store().AllInbounds()
 	if err != nil {
@@ -160,7 +166,11 @@ func (rt *Router) subServers(local *model.Settings, userID int64) ([]sub.Server,
 	if err != nil {
 		happNodes = nil
 	}
-	return sub.ServersWithHapp(sets, custom, happNodes, access), nil
+	// Ordered for THIS client: their country, each server's live load and the
+	// operator's weights decide who comes first, and a full server can drop out.
+	// Under the manual mode with no weights this is the old order, unchanged.
+	servers := sub.ServersWithHapp(sets, custom, happNodes, access)
+	return sub.Order(servers, local.SubOrderMode, rt.mgr.CountryOfIP(clientIP), rt.mgr.OnlineByServer()), nil
 }
 
 // localInbounds is the master's own custom inbounds, or none when they can't be
@@ -246,15 +256,19 @@ func (rt *Router) panelMux() http.Handler {
 	authedAny("GET /api/me", rt.me)
 	authedAny("POST /api/setup/password", rt.setupPassword)
 	authedAny("POST /api/account/credentials", rt.updateCredentials)
-	authedAny("GET /api/account/sessions", rt.mySessions)
-	authedAny("DELETE /api/account/sessions", rt.deleteAllMyOtherSessions)
-	authedAny("DELETE /api/account/sessions/{hash}", rt.deleteMySession)
 	// The caller's own second factor (no id in the path — see panel_totp.go).
 	authedAny("GET /api/account/totp", rt.totpStatus)
 	authedAny("POST /api/account/totp/start", rt.totpStart)
 	authedAny("POST /api/account/totp/enable", rt.totpEnable)
 	authedAny("POST /api/account/totp/disable", rt.totpDisable)
-	// The admin roster and its trail — owner only for roster mutations, admin and up for listing.
+	// The caller's own open sessions (see panel_sessions.go). Same shape as 2FA: no
+	// id of another admin anywhere in the path.
+	authedAny("GET /api/account/sessions", rt.listSessions)
+	authedAny("DELETE /api/account/sessions/{id}", withID(rt.revokeSession))
+	authedAny("POST /api/account/sessions/revoke-others", rt.revokeOtherSessions)
+	// The admin roster and its trail — owner only. Who signed in from where, who
+	// created or removed whom, who changed what setting: same tier as the roster
+	// itself.
 	authedOwner("GET /api/admin-audit", rt.adminAudit)
 	authedOwner("GET /api/admin-audit/catalog", rt.adminAuditCatalog)
 	authedOwner("GET /api/admin-audit/export", rt.exportAdminAudit)
@@ -263,9 +277,6 @@ func (rt *Router) panelMux() http.Handler {
 	authedOwnerID("POST /api/admins/{id}/role", rt.setAdminRole)
 	authedOwnerID("POST /api/admins/{id}/password", rt.resetAdminPassword)
 	authedOwnerID("DELETE /api/admins/{id}", rt.deleteAdmin)
-	authedOpID("GET /api/admins/{id}/sessions", rt.getAdminSessions)
-	authedOpID("DELETE /api/admins/{id}/sessions", rt.deleteAllAdminSessions)
-	authedOpID("DELETE /api/admins/{id}/sessions/{hash}", rt.deleteAdminSession)
 	authed("GET /api/update", rt.checkUpdate)
 	authed("POST /api/update", rt.applyUpdate)
 	authed("POST /api/setup/timezone", rt.setupTimezone)
@@ -276,6 +287,7 @@ func (rt *Router) panelMux() http.Handler {
 	authed("POST /api/settings/subscription", rt.saveSubSettings)
 	authed("GET /api/settings/sub-rules", rt.getSubRules)
 	authed("POST /api/settings/sub-rules", rt.saveSubRules)
+	authed("POST /api/settings/sub-dpi", rt.saveSubDPI)
 	authed("POST /api/settings/hwid", rt.saveHWIDSettings)
 	authed("POST /api/settings/maintenance", rt.saveMaintenance)
 	authed("POST /api/settings/probe-detect", rt.saveProbeDetect)
@@ -337,6 +349,14 @@ func (rt *Router) panelMux() http.Handler {
 	authedOpID("POST /api/users/{id}/limits", rt.setUserLimits)
 	authedOpID("POST /api/users/{id}/enabled", rt.setUserEnabled)
 	authedOpID("POST /api/users/{id}/name", rt.renameUser)
+	authedOpID("POST /api/users/{id}/note", rt.setUserNote)
+	authedOpID("POST /api/users/{id}/tags", rt.setUserTags)
+	authedOp("GET /api/users/tags", rt.userTags)
+	// Import from another panel (see panel_import.go): inspect reads, import writes.
+	authedOp("POST /api/users/import/inspect", rt.importInspect)
+	authedOp("POST /api/users/import", rt.importUsers)
+	// The export is admin-level: one file with every credential (see exportUsers).
+	authed("GET /api/users/export", rt.exportUsers)
 	authedOpID("GET /api/users/{id}/connections", rt.userConnections)
 	authedOpID("GET /api/users/{id}/devices", rt.userDevices)
 	authedOpID("POST /api/users/{id}/devices/unbind", rt.unbindUserDevice)
@@ -382,6 +402,7 @@ func (rt *Router) panelMux() http.Handler {
 	authed("POST /api/settings/api-path", rt.setAPIPathSettings)
 	authed("GET /api/nodes", rt.listNodes)
 	authed("POST /api/nodes/master-name", rt.setMasterName)
+	authed("POST /api/nodes/master-placement", rt.setMasterPlacement)
 	authed("POST /api/nodes/master-protocols", rt.setMasterProtocols)
 	authed("POST /api/nodes/master-reality", rt.setMasterReality)
 	authed("POST /api/nodes", rt.createNode)
@@ -592,7 +613,7 @@ func (rt *Router) login(w http.ResponseWriter, r *http.Request) {
 	rt.limiter.success(ip, username)
 	auditLogin(model.AuditLogin)
 
-	token, err := rt.mgr.Store().CreateSession(id, sessionTTLSec*time.Second, ip, r.UserAgent())
+	token, err := rt.mgr.Store().CreateSessionFrom(id, sessionTTLSec*time.Second, ip, r.UserAgent())
 	if err != nil {
 		slog.Error("login: session creation failed", "err", err)
 		writeErrCode(w, http.StatusInternalServerError, "err.sessionCreateFailed", "не удалось создать сессию")
@@ -778,6 +799,15 @@ func (rt *Router) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		if !mustChangeAllowed[r.URL.Path] && a.MustChangePassword {
 			writeErrCode(w, http.StatusForbidden, "err.mustChangePassword", "смените пароль, прежде чем пользоваться панелью")
 			return
+		}
+		// Keep the session's "last used from" current, at most once a minute: the
+		// account screen lists open sessions by it, and a cookie used from a new
+		// address is what that list exists to show. Best-effort — a failed stamp
+		// must not cost a valid request.
+		if now := time.Now().Unix(); now-a.LastSeenAt >= int64(store.SessionTouchInterval.Seconds()) {
+			if err := rt.mgr.Store().TouchSession(a.SessionID, now, clientIP(r)); err != nil {
+				slog.Warn("session: could not stamp last-seen", "admin", a.Username, "err", err)
+			}
 		}
 		// Stamp the acting admin onto the context so the audit log can attribute every
 		// mutation this request makes, without each handler re-reading the cookie, and

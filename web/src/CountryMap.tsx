@@ -15,6 +15,7 @@ const PALETTE = [
   '#06b6d4', '#65a30d', '#ec4899', '#4f46e5', '#eab308',
 ]
 
+
 // One normalised row for the shared bar renderer: a stable key, a leading glyph, a
 // label, and the distinct-IP count.
 interface Row {

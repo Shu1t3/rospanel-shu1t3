@@ -29,11 +29,10 @@ const AdminAuditRetentionDays = 90
 // once shipped, or old rows lose their label.
 const (
 	// Sessions.
-	AuditLogin           = "admin.login"
-	AuditLoginFailed     = "admin.login_failed"
-	AuditLogout          = "admin.logout"
-	AuditSessionRevoked  = "admin.session_revoked"
-	AuditSessionsRevoked = "admin.sessions_revoked"
+	AuditLogin          = "admin.login"
+	AuditLoginFailed    = "admin.login_failed"
+	AuditLogout         = "admin.logout"
+	AuditSessionRevoked = "admin.session_revoked"
 
 	// The roster.
 	AuditAdminCreated       = "admin.created"
@@ -87,6 +86,8 @@ const (
 	AuditWatchdogRestart = "panel.watchdog_restart"
 	AuditWatchdogWedged  = "panel.watchdog_wedged" // wedge detected but auto-recovery off — alert only
 	AuditUpdated         = "panel.updated"
+	// Every user, with their credentials, downloaded as one file (users.exported).
+	AuditUsersExported = "users.exported"
 )
 
 // Audit categories. What the journal is FILTERED by — a handful of areas instead of
@@ -133,7 +134,6 @@ var AdminAuditCatalog = []AdminAuditEntry{
 	{AuditLoginFailed, AuditCatSession},
 	{AuditLogout, AuditCatSession},
 	{AuditSessionRevoked, AuditCatSession},
-	{AuditSessionsRevoked, AuditCatSession},
 
 	{AuditAdminCreated, AuditCatAdmins},
 	{AuditAdminDeleted, AuditCatAdmins},
@@ -163,6 +163,7 @@ var AdminAuditCatalog = []AdminAuditEntry{
 
 	{AuditXrayRestarted, AuditCatPanel},
 	{AuditPanelRestarted, AuditCatPanel},
+	{AuditUsersExported, AuditCatPanel},
 	{AuditStatsReset, AuditCatPanel},
 	{AuditBackupTaken, AuditCatPanel},
 	{AuditRestored, AuditCatPanel},

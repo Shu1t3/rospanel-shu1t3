@@ -18,12 +18,13 @@ import (
 // everything else is sent to HTTPS.
 //
 // The point is what port 80 looks like when nothing is there. A host that answers
-// HTTPS on 443 with a plausible website and refuses 80 outright is a shape the real
-// web does not have, and the refusal contradicts the decoy on 443 however good it
-// is.
+// 443 with a convincing website and refuses 80 outright is not a shape the real web
+// has — essentially every site that serves HTTPS also answers HTTP and redirects —
+// so the refusal itself says "this is not what it claims to be", however good the
+// page on 443 is.
 //
-// The redirect imitates the server the decoy claims to be, down to the status code:
-// Caddy answers its automatic HTTP→HTTPS redirect with 308 and an empty body
+// The redirect imitates the same server the decoy claims to be, down to the status
+// code: Caddy answers its automatic HTTP→HTTPS redirect with 308 and an empty body,
 // where nginx would use 301. Claiming to be Caddy on 443 and redirecting like nginx
 // on 80 is the same contradiction one layer down.
 //
@@ -77,7 +78,7 @@ func Handler(host func() string) http.Handler {
 // that ACME challenges now go through it.
 //
 // Best-effort by design. Port 80 may be held by something the operator runs, and in
-// that case we step aside: lego will go on binding the port itself for the few
+// that case the old arrangement still stands: lego binds the port itself for the few
 // seconds a challenge takes, exactly as it did before this existed. Failing to bind
 // must never be fatal — a cosmetic improvement to how the host looks is not worth a
 // panel that will not start.

@@ -190,4 +190,3 @@ func (m *Manager) annotateProbes(probes []model.ProbeHit) {
 		}
 	}
 }
-

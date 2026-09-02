@@ -48,6 +48,8 @@ const nodeColumns = `id, name, host, enabled,
 	acme_email, acme_provider, zerossl_eab_kid, zerossl_eab_hmac,
 	proxy_socks_enabled, proxy_socks_port, proxy_http_enabled, proxy_http_port,
 	proxy_accounts, traffic_coefficient,
+	country, sort_weight, capacity, hide_when_full,
+	awg_enabled, awg_private_key, awg_public_key, awg_params,
 	share_enabled, share_quota_percent, share_speed_limit, share_token,
 	is_rented, rent_owner_node_id, rent_share_key, rent_tenant_id, rent_master_host`
 
@@ -65,9 +67,10 @@ func generateNodeToken() (string, error) {
 func scanNode(sc interface{ Scan(...any) error }) (*model.Node, error) {
 	var n model.Node
 	var enabled, xrayRunning, certSelfSigned, warpEn, operaEn int
-	var proxySocksEn, proxyHTTPEn int
+	var proxySocksEn, proxyHTTPEn, hideFull int
 	var proxyAccounts string
-	var vlessEn, hysteriaEn, realityEn sql.NullBool
+	var vlessEn, hysteriaEn, realityEn, awgEn sql.NullBool
+	var awgParamsJSON string
 	var routingJSON, connectionsJSON string
 	var xrayDNS sql.NullString
 	var shareEn, isRented int
@@ -86,12 +89,15 @@ func scanNode(sc interface{ Scan(...any) error }) (*model.Node, error) {
 		&n.ACMEEmail, &n.ACMEProvider, &n.ZeroSSLEABKID, &n.ZeroSSLEABHMAC,
 		&proxySocksEn, &n.Proxy.SocksPort, &proxyHTTPEn, &n.Proxy.HTTPPort,
 		&proxyAccounts, &n.TrafficCoefficient,
+		&n.Country, &n.Weight, &n.Capacity, &hideFull,
+		&awgEn, &n.AWGPrivateKey, &n.AWGPublicKey, &awgParamsJSON,
 		&shareEn, &n.ShareQuotaPercent, &n.ShareSpeedLimit, &n.ShareToken,
 		&isRented, &n.RentOwnerNodeID, &n.RentShareKey, &n.RentTenantID, &n.RentMasterHost,
 	); err != nil {
 		return nil, err
 	}
 	n.Enabled = enabled != 0
+	n.HideWhenFull = hideFull != 0
 	n.XrayRunning = xrayRunning != 0
 	n.CertSelfSigned = certSelfSigned != 0
 	n.WarpEnabled = warpEn != 0
@@ -100,6 +106,11 @@ func scanNode(sc interface{ Scan(...any) error }) (*model.Node, error) {
 	n.IsRented = isRented != 0
 	n.WarpPrivateKey = decField(n.WarpPrivateKey)
 	n.RealityPrivateKey = decField(n.RealityPrivateKey)
+	n.AWGPrivateKey = decField(n.AWGPrivateKey)
+	n.AWGEnabled = nullBoolPtr(awgEn)
+	if awgParamsJSON != "" {
+		_ = json.Unmarshal([]byte(awgParamsJSON), &n.AWGParams)
+	}
 	n.ZeroSSLEABHMAC = decField(n.ZeroSSLEABHMAC)
 	n.Proxy.SocksEnabled = proxySocksEn != 0
 	n.Proxy.HTTPEnabled = proxyHTTPEn != 0
@@ -401,6 +412,8 @@ type NodeEdit struct {
 	OperaCountry string
 	// TrafficCoefficient scales quota consumption on this node (normalized on write).
 	TrafficCoefficient float64
+	// Placement: country, weight, capacity (normalized on write).
+	Placement model.Placement
 }
 
 // UpdateNode persists the operator-editable fields. Identity, tokens and reported
@@ -423,13 +436,15 @@ func (s *Store) UpdateNode(id int64, e NodeEdit) error {
 			vless_enabled = ?, hysteria_enabled = ?, reality_enabled = ?,
 			routing_config = ?, xray_dns = ?,
 			warp_enabled = ?, opera_enabled = ?, opera_country = ?,
-			traffic_coefficient = ?
+			traffic_coefficient = ?,
+			country = ?, sort_weight = ?, capacity = ?, hide_when_full = ?
 		WHERE id = ?`,
 		e.Name, e.Host, e.DecoyTemplate,
 		boolToNull(e.VLESS), boolToNull(e.Hysteria), boolToNull(e.Reality),
 		routingJSON, dns,
 		boolToInt(e.WarpEnabled), boolToInt(e.OperaEnabled), e.OperaCountry,
 		model.NodeCoefficientOr(e.TrafficCoefficient),
+		model.NormalizeCountry(e.Placement.Country), e.Placement.Weight, e.Placement.Capacity, boolToInt(e.Placement.HideWhenFull),
 		id,
 	)
 	if isNameConflict(err) {
@@ -638,4 +653,23 @@ func (s *Store) PurgeDeletedNodes(before int64) (int64, error) {
 	}
 	n, _ := res.RowsAffected()
 	return n, nil
+}
+
+// SetNodeAWGEnabled flips a node's AmneziaWG lane (the node's own toggle, like
+// its other protocols).
+func (s *Store) SetNodeAWGEnabled(id int64, enabled bool) error {
+	_, err := s.db.Exec(`UPDATE nodes SET awg_enabled = ? WHERE id = ?`, boolToInt(enabled), id)
+	return err
+}
+
+// SaveNodeAWGKeys stores a node's AmneziaWG keypair and obfuscation parameters
+// (the private key encrypted at rest).
+func (s *Store) SaveNodeAWGKeys(id int64, priv, pub string, params model.AWGParams) error {
+	b, err := json.Marshal(params)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`UPDATE nodes SET awg_private_key = ?, awg_public_key = ?, awg_params = ? WHERE id = ?`,
+		encField(priv), pub, string(b), id)
+	return err
 }

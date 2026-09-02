@@ -46,7 +46,13 @@ type proc struct {
 	done    chan struct{}
 	started time.Time
 	stop    bool
-	cfg     []byte // snapshot taken immediately before cmd.Start()
+	// cfg is the config file as it was when this process started, kept so a run that
+	// proves itself can be promoted to the rollback copy. Read here rather than taken
+	// from appliedCfg because a supervised restart starts from the file without going
+	// through Apply, so appliedCfg can describe a different config than the one this
+	// process is actually running. nil when the file could not be read: then there is
+	// simply nothing to promote.
+	cfg []byte
 }
 
 // Supervisor owns the Xray child process and the on-disk config.json. It
@@ -67,6 +73,14 @@ type Supervisor struct {
 	closed    bool       // panel is shutting down; do not (re)start, ever
 	restarts  int        // consecutive crash restarts (backoff exponent)
 	lastApply time.Time  // when the last Apply() succeeded (zero if never)
+	// rolledBack marks that the config on disk has already been reverted once for the
+	// current generation, so a backup that is itself unusable cannot start a loop.
+	// Cleared by Apply/ApplyRaw: a new config is a new generation and deserves its own
+	// attempt.
+	rolledBack bool
+	// lastLoadErr is why the config on disk was rejected, kept for the message that
+	// tells the operator their change was reverted and what was wrong with it.
+	lastLoadErr string
 	// appliedCfg is the config the RUNNING process was started with. Apply compares
 	// against this, not against the file: WriteConfig deliberately moves the file
 	// ahead of the process (see its doc), so a file comparison would read "nothing
@@ -100,16 +114,9 @@ type Supervisor struct {
 	// renewed certificate): those are routine, and reporting them as recovery would
 	// make the one message that means "the outage is over" meaningless.
 	onRecover func()
-	// rolledBack flags that the supervisor has already restored config.json.bak for
-	// the current failure. It prevents a loop when the backup is itself unloadable:
-	// after one rollback, subsequent restarts wait for a manual fix or a new Apply.
-	// Reset whenever a new config is successfully Applied.
-	rolledBack bool
-	// lastLoadErr is the error from the last currentConfigUnloadable check, kept so the
-	// rollback notification can tell the operator why their config was refused.
-	lastLoadErr string
-	// onRolledBack is called when config.json was reverted to its backup because Xray
-	// refused the live one. Passes the reason Xray gave.
+	// onRolledBack is called after the config was reverted to its backup, with the
+	// reason. Separate from onRecover: coming back up and having a change undone are
+	// different facts, and only one of them needs the operator to go look at something.
 	onRolledBack func(reason string)
 
 	verOnce sync.Once

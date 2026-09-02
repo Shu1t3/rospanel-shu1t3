@@ -76,6 +76,7 @@ const hopIntervals = () => [
 type Hy = { port: number; start: number; end: number; interval: string };
 type Reality = { port: number; dests: string[]; antiReplay: boolean };
 type Anti = { fragment: boolean; min13: boolean; blockQuic: boolean };
+type Awg = { port: number; dns: string };
 
 // ConnectionsEditor is the unified connection editor (built-in protocols + custom inbounds +
 // Anti-DPI + factory reset) for one server. Controlled: the caller injects how to load,
@@ -109,6 +110,8 @@ export function ConnectionsEditor({
   const [reality, setReality] = useState<Reality>({ port: 8443, dests: [], antiReplay: false });
   const [anti, setAnti] = useState<Anti>({ fragment: false, min13: false, blockQuic: false });
   const [regenReality, setRegenReality] = useState(false);
+  const [awgCfg, setAwgCfg] = useState<Awg>({ port: 0, dns: "" });
+  const [regenAwg, setRegenAwg] = useState(false);
   const [saved, setSaved] = useState<{
     enabled: Record<string, boolean>;
     fps: Record<string, string>;
@@ -117,6 +120,7 @@ export function ConnectionsEditor({
     hy: Hy;
     reality: Reality;
     anti: Anti;
+    awg: Awg;
   }>({
     enabled: {},
     fps: {},
@@ -125,6 +129,7 @@ export function ConnectionsEditor({
     hy: { port: 443, start: 443, end: 443, interval: "5-10" },
     reality: { port: 8443, dests: [], antiReplay: false },
     anti: { fragment: false, min13: false, blockQuic: false },
+    awg: { port: 0, dns: "" },
   });
   const [open, setOpen] = useState<Record<string, boolean>>({});
 
@@ -180,17 +185,20 @@ export function ConnectionsEditor({
       antiReplay: s.reality_anti_replay,
     };
     const a: Anti = { fragment: s.tls_fragment, min13: s.tls_min13, blockQuic: s.block_quic };
+    const g: Awg = { port: s.awg_port, dns: s.awg_dns || "" };
     setEnabled(en);
     setFps(fp);
     setNames(nm);
     setHy(h);
     setReality(r);
     setAnti(a);
+    setAwgCfg(g);
     setRegenReality(false);
+    setRegenAwg(false);
     if (explicitDeleted !== undefined) {
       setDeleted(explicitDeleted);
     }
-    setSaved({ enabled: en, fps: fp, names: nm, vlessPort: vlessP, hy: h, reality: r, anti: a });
+    setSaved({ enabled: en, fps: fp, names: nm, vlessPort: vlessP, hy: h, reality: r, anti: a, awg: g });
   };
 
   useEffect(() => {
@@ -232,6 +240,10 @@ export function ConnectionsEditor({
   const antiServerChanged = anti.min13 !== saved.anti.min13;
   const antiClientChanged =
     anti.fragment !== saved.anti.fragment || anti.blockQuic !== saved.anti.blockQuic;
+  const awgChanged =
+    awgCfg.port !== (saved.awg?.port ?? 0) ||
+    awgCfg.dns !== (saved.awg?.dns ?? "") ||
+    regenAwg;
   const dirty =
     fpsChanged ||
     namesChanged ||
@@ -241,8 +253,8 @@ export function ConnectionsEditor({
     realityChanged ||
     regenReality ||
     antiServerChanged ||
-    antiClientChanged;
-
+    antiClientChanged ||
+    awgChanged;
   // Config-affecting changes restart Xray (on the master) or re-push to the node.
   const restartsXray =
     protocolsChanged || portsChanged || realityChanged || regenReality || antiServerChanged;
@@ -268,6 +280,9 @@ export function ConnectionsEditor({
         tls_fragment: anti.fragment,
         tls_min13: anti.min13,
         block_quic: anti.blockQuic,
+        awg_port: awgCfg.port,
+        awg_dns: awgCfg.dns,
+        regen_awg_keys: regenAwg,
       });
       applyStatus(s);
       notifySuccess(t("common.saved"));
@@ -284,7 +299,9 @@ export function ConnectionsEditor({
     setHy(saved.hy);
     setReality(saved.reality);
     setAnti(saved.anti);
+    setAwgCfg(saved.awg);
     setRegenReality(false);
+    setRegenAwg(false);
   };
 
   // Custom inbound mutations
@@ -372,6 +389,229 @@ export function ConnectionsEditor({
           >
             + {t("conn.addConnection")}
           </Button>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-3">
+        {visibleProtocols.map((p) => {
+          const on = enabled[p.key] ?? p.enabled;
+          const isOpen = open[p.key] ?? false;
+          return (
+            <div key={p.key} className="rounded-xl border border-gray-100 bg-white shadow-sm">
+              <button
+                type="button"
+                onClick={() => setOpen((o) => ({ ...o, [p.key]: !o[p.key] }))}
+                className="flex w-full items-center justify-between gap-2 p-4 text-left"
+              >
+                <div className="flex min-w-0 items-center gap-2">
+                  <IconChevron
+                    className={`shrink-0 text-gray-400 transition-transform ${isOpen ? "rotate-180" : ""}`}
+                  />
+                  <span className="font-medium text-ink">{p.name}</span>
+                  <Badge color="gray">{p.port}</Badge>
+                  {!on && <Badge color="gray">{t("conn.off")}</Badge>}
+                </div>
+                <span onClick={(e) => e.stopPropagation()} className="flex items-center">
+                  <Switch checked={on} onChange={(v) => setEnabled((e) => ({ ...e, [p.key]: v }))} />
+                </span>
+              </button>
+
+              {isOpen && (
+                <div className="flex flex-col gap-3 border-t border-gray-100 px-4 pb-4 pt-3">
+                  <div className="flex flex-col gap-2">
+                    <TextInput
+                      label={t("conn.name")}
+                      value={names[p.key] ?? ""}
+                      onChange={(v) => setNames((n) => ({ ...n, [p.key]: v }))}
+                      placeholder={p.name}
+                    />
+                    <p className="text-xs text-ink-muted">
+                      {t("conn.nameHint", { name: p.name })}
+                    </p>
+                  </div>
+
+                  <div className="flex flex-col gap-1 border-t border-gray-100 pt-3">
+                    <Field label={t("conn.transport")} value={p.transport} />
+                    <Field label={t("conn.security")} value={p.security} />
+                    {p.note && <Field label={t("conn.note")} value={p.note} />}
+                  </div>
+
+                  {p.fingerprint && (
+                    <div className="border-t border-gray-100 pt-3">
+                      <Select
+                        label="Fingerprint (uTLS)"
+                        data={FP_OPTIONS}
+                        value={fps[p.key] ?? "firefox"}
+                        onChange={(v) => setFps((f) => ({ ...f, [p.key]: v }))}
+                      />
+                      <p className="mt-2 text-xs text-ink-muted">
+                        {t("conn.fpHint")}
+                      </p>
+                    </div>
+                  )}
+
+                  {p.key === "hysteria2" &&
+                    (on ? (
+                      <div className="flex flex-col gap-3 border-t border-gray-100 pt-3">
+                        <div className="grid grid-cols-3 gap-2">
+                          <TextInput label={t("conn.port")} type="number" value={String(hy.port)} onChange={setHyNum("port")} />
+                          <TextInput label={t("conn.hopFrom")} type="number" value={String(hy.start)} onChange={setHyNum("start")} />
+                          <TextInput label={t("conn.hopTo")} type="number" value={String(hy.end)} onChange={setHyNum("end")} />
+                        </div>
+                        <Select
+                          label={t("conn.hopInterval")}
+                          data={hopIntervals()}
+                          value={hy.interval}
+                          onChange={(v) => setHy((h) => ({ ...h, interval: v }))}
+                        />
+                        <p className="text-xs text-ink-muted">
+                          {t("conn.hopHint")}
+                        </p>
+                      </div>
+                    ) : (
+                      <p className="border-t border-gray-100 pt-3 text-xs text-ink-muted">
+                        {t("conn.enableHysteria")}
+                      </p>
+                    ))}
+
+                  {p.key === "reality" &&
+                    (on ? (
+                      <div className="flex flex-col gap-3 border-t border-gray-100 pt-3">
+                        <TextInput
+                          label={t("conn.port")}
+                          type="number"
+                          value={String(reality.port)}
+                          onChange={(v) => setReality((r) => ({ ...r, port: Number(v.replace(/\D/g, "")) || 0 }))}
+                        />
+                        <TagsInput
+                          label={t("conn.masquerade")}
+                          value={reality.dests}
+                          onChange={(v) => setReality((r) => ({ ...r, dests: v }))}
+                          placeholder={t("conn.sniPlaceholder")}
+                        />
+                        <label className="flex items-center justify-between gap-3">
+                          <span className="text-sm">
+                            {t("conn.antiReplay")}
+                            <span className="block text-xs text-ink-muted">
+                              {t("conn.antiReplayHint")}
+                            </span>
+                          </span>
+                          <Switch
+                            checked={reality.antiReplay}
+                            onChange={(v) => setReality((r) => ({ ...r, antiReplay: v }))}
+                          />
+                        </label>
+                        <LongField label="Public key" value={status.reality_public_key} />
+                        <LongField label="Short IDs" value={status.reality_short_id} />
+                        <LongField label={t("conn.xhttpPath")} value={status.reality_path} />
+                        <div>
+                          <Button
+                            size="sm"
+                            variant="light"
+                            color={regenReality ? "orange" : "gray"}
+                            onClick={() => setRegenReality((v) => !v)}
+                          >
+                            {t(regenReality ? "conn.keysWillRegen" : "conn.regenKeys")}
+                          </Button>
+                        </div>
+                        <p className="text-xs text-ink-muted">
+                          {t("conn.realityHint")}
+                        </p>
+                      </div>
+                    ) : (
+                      <p className="border-t border-gray-100 pt-3 text-xs text-ink-muted">
+                        {t("conn.enableReality")}
+                      </p>
+                    ))}
+
+                  {p.key === "awg" &&
+                    (on ? (
+                      <div className="flex flex-col gap-3 border-t border-gray-100 pt-3">
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                          <TextInput
+                            label={t("conn.awgPort")}
+                            type="number"
+                            value={awgCfg.port ? String(awgCfg.port) : ""}
+                            placeholder={t("conn.awgPortAuto")}
+                            onChange={(v) => setAwgCfg((g) => ({ ...g, port: Number(v.replace(/\D/g, "")) || 0 }))}
+                          />
+                          <TextInput
+                            label={t("conn.awgDns")}
+                            value={awgCfg.dns}
+                            placeholder={t("conn.awgDnsAuto")}
+                            onChange={(v) => setAwgCfg((g) => ({ ...g, dns: v }))}
+                          />
+                        </div>
+                        {status.awg_public_key && (
+                          <>
+                            <LongField label="Public key" value={status.awg_public_key} />
+                            <LongField
+                              label={t("conn.awgParams")}
+                              value={`Jc=${status.awg_params.jc} Jmin=${status.awg_params.jmin} Jmax=${status.awg_params.jmax} S1=${status.awg_params.s1} S2=${status.awg_params.s2} H1=${status.awg_params.h1} H2=${status.awg_params.h2} H3=${status.awg_params.h3} H4=${status.awg_params.h4}`}
+                            />
+                          </>
+                        )}
+                        {status.awg_error && (
+                          <p className="warning-tint rounded-lg px-2.5 py-1.5 text-xs text-warning">{status.awg_error}</p>
+                        )}
+                        <div>
+                          <Button
+                            size="sm"
+                            variant="light"
+                            color={regenAwg ? "orange" : "gray"}
+                            onClick={() => setRegenAwg((v) => !v)}
+                          >
+                            {t(regenAwg ? "conn.keysWillRegen" : "conn.regenKeys")}
+                          </Button>
+                        </div>
+                        <p className="text-xs text-ink-muted">{t("conn.awgHint")}</p>
+                      </div>
+                    ) : (
+                      <p className="border-t border-gray-100 pt-3 text-xs text-ink-muted">
+                        {t("conn.enableAwg")}
+                      </p>
+                    ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="rounded-xl border border-gray-200/80 bg-gray-50/60 p-4">
+        <h3 className="mb-1 font-bold text-ink">{t("conn.antiDpi")}</h3>
+        <p className="mb-3 text-sm text-ink-muted">
+          {t("conn.antiDpiHint")}
+        </p>
+        <div className="flex flex-col divide-y divide-gray-100">
+          <label className="flex items-center justify-between gap-3 py-3 first:pt-0">
+            <span className="text-sm">
+              {t("conn.fragment")}
+              <span className="block text-xs text-ink-muted">
+                {t("conn.fragmentHint")}
+                (VLESS-Vision).
+              </span>
+            </span>
+            <Switch checked={anti.fragment} onChange={(v) => setAnti((a) => ({ ...a, fragment: v }))} />
+          </label>
+          <label className="flex items-center justify-between gap-3 py-3">
+            <span className="text-sm">
+              {t("conn.blockQuic")}
+              <span className="block text-xs text-ink-muted">
+                {t("conn.blockQuicHint")}
+              </span>
+            </span>
+            <Switch checked={anti.blockQuic} onChange={(v) => setAnti((a) => ({ ...a, blockQuic: v }))} />
+          </label>
+          <label className="flex items-center justify-between gap-3 py-3 last:pb-0">
+            <span className="text-sm">
+              {t("conn.requireTls13")}
+              <span className="block text-xs text-ink-muted">
+                {t("conn.requireTls13Hint")}
+              </span>
+            </span>
+            <Switch checked={anti.min13} onChange={(v) => setAnti((a) => ({ ...a, min13: v }))} />
+          </label>
         </div>
       </div>
 

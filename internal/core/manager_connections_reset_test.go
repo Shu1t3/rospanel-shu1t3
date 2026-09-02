@@ -80,9 +80,9 @@ func TestResetConnectionsMaster(t *testing.T) {
 	}
 
 	for _, proto := range status.Protocols {
-		if proto.Key == "reality" {
+		if proto.Key == "reality" || proto.Key == "awg" {
 			if proto.Enabled {
-				t.Errorf("expected reality disabled after reset")
+				t.Errorf("expected %s disabled after reset", proto.Key)
 			}
 			continue
 		}
@@ -147,9 +147,9 @@ func TestResetNodeConnections(t *testing.T) {
 	}
 
 	for _, proto := range status.Protocols {
-		if proto.Key == "reality" {
+		if proto.Key == "reality" || proto.Key == "awg" {
 			if proto.Enabled {
-				t.Errorf("expected node reality disabled after reset")
+				t.Errorf("expected node %s disabled after reset", proto.Key)
 			}
 			continue
 		}

@@ -67,10 +67,6 @@ var auditActions = map[string]auditRoute{
 	"POST /api/admins/{id}/role":              act(model.AuditAdminRoleChanged),
 	"POST /api/admins/{id}/password":          act(model.AuditAdminPasswordReset),
 	"DELETE /api/admins/{id}":                 act(model.AuditAdminDeleted),
-	"DELETE /api/account/sessions":            act(model.AuditSessionsRevoked),
-	"DELETE /api/account/sessions/{hash}":     act(model.AuditSessionRevoked),
-	"DELETE /api/admins/{id}/sessions":        act(model.AuditSessionsRevoked),
-	"DELETE /api/admins/{id}/sessions/{hash}": act(model.AuditSessionRevoked),
 
 	// Settings — one action, the section in the target.
 	"POST /api/settings/branding":              set("branding"),
@@ -80,6 +76,7 @@ var auditActions = map[string]auditRoute{
 	"POST /api/settings/decoy":                 set("decoy"),
 	"POST /api/settings/subscription":          set("subscriptions"),
 	"POST /api/settings/sub-rules":             set("subscriptions"),
+	"POST /api/settings/sub-dpi":               set("subscriptions"),
 	"POST /api/settings/hwid":                  set("deviceBinding"),
 	"POST /api/settings/maintenance":           set("maintenance"),
 	"POST /api/settings/probe-detect":          set("probeDetect"),
@@ -147,14 +144,15 @@ var auditActions = map[string]auditRoute{
 
 	// Nodes: each is a managed server with its own lifecycle. One section-style
 	// action; the node is the target. regen-join mints a fresh install credential.
-	"POST /api/nodes":                           set("nodeAdded"),
-	"POST /api/nodes/master-name":               set("masterName"),
-	"POST /api/nodes/master-protocols":          set("masterProtocols"),
-	"POST /api/nodes/master-reality":            set("masterReality"),
-	"PATCH /api/nodes/{id}":                     set("nodeChanged"),
-	"POST /api/nodes/{id}/routing":              set("nodeRouting"),
-	"POST /api/nodes/{id}/dns":                  set("nodeDns"),
-	"POST /api/nodes/{id}/reality":              set("nodeReality"),
+	"POST /api/nodes":                   set("nodeAdded"),
+	"POST /api/nodes/master-name":       set("masterName"),
+	"POST /api/nodes/master-placement":  set("masterName"),
+	"POST /api/nodes/master-protocols":  set("masterProtocols"),
+	"POST /api/nodes/master-reality":    set("masterReality"),
+	"PATCH /api/nodes/{id}":             set("nodeChanged"),
+	"POST /api/nodes/{id}/routing":      set("nodeRouting"),
+	"POST /api/nodes/{id}/dns":          set("nodeDns"),
+	"POST /api/nodes/{id}/reality":      set("nodeReality"),
 	"POST /api/nodes/{id}/connections":          set("nodeConnections"),
 	"POST /api/nodes/{id}/connections/reset":    set("nodeConnections"),
 	"POST /api/nodes/{id}/tls":                  set("nodeTls"),
@@ -206,16 +204,25 @@ var auditActions = map[string]auditRoute{
 	"POST /api/panel/restart":  act(model.AuditPanelRestarted),
 	"POST /api/stats/reset":    act(model.AuditStatsReset),
 
+	// The caller's own sessions. Ending one is a security action worth a row of its
+	// own; listing them is a read.
+	"DELETE /api/account/sessions/{id}":        act(model.AuditSessionRevoked),
+	"POST /api/account/sessions/revoke-others": act(model.AuditSessionRevoked),
+
 	// End users: audited in the user journal instead, per user, with details this
 	// trail could not carry. Listed explicitly so the exhaustiveness test sees a
 	// decision rather than an omission.
 	"POST /api/users":                      skip,
 	"POST /api/users/bulk":                 skip,
+	"POST /api/users/import/inspect":       skip, // reads the upload, writes nothing
+	"POST /api/users/import":               skip, // one user.created row per imported user
 	"DELETE /api/users/{id}":               skip,
 	"POST /api/users/{id}/reset":           skip,
 	"POST /api/users/{id}/limits":          skip,
 	"POST /api/users/{id}/enabled":         skip,
 	"POST /api/users/{id}/name":            skip,
+	"POST /api/users/{id}/note":            skip,
+	"POST /api/users/{id}/tags":            skip,
 	"POST /api/users/{id}/rotate-sub":      skip,
 	"POST /api/users/{id}/telegram/unlink": skip,
 	"POST /api/users/{id}/telegram/link":   skip,

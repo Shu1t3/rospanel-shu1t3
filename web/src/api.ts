@@ -35,6 +35,10 @@ export interface User {
   links: { name: string; url: string }[]
   // Groups the user belongs to (empty ⇒ access to everything).
   groups: GroupRef[]
+  // The operator's own annotations: a free-text note (panel-only) and a normalised
+  // tag list (lower-cased, sorted) for filtering.
+  note: string
+  tags: string[]
 }
 
 export interface GroupRef {
@@ -259,6 +263,15 @@ export interface ConnectionsStatus {
   tls_fragment: boolean
   tls_min13: boolean
   block_quic: boolean
+  // AmneziaWG (the tunnel's port, the server's public key and obfuscation
+  // parameters, in-tunnel DNS); awg_running/awg_error describe the master's own
+  // tunnel and mean nothing for a node.
+  awg_port: number
+  awg_public_key: string
+  awg_params: { jc: number; jmin: number; jmax: number; s1: number; s2: number; h1: number; h2: number; h3: number; h4: number }
+  awg_dns: string
+  awg_running: boolean
+  awg_error?: string
 }
 
 // ConnectionsUpdate is the whole connection surface, applied in one request.
@@ -278,6 +291,9 @@ export interface ConnectionsUpdate {
   tls_fragment: boolean
   tls_min13: boolean
   block_quic: boolean
+  awg_port: number
+  awg_dns: string
+  regen_awg_keys: boolean
 }
 
 export const applyConnections = (u: ConnectionsUpdate) =>
@@ -426,6 +442,22 @@ export const setUserEnabled = (id: number, enabled: boolean) =>
     method: 'POST',
     body: JSON.stringify({ enabled }),
   })
+export const setUserNote = (id: number, note: string) =>
+  api<{ ok: boolean }>(`api/users/${id}/note`, {
+    method: 'POST',
+    body: JSON.stringify({ note }),
+  })
+export const setUserTags = (id: number, tags: string[]) =>
+  api<{ ok: boolean }>(`api/users/${id}/tags`, {
+    method: 'POST',
+    body: JSON.stringify({ tags }),
+  })
+// Every tag in use with how many users carry it, most used first.
+export interface TagCount {
+  tag: string
+  count: number
+}
+export const listUserTags = () => api<TagCount[]>('api/users/tags')
 export const renameUser = (id: number, name: string) =>
   api<{ ok: boolean }>(`api/users/${id}/name`, {
     method: 'POST',
@@ -818,6 +850,8 @@ export interface SubSettings {
   // link of every lane). On by default; off leaves the page offering the
   // subscription link and the client buttons only.
   sub_show_configs: boolean
+  // How servers are ordered in a subscription: manual | nearest | load | nearest_load.
+  sub_order_mode: string
 }
 
 // HWIDSettings gates device binding: which installs may fetch the subscription and
@@ -836,6 +870,7 @@ export const saveHWIDSettings = (s: HWIDSettings) =>
   api<{ ok: boolean }>('api/settings/hwid', { method: 'POST', body: JSON.stringify(s) })
 
 export interface SettingsInfo extends SubSettings {
+  sub_dpi?: SubDPI
   secret_path: string
   decoy_template: string
   decoy_templates: string[]
@@ -1004,6 +1039,34 @@ export const saveRouting = (
 export const setXrayDNS = (dns: string) =>
   api<{ ok: boolean }>('api/settings/dns', { method: 'POST', body: JSON.stringify({ dns }) })
 
+// ---- Client-side DPI evasion handed out by the subscription ------------------
+export interface SubDPI {
+  json_clients: boolean
+  fragment: boolean
+  fragment_packets: string // tlshello | 1-1 | 1-3
+  fragment_length: string // "100-200"
+  fragment_interval: string // "10-20"
+  noise: boolean
+  noise_type: string // rand | str | base64
+  noise_packet: string
+  noise_delay: string
+  record_fragment: boolean
+}
+export const DEFAULT_SUB_DPI: SubDPI = {
+  json_clients: false,
+  fragment: false,
+  fragment_packets: 'tlshello',
+  fragment_length: '100-200',
+  fragment_interval: '10-20',
+  noise: false,
+  noise_type: 'rand',
+  noise_packet: '10-20',
+  noise_delay: '10-16',
+  record_fragment: false,
+}
+export const saveSubDPI = (d: SubDPI) =>
+  api<{ ok: boolean }>('api/settings/sub-dpi', { method: 'POST', body: JSON.stringify(d) })
+
 export const saveSubSettings = (s: SubSettings) =>
   api<{ ok: boolean }>('api/settings/subscription', {
     method: 'POST',
@@ -1015,7 +1078,7 @@ export interface SubRule {
   field: 'user_agent' | 'device_os' | 'ver_os' | 'device_model'
   op: 'contains' | 'equals' | 'prefix' | 'regex' | 'not_contains'
   value: string
-  action: 'v2ray' | 'clash' | 'singbox' | 'block'
+  action: 'v2ray' | 'clash' | 'singbox' | 'xray-json' | 'block'
   enabled: boolean
 }
 
@@ -1366,6 +1429,22 @@ export const login = (username: string, password: string, code?: string) =>
     body: JSON.stringify({ username, password, code }),
   })
 
+// ---- The admin's own open sessions -----------------------------------------
+export interface AdminSession {
+  id: number
+  ip: string // last address it was used from
+  user_agent: string
+  created_at: number
+  last_seen_at: number
+  expires_at: number
+  current: boolean // the session making this request
+}
+export const listSessions = () => api<AdminSession[]>('api/account/sessions')
+export const revokeSession = (id: number) =>
+  api<{ ok: boolean }>(`api/account/sessions/${id}`, { method: 'DELETE' })
+export const revokeOtherSessions = () =>
+  api<{ revoked: number }>('api/account/sessions/revoke-others', { method: 'POST' })
+
 // ---- The admin's own second factor (TOTP) ----------------------------------
 //
 // Every call acts on the CALLER; there is no id anywhere, so nobody manages anybody
@@ -1445,6 +1524,51 @@ export const bulkUsers = (ids: number[], action: BulkAction, days = 0) =>
   api<{ affected: number }>('api/users/bulk', {
     method: 'POST',
     body: JSON.stringify({ ids, action, days }),
+  })
+
+// ---- Import from another panel (Marzban, 3x-ui) ----------------------------
+// One user as read from the other panel's file, in this panel's terms. `issues`
+// are dictionary keys under importUsers.issue.*; `exists` means the UUID is
+// already here (the import skips it), `name_taken` is informational.
+export interface ImportCandidate {
+  name: string
+  uuid: string
+  password: string
+  data_limit: number
+  expire_at: number
+  used_up: number
+  used_down: number
+  device_limit: number
+  enabled: boolean
+  note: string
+  issues: string[]
+  exists: boolean
+  existing_id?: number
+  name_taken: boolean
+}
+export interface ImportPreview {
+  source: 'marzban' | '3x-ui'
+  users: ImportCandidate[]
+}
+export interface ImportResult {
+  created: number
+  skipped: number
+  failed: { name: string; code: string }[]
+}
+// exportUsers downloads this panel's own export file — the one inspectImport
+// reads back. Served as an attachment, so the browser saves it rather than the
+// SPA holding every credential in memory.
+export const exportUsersURL = () => 'api/users/export'
+
+export const inspectImport = (file: File) => {
+  const fd = new FormData()
+  fd.append('file', file)
+  return apiForm<ImportPreview>('api/users/import/inspect', fd)
+}
+export const importUsers = (source: string, users: ImportCandidate[], tags: string[]) =>
+  api<ImportResult>('api/users/import', {
+    method: 'POST',
+    body: JSON.stringify({ source, users, tags }),
   })
 
 export interface CertInfo {
@@ -1764,6 +1888,12 @@ export interface NodeView {
   opera_enabled: boolean
   opera_country: string
   traffic_coefficient: number
+  // Placement in subscriptions (see PlacementFields) and the live online count.
+  country: string
+  sort_weight: number
+  capacity: number
+  hide_when_full: boolean
+  online_users: number
   // REALITY identity (per-server). reality_dest "" on a node = inherits the master's
   // donor. The public key / short id / XHTTP path are shown; private key is hidden.
   reality_dest: string
@@ -1882,6 +2012,16 @@ export const createNode = (name: string, host: string) =>
 // NodePatch carries a node edit (name/host/decoy). Protocols are edited on the
 // Connections tab and are OPTIONAL here: omitting them tells the panel to preserve the
 // node's current values, so a name/decoy save can't revert a just-made protocol change.
+// Placement is where a server sits in subscriptions: country (ISO-2, blank =
+// detect from the address on save), a manual weight, capacity in users and
+// whether a full server drops out until it has room again.
+export interface Placement {
+  country: string
+  sort_weight: number
+  capacity: number
+  hide_when_full: boolean
+}
+
 export interface NodePatch {
   name: string
   host: string
@@ -1890,7 +2030,11 @@ export interface NodePatch {
   hysteria_enabled?: boolean
   reality_enabled?: boolean
   traffic_coefficient?: number
+  placement?: Placement
 }
+
+export const setMasterPlacement = (p: Placement) =>
+  api<{ ok: boolean }>('api/nodes/master-placement', { method: 'POST', body: JSON.stringify(p) })
 
 export const updateNode = (id: number, patch: NodePatch) =>
   api<{ ok: boolean }>(`api/nodes/${id}`, {

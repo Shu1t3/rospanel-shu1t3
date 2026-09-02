@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Shu1t3/rospanel-shu1t3/internal/awg"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/connguard"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/decoy"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/firewall"
@@ -210,6 +211,13 @@ type Agent struct {
 	syncMu          sync.Mutex
 	syncCancel      context.CancelFunc
 	syncInterrupted atomic.Bool
+
+	// awg is this node's AmneziaWG tunnel (see awg.go); awgEmails maps a peer's
+	// public key to the user tag it reports under, awgLast the counters last read.
+	awg       awg.Device
+	awgMu     sync.Mutex
+	awgEmails map[string]string
+	awgLast   map[string]awg.PeerStat
 }
 
 // Run loads the node identity and runs the agent until the context is cancelled
@@ -445,6 +453,7 @@ func newAgent(dataDir string, ident *Identity) (*Agent, error) {
 		sites:        map[siteKey]int64{},
 		seen:         newSeenAddrs(),
 		shaper:       shaper.New(),
+		awg:          awg.New(),
 	}
 	// Resume report ids where the last run left off so the panel's forward-only
 	// watermark keeps accepting this node's traffic after a restart.
@@ -1062,6 +1071,7 @@ func (a *Agent) applyState(st *nodeapi.NodeState) error {
 	// Opera VPN egress helper: bring it up/down to match the desired state. The
 	// generated config's "opera" outbound already points at 127.0.0.1:OperaPort.
 	a.syncOpera(m.OperaEnabled, m.OperaCountry, m.OperaPort)
+	a.syncAWG(m.AWG)
 
 	// Substitute the cert-path sentinels with the node's absolute paths and apply.
 	//
@@ -1243,6 +1253,9 @@ func (a *Agent) ensureDecoy(dest, template string) error {
 
 func (a *Agent) shutdown() {
 	a.sup.Stop()
+	if a.awg != nil {
+		a.awg.Close()
+	}
 	a.operaSup.Stop()
 	if a.redirectSrv != nil {
 		_ = a.redirectSrv.Close()
@@ -1326,6 +1339,9 @@ func (a *Agent) selfUpdate(parent context.Context, updateRepo string) bool {
 	}
 	slog.Info("node self-update: binary updated — restarting", "version", rel.Version)
 	a.sup.Stop()
+	if a.awg != nil {
+		a.awg.Close()
+	}
 	return true
 }
 

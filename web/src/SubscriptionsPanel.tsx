@@ -26,6 +26,7 @@ import {
   TextInput,
   ToggleRow,
 } from "./ui";
+import { SubDPICard } from "./SubDPICard";
 
 const ROUTING_REPO = "https://github.com/hydraponique/roscomvpn-routing";
 
@@ -41,6 +42,7 @@ const EMPTY_SUB: SubSettings = {
   sub_update_interval: 1,
   sub_announce: "",
   sub_show_configs: true,
+  sub_order_mode: "manual",
 };
 
 // Requiring an id is the default: a cap a client can dodge by staying silent is not
@@ -94,6 +96,7 @@ export function SubscriptionsPanel() {
           sub_update_interval: d.sub_update_interval,
           sub_announce: d.sub_announce,
           sub_show_configs: d.sub_show_configs,
+          sub_order_mode: d.sub_order_mode ?? "manual",
         };
         load(init);
         loadHwid(d.hwid ?? EMPTY_HWID);
@@ -172,6 +175,18 @@ export function SubscriptionsPanel() {
             value={String(s.sub_update_interval)}
             onChange={(v) => patch({ sub_update_interval: Number(v) })}
           />
+          <div className="flex flex-col gap-1">
+            <Select
+              label={t("subs.orderMode.label")}
+              data={[
+                { value: "manual", label: t("subs.orderMode.manual") },
+                { value: "load", label: t("subs.orderMode.load") },
+              ]}
+              value={s.sub_order_mode}
+              onChange={(v) => patch({ sub_order_mode: v })}
+            />
+            <p className="text-xs text-ink-muted">{t("subs.orderMode.hint")}</p>
+          </div>
           <div>
             <Textarea
               label={t("subs.announce")}
@@ -220,7 +235,10 @@ export function SubscriptionsPanel() {
             <div>
               <Select
                 label={t("subs.countMode")}
-                value={h.count_mode || "auto"}
+                // "both" is a stored value from before the handover grace was removed.
+                // It now behaves exactly as "auto", so it shows as "auto" rather than as
+                // a third choice that does the same thing under a different name.
+                value={h.count_mode === "hwid" ? "hwid" : "auto"}
                 onChange={(v) => patchHwid({ count_mode: v })}
                 data={[
                   { value: "auto", label: t("subs.countModeAuto") },
@@ -313,6 +331,7 @@ export function SubscriptionsPanel() {
         )}
       </Card>
 
+      <SubDPICard />
       <SubRulesEditor />
 
       <SaveBar
@@ -391,6 +410,7 @@ function SubRulesEditor() {
     { value: "v2ray", label: t("subs.ruleAction.v2ray") },
     { value: "clash", label: t("subs.ruleAction.clash") },
     { value: "singbox", label: t("subs.ruleAction.singbox") },
+    { value: "xray-json", label: t("subs.ruleAction.xray-json") },
     { value: "block", label: t("subs.ruleAction.block") },
   ];
 

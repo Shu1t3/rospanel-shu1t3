@@ -349,6 +349,7 @@ func (m *Manager) probeDigestLoop() {
 		if len(probes) == 0 {
 			continue // nothing new — don't send an empty digest
 		}
+		m.annotateProbes(probes)
 		m.sendProbeDigest(probes)
 	}
 }

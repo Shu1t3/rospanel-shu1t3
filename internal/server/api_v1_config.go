@@ -232,7 +232,11 @@ func (rt *Router) apiApplyHWID(req apiSettingsReq) error {
 	if req.HWIDTTLDays != nil {
 		set.HWIDTTLDays = *req.HWIDTTLDays
 	}
-	return rt.mgr.Store().SetHWIDSettings(set)
+	if err := rt.mgr.Store().SetHWIDSettings(set); err != nil {
+		return err
+	}
+	// No user sync — see the panel path for why these settings do not reach the config.
+	return nil
 }
 
 // apiApplyLocalBackup writes the scheduled-backup pair, same overlay reasoning as HWID:
