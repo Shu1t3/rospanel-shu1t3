@@ -1463,14 +1463,14 @@ func ValidFingerprint(fp string) bool {
 // are raw Xray matchers (plain host, "domain:", "keyword:", "regexp:",
 // "geosite:", "ext:file:tag") and IP entries are CIDRs or "geoip:xx".
 type RoutingConfig struct {
-	BlockBittorrent bool     `json:"block_bittorrent"`
-	BlockAds        bool     `json:"block_ads"` // block geosite:category-ads-all
-	BlockIPs        []string `json:"block_ips"` // CIDRs or geoip:xx
-	BlockDomains    []string `json:"block_domains"`
-	WarpDomains     []string `json:"warp_domains"`  // routed through Cloudflare WARP
-	WarpIPs         []string `json:"warp_ips"`      // CIDRs or geoip:xx, via WARP
-	OperaDomains    []string `json:"opera_domains"` // routed through Opera VPN
-	OperaIPs        []string `json:"opera_ips"`     // CIDRs or geoip:xx, via Opera VPN
+	BlockBittorrent      bool     `json:"block_bittorrent"`
+	BlockAds             bool     `json:"block_ads"` // block geosite:category-ads-all
+	BlockIPs             []string `json:"block_ips"` // CIDRs or geoip:xx
+	BlockDomains         []string `json:"block_domains"`
+	WarpDomains          []string `json:"warp_domains"`  // routed through Cloudflare WARP
+	WarpIPs              []string `json:"warp_ips"`      // CIDRs or geoip:xx, via WARP
+	OperaDomains         []string `json:"opera_domains"` // routed through Opera VPN
+	OperaIPs             []string `json:"opera_ips"`     // CIDRs or geoip:xx, via Opera VPN
 	DirectDomains        []string `json:"direct_domains"`
 	DirectIPs            []string `json:"direct_ips"`
 	DirectDomainStrategy string   `json:"direct_domain_strategy,omitempty"`

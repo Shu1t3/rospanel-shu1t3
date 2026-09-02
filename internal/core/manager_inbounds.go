@@ -786,6 +786,9 @@ func HostFirewallRules(st *store.Store) ([]firewall.Rule, error) {
 
 // EnsureHostFirewall synchronizes the system firewall for the local host's active ports.
 func EnsureHostFirewall(st *store.Store) error {
+	if firewall.IsDisabled() {
+		return nil
+	}
 	rules, err := HostFirewallRules(st)
 	if err != nil {
 		return err

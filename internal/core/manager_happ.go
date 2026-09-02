@@ -86,8 +86,10 @@ func (m *Manager) syncHappSubscriptionInner(ctx context.Context, subID int64) (*
 	res.Total = len(fetchRes.Nodes)
 	_ = m.store.UpdateHappSubscriptionFetch(subID, len(fetchRes.Nodes), "")
 
-	// Trigger Xray reconcile so the new outbounds take effect.
-	m.TriggerReconcile()
+	// Trigger Xray reconcile only if outbounds were added or updated.
+	if added > 0 || updated > 0 {
+		m.TriggerReconcile()
+	}
 	return res, nil
 }
 
@@ -163,9 +165,8 @@ func (m *Manager) HappOutbounds() ([]xray.Outbound, error) {
 
 // ── Scheduler ─────────────────────────────────────────────────────────────
 
-// StartHappScheduler launches the 59-minute auto-sync goroutine.
-// It stops when ctx is cancelled (graceful shutdown).
-func (m *Manager) StartHappScheduler(ctx context.Context) {
+// RunHappScheduler blocks running the 59-minute auto-sync loop until ctx is cancelled.
+func (m *Manager) RunHappScheduler(ctx context.Context) {
 	syncFn := func(ctx context.Context, subID int64) (happ.SyncResult, error) {
 		res, err := m.syncHappSubscriptionInner(ctx, subID)
 		if res == nil {
@@ -177,5 +178,11 @@ func (m *Manager) StartHappScheduler(ctx context.Context) {
 		return m.store.ListEnabledHappSubscriptionIDs()
 	}
 	sched := happ.NewScheduler(59*time.Minute, listFn, syncFn)
-	go sched.Run(ctx)
+	sched.Run(ctx)
+}
+
+// StartHappScheduler launches the 59-minute auto-sync goroutine.
+// It stops when ctx is cancelled (graceful shutdown).
+func (m *Manager) StartHappScheduler(ctx context.Context) {
+	go m.RunHappScheduler(ctx)
 }

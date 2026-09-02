@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
@@ -96,7 +97,7 @@ func TestRentedNodeLifecycleAndInbounds(t *testing.T) {
 	st := openNodeStore(t)
 
 	// Create rented node
-	rented, err := st.CreateRentedNode("Rented US", "us.example.com", "panel.example.com", 100, "token_123", "tenant_xyz", 60, 40000, "v1.2.0", "1.8.24", "pubkey123", "sid123", "/rpath", "dest.com:443", "sha123", false, true, true, true, 443, 8443, 443)
+	rented, err := st.CreateRentedNode("Rented US", "us.example.com", "panel.example.com", 100, "token_123", "tenant_xyz", 60, 40000, "v1.2.0", "1.8.24", "pubkey123", "sid123", "/rpath", "dest.com:443", "sha123", false, true, true, true, 443, 8443, 443, "node_path_secret")
 	if err != nil {
 		t.Fatalf("CreateRentedNode failed: %v", err)
 	}
@@ -140,6 +141,34 @@ func TestRentedNodeLifecycleAndInbounds(t *testing.T) {
 	inbs, err := st.Inbounds(rented.ID)
 	if err != nil || len(inbs) != 1 {
 		t.Fatalf("Inbounds failed, len = %d, err = %v", len(inbs), err)
+	}
+
+	// Test SaveTenantInbound port conflict isolation
+	err = st.SaveTenantInbound(model.Inbound{
+		ServerID: rented.ID,
+		Port:     3000,
+		Enabled:  true,
+		Name:     "Tenant 1 Port",
+		Protocol: model.InbVLESS,
+		TenantID: "tenant_1",
+		Opts:     model.InboundOpts{Transport: model.TrTCP},
+	})
+	if err != nil {
+		t.Fatalf("SaveTenantInbound failed: %v", err)
+	}
+
+	// Tenant 2 attempts to register or overwrite port 3000 -> must return ErrPortConflict
+	err = st.SaveTenantInbound(model.Inbound{
+		ServerID: rented.ID,
+		Port:     3000,
+		Enabled:  true,
+		Name:     "Tenant 2 Hijack",
+		Protocol: model.InbVLESS,
+		TenantID: "tenant_2",
+		Opts:     model.InboundOpts{Transport: model.TrTCP},
+	})
+	if !errors.Is(err, ErrPortConflict) {
+		t.Fatalf("expected ErrPortConflict when tenant_2 tries to overwrite tenant_1 port, got: %v", err)
 	}
 
 	// Delete rented node

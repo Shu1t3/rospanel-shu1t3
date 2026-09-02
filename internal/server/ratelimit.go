@@ -196,6 +196,9 @@ func newIPRateLimiter(limit int, window time.Duration) *ipRateLimiter {
 
 // allow reports whether ip may make another request in the current window.
 func (l *ipRateLimiter) allow(ip string) bool {
+	if l == nil {
+		return true
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()

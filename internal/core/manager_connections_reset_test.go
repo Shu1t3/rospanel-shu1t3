@@ -174,7 +174,7 @@ func TestResetNodeConnections(t *testing.T) {
 func TestResetNodeConnectionsRentedNodeForbidden(t *testing.T) {
 	m := testConnManager(t)
 
-	rented, err := m.store.CreateRentedNode("Rented 1", "rented.example.com", "master.example.com", 10, "token_123", "tenant_xyz", 60, 40000, "v1.2.0", "1.8.24", "pubkey123", "sid123", "/rpath", "dest.com:443", "sha123", false, true, true, true, 443, 8443, 443)
+	rented, err := m.store.CreateRentedNode("Rented 1", "rented.example.com", "master.example.com", 10, "token_123", "tenant_xyz", 60, 40000, "v1.2.0", "1.8.24", "pubkey123", "sid123", "/rpath", "dest.com:443", "sha123", false, true, true, true, 443, 8443, 443, "node_path_secret")
 	if err != nil {
 		t.Fatalf("create rented node: %v", err)
 	}

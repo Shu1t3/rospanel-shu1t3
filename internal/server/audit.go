@@ -63,10 +63,10 @@ var auditActions = map[string]auditRoute{
 	"POST /api/account/totp/disable": {},
 
 	// The roster.
-	"POST /api/admins":                        act(model.AuditAdminCreated),
-	"POST /api/admins/{id}/role":              act(model.AuditAdminRoleChanged),
-	"POST /api/admins/{id}/password":          act(model.AuditAdminPasswordReset),
-	"DELETE /api/admins/{id}":                 act(model.AuditAdminDeleted),
+	"POST /api/admins":               act(model.AuditAdminCreated),
+	"POST /api/admins/{id}/role":     act(model.AuditAdminRoleChanged),
+	"POST /api/admins/{id}/password": act(model.AuditAdminPasswordReset),
+	"DELETE /api/admins/{id}":        act(model.AuditAdminDeleted),
 
 	// Settings — one action, the section in the target.
 	"POST /api/settings/branding":              set("branding"),
@@ -146,15 +146,15 @@ var auditActions = map[string]auditRoute{
 
 	// Nodes: each is a managed server with its own lifecycle. One section-style
 	// action; the node is the target. regen-join mints a fresh install credential.
-	"POST /api/nodes":                   set("nodeAdded"),
-	"POST /api/nodes/master-name":       set("masterName"),
-	"POST /api/nodes/master-placement":  set("masterName"),
-	"POST /api/nodes/master-protocols":  set("masterProtocols"),
-	"POST /api/nodes/master-reality":    set("masterReality"),
-	"PATCH /api/nodes/{id}":             set("nodeChanged"),
-	"POST /api/nodes/{id}/routing":      set("nodeRouting"),
-	"POST /api/nodes/{id}/dns":          set("nodeDns"),
-	"POST /api/nodes/{id}/reality":      set("nodeReality"),
+	"POST /api/nodes":                           set("nodeAdded"),
+	"POST /api/nodes/master-name":               set("masterName"),
+	"POST /api/nodes/master-placement":          set("masterName"),
+	"POST /api/nodes/master-protocols":          set("masterProtocols"),
+	"POST /api/nodes/master-reality":            set("masterReality"),
+	"PATCH /api/nodes/{id}":                     set("nodeChanged"),
+	"POST /api/nodes/{id}/routing":              set("nodeRouting"),
+	"POST /api/nodes/{id}/dns":                  set("nodeDns"),
+	"POST /api/nodes/{id}/reality":              set("nodeReality"),
 	"POST /api/nodes/{id}/connections":          set("nodeConnections"),
 	"POST /api/nodes/{id}/connections/reset":    set("nodeConnections"),
 	"POST /api/nodes/{id}/tls":                  set("nodeTls"),

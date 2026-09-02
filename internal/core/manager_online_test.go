@@ -69,3 +69,31 @@ func TestMasterPlacementValidatesAndNormalises(t *testing.T) {
 		t.Error("an unknown order mode was accepted")
 	}
 }
+
+func TestUserIDFromEmailTenantSupport(t *testing.T) {
+	tests := []struct {
+		email  string
+		wantID int64
+		wantOK bool
+	}{
+		{"u1", 1, true},
+		{"u42", 42, true},
+		{"u999999", 999999, true},
+		{"t_tenant1_10", 10, true},
+		{"t_share_abc123_42", 42, true},
+		{"t_complex_tenant_name_500", 500, true},
+		{"u", 0, false},
+		{"ux", 0, false},
+		{"t_", 0, false},
+		{"t_tenant", 0, false},
+		{"t_tenant_", 0, false},
+		{"t_tenant_abc", 0, false},
+		{"invalid", 0, false},
+	}
+	for _, tt := range tests {
+		id, ok := userIDFromEmail(tt.email)
+		if ok != tt.wantOK || id != tt.wantID {
+			t.Errorf("userIDFromEmail(%q) = (%d, %v), want (%d, %v)", tt.email, id, ok, tt.wantID, tt.wantOK)
+		}
+	}
+}

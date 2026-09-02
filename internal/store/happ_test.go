@@ -71,6 +71,15 @@ func TestHappSubscriptionAndNodes(t *testing.T) {
 		t.Fatalf("expected added=2 updated=0, got added=%d updated=%d", added, updated)
 	}
 
+	// Repeat upsert with identical nodes should report added=0, updated=0 (preventing unnecessary Xray reload)
+	added2, updated2, err := st.UpsertHappNodesFull(subID, nodes)
+	if err != nil {
+		t.Fatalf("second UpsertHappNodesFull failed: %v", err)
+	}
+	if added2 != 0 || updated2 != 0 {
+		t.Fatalf("expected added=0 updated=0 on identical repeat, got added=%d updated=%d", added2, updated2)
+	}
+
 	// 5. Update fetch status
 	if err := st.UpdateHappSubscriptionFetch(subID, 2, ""); err != nil {
 		t.Fatalf("UpdateHappSubscriptionFetch failed: %v", err)

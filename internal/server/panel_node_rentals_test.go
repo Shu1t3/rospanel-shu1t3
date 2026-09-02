@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/core"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/decoy"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 )
 
@@ -295,5 +296,157 @@ func TestPanelNodeRentalEndpoints(t *testing.T) {
 	}
 	if !foundTenantInbound {
 		t.Fatalf("tenant inbound port 2053 not found on owner node inbounds: %+v", ownerInbounds)
+	}
+}
+
+func TestRentalSyncDecoyMasquerade(t *testing.T) {
+	r, st := rolesTestRouter(t)
+	d, _ := decoy.New("", decoy.Stamp{})
+	r.decoy = d
+	h := r
+
+	// 1. GET /api/nodes/rentals/sync (scanner probe) -> must return decoy, NOT JSON
+	req := httptest.NewRequest(http.MethodGet, "/api/nodes/rentals/sync", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	// Decoy serves HTML/plain text, never JSON error {"error": ...}
+	if strings.Contains(rec.Body.String(), "err.invalidRequest") || strings.Contains(rec.Body.String(), "\"error\"") {
+		t.Fatalf("GET /api/nodes/rentals/sync returned JSON error, disclosing rospanel to scanner: %s", rec.Body.String())
+	}
+
+	// 2. POST /api/nodes/rentals/sync with invalid credentials -> must return decoy, NOT JSON error
+	invalidReq := model.NodeRentalSyncReq{
+		NodeID:     9999,
+		ShareToken: "invalid_token",
+		TenantID:   "tenant_attacker",
+	}
+	invalidRaw, _ := json.Marshal(invalidReq)
+	req = httptest.NewRequest(http.MethodPost, "/api/nodes/rentals/sync", bytes.NewReader(invalidRaw))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if strings.Contains(rec.Body.String(), "\"error\"") {
+		t.Fatalf("POST /api/nodes/rentals/sync with invalid token returned JSON error: %s", rec.Body.String())
+	}
+
+	// 3. Setup owner node with share link
+	node, err := st.CreateNode("Owner Node", "owner.example.com", "test")
+	if err != nil {
+		t.Fatalf("CreateNode failed: %v", err)
+	}
+	_, err = r.mgr.UpdateNodeRentalSettings(node.ID, model.NodeRentalSettings{
+		ShareEnabled:      true,
+		ShareQuotaPercent: 50,
+		ShareSpeedLimit:   50000,
+	})
+	if err != nil {
+		t.Fatalf("UpdateNodeRentalSettings: %v", err)
+	}
+	shareLink, err := r.mgr.GenerateNodeShareLink(node.ID)
+	if err != nil {
+		t.Fatalf("GenerateNodeShareLink: %v", err)
+	}
+	payload, err := model.DecodeShareLink(shareLink)
+	if err != nil {
+		t.Fatalf("DecodeShareLink: %v", err)
+	}
+
+	// 4. POST to dynamic /<nodePath>/rentals/sync with valid credentials -> returns 200 OK
+	nodePath := "secret_node_path"
+	_ = st.SetNodeAPIPath(nodePath)
+	r.nodePath = nodePath
+	validReq := model.NodeRentalSyncReq{
+		NodeID:     payload.NodeID,
+		ShareToken: payload.ShareToken,
+		TenantID:   "tenant_valid",
+		TenantName: "Tenant Valid",
+	}
+	validRaw, _ := json.Marshal(validReq)
+	req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/%s/rentals/sync", nodePath), bytes.NewReader(validRaw))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /<nodePath>/rentals/sync status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var syncResp model.NodeRentalSyncResp
+	if err := json.Unmarshal(rec.Body.Bytes(), &syncResp); err != nil {
+		t.Fatalf("failed to decode syncResp: %v", err)
+	}
+}
+
+func TestRentalSyncTrafficAndConns(t *testing.T) {
+	r, st := rolesTestRouter(t)
+	nodePath := "secret_sync_path"
+	_ = st.SetNodeAPIPath(nodePath)
+	r.nodePath = nodePath
+	h := r
+
+	node, err := st.CreateNode("Rental Node", "rental.example.com", "test")
+	if err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+	_, err = r.mgr.UpdateNodeRentalSettings(node.ID, model.NodeRentalSettings{
+		ShareEnabled:      true,
+		ShareQuotaPercent: 50,
+		ShareSpeedLimit:   50000,
+	})
+	if err != nil {
+		t.Fatalf("UpdateNodeRentalSettings: %v", err)
+	}
+	shareLink, err := r.mgr.GenerateNodeShareLink(node.ID)
+	if err != nil {
+		t.Fatalf("GenerateNodeShareLink: %v", err)
+	}
+	payload, err := model.DecodeShareLink(shareLink)
+	if err != nil {
+		t.Fatalf("DecodeShareLink: %v", err)
+	}
+
+	// 1. Simulate access from tenant user: t_tenant_alpha_123 from 203.0.113.5
+	r.mgr.RecordAccess("t_tenant_alpha_123", "203.0.113.5", "example.com")
+
+	// 2. Perform rental sync for tenant_alpha
+	reqBody := model.NodeRentalSyncReq{
+		NodeID:     payload.NodeID,
+		ShareToken: payload.ShareToken,
+		TenantID:   "tenant_alpha",
+		TenantName: "Tenant Alpha",
+	}
+	raw, _ := json.Marshal(reqBody)
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/%s/rentals/sync", nodePath), bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST sync failed: code %d, body %s", rec.Code, rec.Body.String())
+	}
+	var syncResp model.NodeRentalSyncResp
+	if err := json.Unmarshal(rec.Body.Bytes(), &syncResp); err != nil {
+		t.Fatalf("unmarshal syncResp: %v", err)
+	}
+
+	// Verify connection was captured
+	if len(syncResp.Conns) != 1 {
+		t.Fatalf("expected 1 conn sample, got %d", len(syncResp.Conns))
+	}
+	if syncResp.Conns[0].UserID != 123 || syncResp.Conns[0].IP != "203.0.113.5" {
+		t.Errorf("unexpected conn sample: %+v", syncResp.Conns[0])
+	}
+
+	// 3. Second sync should have drained the connections buffer
+	req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/%s/rentals/sync", nodePath), bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	var syncResp2 model.NodeRentalSyncResp
+	_ = json.Unmarshal(rec.Body.Bytes(), &syncResp2)
+	if len(syncResp2.Conns) != 0 {
+		t.Errorf("expected 0 conns after drain, got %d", len(syncResp2.Conns))
 	}
 }

@@ -19,7 +19,7 @@ type Server struct {
 func (s Server) allowsBuiltin(lane string) bool {
 	return s.Access.AllowsBuiltin(s.Set.ServerID, lane)
 }
-func (s Server) allowsInbound(id int64) bool { return s.Access.AllowsInbound(id) }
+func (s Server) allowsInbound(id int64) bool  { return s.Access.AllowsInbound(id) }
 func (s Server) allowsHapp(nodeID int64) bool { return s.Access.AllowsHapp(nodeID) }
 
 // Servers pairs each settings value with its server's custom inbounds and the

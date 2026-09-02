@@ -155,4 +155,3 @@ func TestToXrayOutboundVLESSRealityMissingPublicKey(t *testing.T) {
 		t.Fatalf("expected error for reality outbound without publicKey, got nil")
 	}
 }
-

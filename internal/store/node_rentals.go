@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/auth"
@@ -187,6 +188,7 @@ func (s *Store) CreateRentedNode(
 	certSelf bool,
 	vlessEn, realityEn, hyEn bool,
 	vlessPort, realityPort, hysteriaPort int,
+	nodePath string,
 ) (*model.Node, error) {
 	now := time.Now()
 	connCfg := model.NodeConnections{
@@ -198,6 +200,7 @@ func (s *Store) CreateRentedNode(
 		BlockQUIC:    true,
 		VLESSFp:      "firefox",
 		RealityFp:    "firefox",
+		NodePath:     nodePath,
 	}
 	connBlobBytes, _ := json.Marshal(&connCfg)
 	connBlob := string(connBlobBytes)
@@ -295,6 +298,9 @@ func (s *Store) UpsertNodeTenant(nodeID int64, tenantID, name string, speedLimit
 	return err
 }
 
+// ErrPortConflict is returned when an inbound port is already occupied by another tenant or host.
+var ErrPortConflict = errors.New("port already in use by another tenant or host")
+
 // SaveTenantInbound registers or updates a tenant's custom inbound on the owner node.
 func (s *Store) SaveTenantInbound(in model.Inbound) error {
 	opts, err := marshalInboundOpts(in.Opts)
@@ -302,8 +308,12 @@ func (s *Store) SaveTenantInbound(in model.Inbound) error {
 		return err
 	}
 	var existingID int64
-	err = s.db.QueryRow(`SELECT id FROM inbounds WHERE server_id = ? AND port = ?`, in.ServerID, in.Port).Scan(&existingID)
+	var existingTenantID string
+	err = s.db.QueryRow(`SELECT id, COALESCE(tenant_id, '') FROM inbounds WHERE server_id = ? AND port = ?`, in.ServerID, in.Port).Scan(&existingID, &existingTenantID)
 	if err == nil && existingID > 0 {
+		if existingTenantID != in.TenantID {
+			return fmt.Errorf("%w: port %d is already occupied", ErrPortConflict, in.Port)
+		}
 		_, err = s.db.Exec(`
 			UPDATE inbounds SET enabled = ?, name = ?, protocol = ?, opts = ?, tenant_id = ?
 			WHERE id = ?`,

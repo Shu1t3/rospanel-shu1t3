@@ -181,16 +181,21 @@ func (s *Store) UpsertHappNodesFull(subscriptionID int64, nodes []happ.Node) (ad
 		incoming[n.IdentityKey] = true
 	}
 
-	// Load existing identity keys for this subscription.
-	rows, err := tx.Query(`SELECT identity_key FROM happ_nodes WHERE subscription_id = ?`, subscriptionID)
+	// Load existing nodes for this subscription to detect actual changes.
+	rows, err := tx.Query(`SELECT identity_key, name, protocol, host, port, uri FROM happ_nodes WHERE subscription_id = ?`, subscriptionID)
 	if err != nil {
 		return
 	}
-	existing := make(map[string]bool)
+	type existingNode struct {
+		name, protocol, host, uri string
+		port                      int
+	}
+	existing := make(map[string]existingNode)
 	for rows.Next() {
 		var k string
-		if e := rows.Scan(&k); e == nil {
-			existing[k] = true
+		var en existingNode
+		if e := rows.Scan(&k, &en.name, &en.protocol, &en.host, &en.port, &en.uri); e == nil {
+			existing[k] = en
 		}
 	}
 	rows.Close()
@@ -201,7 +206,10 @@ func (s *Store) UpsertHappNodesFull(subscriptionID int64, nodes []happ.Node) (ad
 	// Upsert each incoming node.
 	for i := range nodes {
 		n := &nodes[i]
-		isNew := !existing[n.IdentityKey]
+		old, exists := existing[n.IdentityKey]
+		isNew := !exists
+		hasChanged := isNew || old.name != n.Name || old.protocol != n.Protocol || old.host != n.Host || old.port != n.Port || old.uri != n.URI
+
 		initialEnabled := 1
 		if n.IsInfoStub() {
 			initialEnabled = 0
@@ -227,7 +235,7 @@ func (s *Store) UpsertHappNodesFull(subscriptionID int64, nodes []happ.Node) (ad
 		}
 		if isNew {
 			added++
-		} else {
+		} else if hasChanged {
 			updated++
 		}
 	}

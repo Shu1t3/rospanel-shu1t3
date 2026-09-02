@@ -65,8 +65,18 @@ func (r Rule) Format() string {
 
 var mu sync.Mutex
 
+// IsDisabled reports whether firewall management is explicitly disabled
+// via the ROSPANEL_FIREWALL environment variable (e.g. "off", "false", "0", "disable").
+func IsDisabled() bool {
+	val := strings.ToLower(strings.TrimSpace(os.Getenv("ROSPANEL_FIREWALL")))
+	return val == "off" || val == "false" || val == "0" || val == "no" || val == "disable" || val == "disabled"
+}
+
 // Available reports whether UFW is installed and usable on this Linux host.
 func Available() bool {
+	if IsDisabled() {
+		return false
+	}
 	if runtime.GOOS != "linux" {
 		return false
 	}
@@ -151,6 +161,9 @@ func parseSSHDConfigPorts(content string) []int {
 // EnsureInstalled checks if ufw is installed and attempts to install it via the
 // system package manager if missing. Non-fatal: logs and returns error if installation fails.
 func EnsureInstalled(ctx context.Context) error {
+	if IsDisabled() {
+		return nil
+	}
 	if runtime.GOOS != "linux" {
 		return nil
 	}
@@ -200,6 +213,9 @@ func fileExists(p string) bool {
 // EnsureActive ensures UFW is activated with secure default policies (default deny incoming,
 // default allow outgoing) and that SSH ports are explicitly allowed before enabling.
 func EnsureActive(ctx context.Context) error {
+	if IsDisabled() {
+		return nil
+	}
 	if runtime.GOOS != "linux" || os.Geteuid() != 0 {
 		return nil
 	}
@@ -249,6 +265,9 @@ func EnsureActive(ctx context.Context) error {
 
 // Allow opens a single rule in UFW.
 func Allow(ctx context.Context, rule Rule) error {
+	if IsDisabled() {
+		return nil
+	}
 	norm, ok := rule.Normalize()
 	if !ok {
 		return fmt.Errorf("invalid rule: %+v", rule)
@@ -283,6 +302,9 @@ func Allow(ctx context.Context, rule Rule) error {
 
 // AllowMany opens a list of rules in UFW.
 func AllowMany(ctx context.Context, rules []Rule) error {
+	if IsDisabled() {
+		return nil
+	}
 	if runtime.GOOS != "linux" || os.Geteuid() != 0 || !Available() {
 		return nil
 	}
@@ -300,6 +322,9 @@ func AllowMany(ctx context.Context, rules []Rule) error {
 // 3. Ensures all required application rules are allowed.
 // It is idempotent, thread-safe, and safe to call on startup and runtime updates.
 func Sync(ctx context.Context, rules []Rule) error {
+	if IsDisabled() {
+		return nil
+	}
 	if runtime.GOOS != "linux" {
 		return nil
 	}

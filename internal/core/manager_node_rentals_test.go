@@ -522,3 +522,121 @@ func TestTenantInboundProtection(t *testing.T) {
 	}
 }
 
+func TestProcessRentalSyncPortIsolation(t *testing.T) {
+	mgr := newTestManager(t)
+
+	ownerNode, err := mgr.store.CreateNode("Sync Isolation Node", "sync.example.com", "test")
+	if err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+
+	// Owner creates an inbound on port 8443
+	ownerInb, err := mgr.store.CreateInbound(model.Inbound{
+		ServerID: ownerNode.ID,
+		Enabled:  true,
+		Name:     "Owner Private Inbound",
+		Protocol: model.InbVLESS,
+		Port:     8443,
+		TenantID: "",
+		Opts:     model.InboundOpts{Transport: model.TrTCP},
+	})
+	if err != nil {
+		t.Fatalf("create owner inbound: %v", err)
+	}
+
+	_, err = mgr.UpdateNodeRentalSettings(ownerNode.ID, model.NodeRentalSettings{
+		ShareEnabled:      true,
+		ShareQuotaPercent: 50,
+		ShareSpeedLimit:   50000,
+	})
+	if err != nil {
+		t.Fatalf("UpdateNodeRentalSettings: %v", err)
+	}
+
+	shareLink, err := mgr.GenerateNodeShareLink(ownerNode.ID)
+	if err != nil {
+		t.Fatalf("GenerateNodeShareLink: %v", err)
+	}
+	payload, err := model.DecodeShareLink(shareLink)
+	if err != nil {
+		t.Fatalf("DecodeShareLink: %v", err)
+	}
+
+	// Tenant attempts to sync with:
+	// 1. System port 443 (forbidden)
+	// 2. Owner port 8443 (forbidden / occupied by owner)
+	// 3. System API port 10085 (forbidden)
+	// 4. Valid custom port 9999 (allowed)
+	syncReq := model.NodeRentalSyncReq{
+		NodeID:     ownerNode.ID,
+		ShareToken: payload.ShareToken,
+		TenantID:   "tenant_evil",
+		TenantName: "Evil Tenant",
+		Inbounds: []model.Inbound{
+			{Port: 443, Name: "Hijack 443", Protocol: model.InbVLESS, Enabled: true},
+			{Port: 8443, Name: "Hijack 8443", Protocol: model.InbVLESS, Enabled: true},
+			{Port: 10085, Name: "Hijack API", Protocol: model.InbVLESS, Enabled: true},
+			{Port: 9999, Name: "Legit 9999", Protocol: model.InbVLESS, Enabled: true},
+		},
+	}
+
+	resp, err := mgr.ProcessRentalSync(syncReq)
+	if err != nil {
+		t.Fatalf("ProcessRentalSync failed: %v", err)
+	}
+	if resp == nil {
+		t.Fatalf("ProcessRentalSync returned nil resp")
+	}
+
+	// Verify inbounds on the node
+	inbounds, err := mgr.store.Inbounds(ownerNode.ID)
+	if err != nil {
+		t.Fatalf("store.Inbounds: %v", err)
+	}
+
+	var foundOwner8443 bool
+	var foundTenant443, foundTenant8443, foundTenant10085, foundTenant9999 bool
+
+	for _, in := range inbounds {
+		if in.Port == 8443 && in.TenantID == "" {
+			foundOwner8443 = true
+		}
+		if in.TenantID == "tenant_evil" {
+			switch in.Port {
+			case 443:
+				foundTenant443 = true
+			case 8443:
+				foundTenant8443 = true
+			case 10085:
+				foundTenant10085 = true
+			case 9999:
+				foundTenant9999 = true
+			}
+		}
+	}
+
+	if !foundOwner8443 {
+		t.Errorf("Owner's inbound on port 8443 was overwritten or deleted!")
+	}
+	if foundTenant443 {
+		t.Errorf("Tenant was able to capture system port 443!")
+	}
+	if foundTenant8443 {
+		t.Errorf("Tenant was able to hijack owner port 8443!")
+	}
+	if foundTenant10085 {
+		t.Errorf("Tenant was able to capture API port 10085!")
+	}
+	if !foundTenant9999 {
+		t.Errorf("Legitimate tenant inbound on port 9999 was not registered")
+	}
+
+	// Verify owner still owns ownerInb
+	currentOwnerInb, err := mgr.store.GetInbound(ownerInb.ID)
+	if err != nil || currentOwnerInb == nil {
+		t.Fatalf("owner inbound disappeared: %v", err)
+	}
+	if currentOwnerInb.TenantID != "" {
+		t.Errorf("owner inbound tenant_id changed to %q", currentOwnerInb.TenantID)
+	}
+}

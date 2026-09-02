@@ -194,12 +194,24 @@ func runServer(dataDir string) {
 		filepath.Join(dataDir, "opera"))
 	sup.SetOnAccess(mgr.RecordLocalAccess) // track online status + connection IPs
 	mgr.StartSysstat(dataDir)              // host metrics for the dashboard
+	srvCtx, cancelSrv := context.WithCancel(context.Background())
+	defer cancelSrv()
+
+	var bgWg sync.WaitGroup
+	runBG := func(fn func()) {
+		bgWg.Add(1)
+		go func() {
+			defer bgWg.Done()
+			fn()
+		}()
+	}
+
 	// Blocklists for abuse detection. Cached copies load synchronously (fast, local),
 	// so matching works from the first access-log line; downloads run in background
 	// and a failure leaves the matcher empty rather than holding up the boot.
 	abuseStore := abuse.NewStore(filepath.Join(dataDir, "abuse"))
 	mgr.SetAbuse(abuseStore)
-	go abuseStore.Run(context.Background())
+	runBG(func() { abuseStore.Run(srvCtx) })
 	// The health report needs to tell "off on purpose" from "on, but nft refused it".
 	mgr.SetConnGuard(connGuardWanted, connGuardLimits)
 
@@ -244,26 +256,23 @@ func runServer(dataDir string) {
 		}
 	}()
 
-	srvCtx, cancelSrv := context.WithCancel(context.Background())
-	defer cancelSrv()
-
 	// Daily TLS check: renews ACME certs near expiry and reloads Xray on change.
-	go tlsLoop(srvCtx, mgr)
+	runBG(func() { tlsLoop(srvCtx, mgr) })
 	// Periodic traffic accounting + quota/expiry enforcement.
-	go statsPollLoop(srvCtx, mgr)
+	runBG(func() { statsPollLoop(srvCtx, mgr) })
 	// Writes the buffered access-log sightings. RecordAccess only buffers, so this
 	// is what actually persists who connected from where.
-	go accessFlushLoop(srvCtx, mgr)
+	runBG(func() { accessFlushLoop(srvCtx, mgr) })
 	// Payment polling fallback: reconciles pending provider orders in case a webhook
 	// was missed. Idles cheaply when there are no pending orders.
-	go paymentPollLoop(srvCtx, mgr)
+	runBG(func() { paymentPollLoop(srvCtx, mgr) })
 	// Audit-log + connection-row retention: drops rows past their windows.
-	go retentionLoop(srvCtx, mgr)
+	runBG(func() { retentionLoop(srvCtx, mgr) })
 	// Scheduled local backups. Independent of Telegram, so an operator with no bot
 	// still gets automatic backups; idles until a cron is set in Settings.
-	go autobackup.New(mgr, st, dataDir).Run(srvCtx)
+	runBG(func() { autobackup.New(mgr, st, dataDir).Run(srvCtx) })
 	// Periodic Happ proxy subscriptions sync (auto-refresh every 59 min).
-	mgr.StartHappScheduler(srvCtx)
+	runBG(func() { mgr.RunHappScheduler(srvCtx) })
 	// All three bots reach Telegram through the same egress, and in the WARP / Opera
 	// modes that egress is something this very startup brought up moments ago — Xray
 	// needs a couple of seconds past "process started" before its inbound accepts.
@@ -271,22 +280,24 @@ func runServer(dataDir string) {
 	// backoff, so the bots stay silent for ~40s after every restart. One bounded wait,
 	// shared by all three, off the startup path so the panel still serves meanwhile
 	// (it returns immediately for the direct and custom routes).
-	go func() {
+	runBG(func() {
 		mgr.AwaitTelegramEgress(srvCtx)
-		// Telegram admin bot: view/add/remove users + scheduled backups. It idles until
-		// enabled with a token in Settings → Telegram, re-reading config each cycle.
-		go telegram.New(mgr, st, dataDir).Run(srvCtx)
-		// Telegram user bot: public self-service for VPN clients (registration,
-		// subscription, stats). Idles until enabled with its own token in Settings.
-		go telegram.NewUser(mgr, st).Run(srvCtx)
-		// Telegram support bot: relays messages between a user's private chat and a
-		// per-user topic in the operator's forum supergroup. Idles until enabled with
-		// its own token and a group in Settings → Telegram.
-		go telegram.NewSupport(mgr, st).Run(srvCtx)
-	}()
+		var tgWg sync.WaitGroup
+		tgRun := func(fn func()) {
+			tgWg.Add(1)
+			go func() {
+				defer tgWg.Done()
+				fn()
+			}()
+		}
+		tgRun(func() { telegram.New(mgr, st, dataDir).Run(srvCtx) })
+		tgRun(func() { telegram.NewUser(mgr, st).Run(srvCtx) })
+		tgRun(func() { telegram.NewSupport(mgr, st).Run(srvCtx) })
+		tgWg.Wait()
+	})
 	// Broadcast delivery. Polls the store rather than holding a queue, so a restart
 	// mid-run resumes from the remaining recipients instead of losing or repeating.
-	go telegram.NewBroadcast(st, dataDir).Run(srvCtx)
+	runBG(func() { telegram.NewBroadcast(st, dataDir).Run(srvCtx) })
 
 	handler, err := server.New(mgr, secret, set.DecoyTemplate, dataDir)
 	if err != nil {
@@ -335,7 +346,7 @@ func runServer(dataDir string) {
 	<-stop
 	log.Print("shutting down")
 
-	// Cancel background loops first so they stop ticking and executing DB queries
+	// Cancel background loops first so they stop ticking and executing new DB queries
 	cancelSrv()
 
 	// Stop Xray FIRST. Draining HTTP can take the full timeout below, and until the
@@ -351,6 +362,7 @@ func runServer(dataDir string) {
 	// throttling anyone, least of all after the operator uninstalled it.
 	mgr.ResetShaping()
 
+	// Shut down HTTP listeners so in-flight requests complete before closing background workers and database.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if redirector != nil {
@@ -358,7 +370,21 @@ func runServer(dataDir string) {
 	}
 	_ = httpSrv.Shutdown(ctx)
 
-	// Flush any buffered access sightings and abuse sightings before the store is closed
+	// Wait for background workers to exit cleanly before flushing data and closing the store
+	bgDone := make(chan struct{})
+	go func() {
+		bgWg.Wait()
+		close(bgDone)
+	}()
+	select {
+	case <-bgDone:
+		log.Print("background workers stopped cleanly")
+	case <-time.After(5 * time.Second):
+		log.Print("shutdown timeout waiting for background workers")
+	}
+
+	// Flush any buffered access sightings and abuse sightings now that background loops
+	// and HTTP servers are stopped, cleanly before st.Close() runs.
 	mgr.FlushAccess()
 	mgr.FlushAbuse()
 }
@@ -390,8 +416,6 @@ func startRedirector(st *store.Store) *http.Server {
 	}
 	return http80.Start(":80", host)
 }
-
-
 
 // bootstrapTLS configures host/SNI and resolves a cert via ACME, falling back to
 // a self-signed cert if ACME is unavailable so Xray can still open :443.

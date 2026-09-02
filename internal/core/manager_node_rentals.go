@@ -2,12 +2,16 @@ package core
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +20,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/nodeapi"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/version"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/xray"
 )
 
 // SetNodeHostStats records host stats in memory for a server/node.
@@ -326,6 +331,7 @@ func (m *Manager) ImportRentedNode(shareLink string, customName string) (*model.
 		payload.VLESSPort,
 		payload.RealityPort,
 		payload.HysteriaPort,
+		payload.NodePath,
 	)
 	if err != nil {
 		if errors.Is(err, store.ErrNodeNameTaken) {
@@ -427,11 +433,28 @@ func (m *Manager) ProcessRentalSync(req model.NodeRentalSyncReq) (*model.NodeRen
 
 	currentInbounds, _ := m.store.Inbounds(req.NodeID)
 	tenantInbounds := make(map[int]bool)
+
+	ports, _ := m.GetNodeReservedPorts(req.NodeID)
+	reservedMap := make(map[int]bool, len(ports)+8)
+	for _, p := range ports {
+		if p.TenantID != req.TenantID {
+			reservedMap[p.Port] = true
+		}
+	}
+	reservedMap[80] = true
+	reservedMap[443] = true
+	reservedMap[22] = true
+	reservedMap[xray.APIPort] = true
+
 	for _, in := range req.Inbounds {
-		tenantInbounds[in.Port] = true
+		if in.Port <= 0 || in.Port > 65535 || reservedMap[in.Port] {
+			continue
+		}
 		in.ServerID = req.NodeID
 		in.TenantID = req.TenantID
-		_ = m.store.SaveTenantInbound(in)
+		if err := m.store.SaveTenantInbound(in); err == nil {
+			tenantInbounds[in.Port] = true
+		}
 	}
 	for _, in := range currentInbounds {
 		if in.TenantID == req.TenantID && !tenantInbounds[in.Port] {
@@ -447,11 +470,46 @@ func (m *Manager) ProcessRentalSync(req model.NodeRentalSyncReq) (*model.NodeRen
 		m.nodes.wakeOne(req.NodeID)
 	}
 
-	ports, _ := m.GetNodeReservedPorts(req.NodeID)
-	reserved := make([]int, 0, len(ports))
-	for _, p := range ports {
+	currentPorts, _ := m.GetNodeReservedPorts(req.NodeID)
+	reserved := make([]int, 0, len(currentPorts))
+	for _, p := range currentPorts {
 		reserved = append(reserved, p.Port)
 	}
+
+	var trafficUp, trafficDown int64
+	if tenants, err := m.store.ListNodeTenants(req.NodeID); err == nil {
+		for _, tn := range tenants {
+			if tn.TenantID == req.TenantID {
+				trafficUp = tn.TrafficUp
+				trafficDown = tn.TrafficDown
+				break
+			}
+		}
+	}
+
+	m.tenantTrafficMu.Lock()
+	var userTraffic []model.RentalUserTraffic
+	prefix := "t_" + req.TenantID + "_"
+	for k, tr := range m.tenantTrafficLast {
+		if strings.HasPrefix(k, prefix) {
+			if uid, err := strconv.ParseInt(strings.TrimPrefix(k, prefix), 10, 64); err == nil {
+				userTraffic = append(userTraffic, model.RentalUserTraffic{
+					UserID: uid,
+					Up:     tr.Up,
+					Down:   tr.Down,
+				})
+			}
+		}
+	}
+	m.tenantTrafficMu.Unlock()
+
+	var conns []model.RentalConnSample
+	m.tenantConnsMu.Lock()
+	if m.tenantConns != nil {
+		conns = m.tenantConns[req.TenantID]
+		delete(m.tenantConns, req.TenantID)
+	}
+	m.tenantConnsMu.Unlock()
 
 	return &model.NodeRentalSyncResp{
 		Online:           online,
@@ -465,6 +523,10 @@ func (m *Manager) ProcessRentalSync(req model.NodeRentalSyncReq) (*model.NodeRen
 		DiskTotal:        diskTotal,
 		HostUptime:       hostUptime,
 		ReservedPorts:    reserved,
+		TrafficUp:        trafficUp,
+		TrafficDown:      trafficDown,
+		UserTraffic:      userTraffic,
+		Conns:            conns,
 		RealityPublicKey: eff.RealityPublicKey,
 		RealityShortID:   eff.RealityShortID,
 		RealityPath:      eff.RealityPath,
@@ -538,22 +600,54 @@ func (m *Manager) SyncRentedNode(nodeID int64) error {
 		syncHost = node.Host
 	}
 
-	urls := []string{
-		fmt.Sprintf("https://%s/api/nodes/rentals/sync", syncHost),
-		fmt.Sprintf("http://%s/api/nodes/rentals/sync", syncHost),
-	}
-	if node.Host != "" && node.Host != syncHost {
-		urls = append(urls,
-			fmt.Sprintf("https://%s/api/nodes/rentals/sync", node.Host),
-			fmt.Sprintf("http://%s/api/nodes/rentals/sync", node.Host),
-		)
+	nPath := ""
+	if node.Connections != nil {
+		nPath = strings.Trim(node.Connections.NodePath, "/")
 	}
 
+	urls := make([]string, 0, 4)
+	if nPath != "" {
+		urls = append(urls, fmt.Sprintf("https://%s/%s/rentals/sync", syncHost, nPath))
+	}
+	urls = append(urls, fmt.Sprintf("https://%s/api/nodes/rentals/sync", syncHost))
+	if node.Host != "" && node.Host != syncHost {
+		if nPath != "" {
+			urls = append(urls, fmt.Sprintf("https://%s/%s/rentals/sync", node.Host, nPath))
+		}
+		urls = append(urls, fmt.Sprintf("https://%s/api/nodes/rentals/sync", node.Host))
+	}
+
+	var tlsConfig *tls.Config
+	if node.CertSHA256 != "" {
+		expectedPin := strings.ToLower(node.CertSHA256)
+		tlsConfig = &tls.Config{
+			InsecureSkipVerify: true,
+			VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+				if len(rawCerts) == 0 {
+					return errors.New("no peer certificates presented")
+				}
+				sum := sha256.Sum256(rawCerts[0])
+				pin := hex.EncodeToString(sum[:])
+				if pin != expectedPin {
+					return fmt.Errorf("tls pin mismatch: got %s, want %s", pin, expectedPin)
+				}
+				return nil
+			},
+		}
+	} else if node.CertSelfSigned {
+		tlsConfig = &tls.Config{InsecureSkipVerify: false}
+	} else {
+		tlsConfig = &tls.Config{InsecureSkipVerify: false}
+	}
+
+	tr := &http.Transport{
+		TLSClientConfig: tlsConfig,
+	}
+	defer tr.CloseIdleConnections()
+
 	client := &http.Client{
-		Timeout: 4 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
+		Timeout:   4 * time.Second,
+		Transport: tr,
 	}
 
 	var resp *http.Response
@@ -612,6 +706,65 @@ func (m *Manager) SyncRentedNode(nodeID int64) error {
 		DiskTotal:  syncResp.DiskTotal,
 		HostUptime: syncResp.HostUptime,
 	})
+
+	// Ingest connection samples for tenant users to track online status and device caps.
+	for _, c := range syncResp.Conns {
+		m.RecordAccessOn(node.ID, fmt.Sprintf("u%d", c.UserID), c.IP, "")
+	}
+
+	// Ingest per-user traffic deltas from the rented node.
+	nowTime := time.Now()
+	today := nowTime.In(m.loc()).Format("2006-01-02")
+	coef := model.NodeCoefficientOr(node.TrafficCoefficient)
+
+	m.rentedTrafficMu.Lock()
+	if m.rentedTrafficLast == nil {
+		m.rentedTrafficLast = make(map[string]xray.Traffic)
+	}
+	deltas := make([]store.TrafficDelta, 0, len(syncResp.UserTraffic))
+	userIDs := make([]int64, 0, len(syncResp.UserTraffic))
+
+	for _, ut := range syncResp.UserTraffic {
+		k := fmt.Sprintf("%d_%d", node.ID, ut.UserID)
+		prev := m.rentedTrafficLast[k]
+		addUp := ut.Up - prev.Up
+		addDown := ut.Down - prev.Down
+		if ut.Up < prev.Up { // Xray restarted on owner
+			addUp = ut.Up
+		}
+		if ut.Down < prev.Down {
+			addDown = ut.Down
+		}
+		m.rentedTrafficLast[k] = xray.Traffic{Up: ut.Up, Down: ut.Down}
+
+		au, ad := nonNeg(addUp), nonNeg(addDown)
+		if au > 0 || ad > 0 {
+			deltas = append(deltas, store.TrafficDelta{
+				UserID:    ut.UserID,
+				NodeID:    node.ID,
+				Day:       today,
+				AddUp:     au,
+				AddDown:   ad,
+				QuotaUp:   scaleQuota(au, coef),
+				QuotaDown: scaleQuota(ad, coef),
+				SeenAt:    nowTime.Unix(),
+			})
+			userIDs = append(userIDs, ut.UserID)
+		}
+	}
+	m.rentedTrafficMu.Unlock()
+
+	if len(deltas) > 0 {
+		var snapshot []model.User
+		if len(userIDs) > 0 {
+			snapshot, _ = m.store.GetUsersByIDs(userIDs)
+		}
+		if err := m.store.ApplyTrafficDeltas(deltas); err != nil {
+			logErr("rented node: traffic deltas failed", "node", node.ID, "err", err)
+		} else {
+			_ = m.enforceAfterTraffic(snapshot)
+		}
+	}
 
 	return nil
 }

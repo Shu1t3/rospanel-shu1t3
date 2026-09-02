@@ -131,8 +131,15 @@ func dialValidated(ctx context.Context, network, addr string) (net.Conn, error) 
 	return nil, fmt.Errorf("could not connect")
 }
 
+var defaultSafeTransport = &http.Transport{
+	DialContext:         dialValidated,
+	IdleConnTimeout:     90 * time.Second,
+	MaxIdleConns:        100,
+	MaxIdleConnsPerHost: 10,
+}
+
 func safeTransport() *http.Transport {
-	return &http.Transport{DialContext: dialValidated}
+	return defaultSafeTransport
 }
 
 // Client returns an http.Client with timeout and redirect blocking to private nets.

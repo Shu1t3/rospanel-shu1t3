@@ -739,5 +739,3 @@ func TestSniffingRouteOnlyAndDirectFreedomDomainStrategy(t *testing.T) {
 		}
 	}
 }
-
-

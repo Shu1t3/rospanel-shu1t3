@@ -328,6 +328,10 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			decoy.ServeHTTP(w, r)
 			return
 		}
+		if rest == "/rentals/sync" || strings.HasPrefix(rest, "/rentals/sync/") {
+			rt.handleRentalSync(w, r)
+			return
+		}
 		rt.handleNodeAPI(w, r, rest)
 		return
 	}

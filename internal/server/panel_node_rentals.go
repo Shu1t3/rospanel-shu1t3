@@ -1,6 +1,8 @@
 package server
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 
@@ -112,14 +114,27 @@ func (rt *Router) deleteNodeTenant(w http.ResponseWriter, r *http.Request, id in
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+func (rt *Router) serveDecoy(w http.ResponseWriter, r *http.Request) {
+	if rt.decoy != nil {
+		rt.decoy.ServeHTTP(w, r)
+	} else {
+		http.NotFound(w, r)
+	}
+}
+
 func (rt *Router) handleRentalSync(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		rt.serveDecoy(w, r)
+		return
+	}
 	var req model.NodeRentalSyncReq
-	if !decodeJSON(w, r, &req) {
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		rt.serveDecoy(w, r)
 		return
 	}
 	resp, err := rt.mgr.ProcessRentalSync(req)
 	if err != nil {
-		writeManagerErr(w, err)
+		rt.serveDecoy(w, r)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)

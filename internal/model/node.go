@@ -187,6 +187,7 @@ type NodeConnections struct {
 	AWGPort            int    `json:"awg_port"`
 	AWGName            string `json:"awg_name"`
 	AWGDNS             string `json:"awg_dns"`
+	NodePath           string `json:"node_path,omitempty"`
 }
 
 // Joined reports whether the node has exchanged its join token for a permanent

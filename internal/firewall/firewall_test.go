@@ -184,3 +184,33 @@ func TestSyncGracefulOnNonLinuxOrNonRoot(t *testing.T) {
 		t.Logf("Sync returned (expected on non-linux/non-root): %v", err)
 	}
 }
+
+func TestIsDisabled(t *testing.T) {
+	cases := []struct {
+		envVal string
+		want   bool
+	}{
+		{"off", true},
+		{"OFF", true},
+		{"false", true},
+		{"0", true},
+		{"disable", true},
+		{"disabled", true},
+		{"no", true},
+		{"", false},
+		{"on", false},
+		{"true", false},
+		{"1", false},
+		{"enable", false},
+	}
+
+	orig := t.TempDir()
+	_ = orig
+	for _, tc := range cases {
+		t.Setenv("ROSPANEL_FIREWALL", tc.envVal)
+		got := IsDisabled()
+		if got != tc.want {
+			t.Errorf("ROSPANEL_FIREWALL=%q: got %v, want %v", tc.envVal, got, tc.want)
+		}
+	}
+}

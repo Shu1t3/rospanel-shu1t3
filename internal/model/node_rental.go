@@ -84,29 +84,46 @@ type NodeRentalSyncReq struct {
 
 // NodeRentalSyncResp is the telemetry returned to a tenant by the owner panel.
 type NodeRentalSyncResp struct {
-	Online           bool    `json:"online"`
-	NodeVersion      string  `json:"node_version"`
-	XrayVersion      string  `json:"xray_version"`
-	XrayRunning      bool    `json:"xray_running"`
-	CPUPercent       float64 `json:"cpu_percent"`
-	MemUsed          int64   `json:"mem_used"`
-	MemTotal         int64   `json:"mem_total"`
-	DiskUsed         int64   `json:"disk_used"`
-	DiskTotal        int64   `json:"disk_total"`
-	HostUptime       int64   `json:"host_uptime"`
-	ReservedPorts    []int   `json:"reserved_ports"`
-	RealityPublicKey string  `json:"reality_public_key,omitempty"`
-	RealityShortID   string  `json:"reality_short_id,omitempty"`
-	RealityPath      string  `json:"reality_path,omitempty"`
-	RealityDest      string  `json:"reality_dest,omitempty"`
-	CertSHA256       string  `json:"cert_sha256,omitempty"`
-	CertSelfSigned   bool    `json:"cert_self_signed,omitempty"`
-	VLESSPort        int     `json:"vless_port,omitempty"`
-	RealityPort      int     `json:"reality_port,omitempty"`
-	HysteriaPort     int     `json:"hysteria_port,omitempty"`
-	VLESSEnabled     bool    `json:"vless_enabled,omitempty"`
-	RealityEnabled   bool    `json:"reality_enabled,omitempty"`
-	HysteriaEnabled  bool    `json:"hysteria_enabled,omitempty"`
+	Online           bool                `json:"online"`
+	NodeVersion      string              `json:"node_version"`
+	XrayVersion      string              `json:"xray_version"`
+	XrayRunning      bool                `json:"xray_running"`
+	CPUPercent       float64             `json:"cpu_percent"`
+	MemUsed          int64               `json:"mem_used"`
+	MemTotal         int64               `json:"mem_total"`
+	DiskUsed         int64               `json:"disk_used"`
+	DiskTotal        int64               `json:"disk_total"`
+	HostUptime       int64               `json:"host_uptime"`
+	ReservedPorts    []int               `json:"reserved_ports"`
+	RealityPublicKey string              `json:"reality_public_key,omitempty"`
+	RealityShortID   string              `json:"reality_short_id,omitempty"`
+	RealityPath      string              `json:"reality_path,omitempty"`
+	RealityDest      string              `json:"reality_dest,omitempty"`
+	CertSHA256       string              `json:"cert_sha256,omitempty"`
+	CertSelfSigned   bool                `json:"cert_self_signed,omitempty"`
+	VLESSPort        int                 `json:"vless_port,omitempty"`
+	RealityPort      int                 `json:"reality_port,omitempty"`
+	HysteriaPort     int                 `json:"hysteria_port,omitempty"`
+	VLESSEnabled     bool                `json:"vless_enabled,omitempty"`
+	RealityEnabled   bool                `json:"reality_enabled,omitempty"`
+	HysteriaEnabled  bool                `json:"hysteria_enabled,omitempty"`
+	TrafficUp        int64               `json:"traffic_up,omitempty"`
+	TrafficDown      int64               `json:"traffic_down,omitempty"`
+	UserTraffic      []RentalUserTraffic `json:"user_traffic,omitempty"`
+	Conns            []RentalConnSample  `json:"conns,omitempty"`
+}
+
+// RentalConnSample captures one (user_id, source_ip) connection on a rented node.
+type RentalConnSample struct {
+	UserID int64  `json:"user_id"`
+	IP     string `json:"ip"`
+}
+
+// RentalUserTraffic holds cumulative traffic for a tenant user on a rented node.
+type RentalUserTraffic struct {
+	UserID int64 `json:"user_id"`
+	Up     int64 `json:"up"`
+	Down   int64 `json:"down"`
 }
 
 // PortInfo describes an individual port usage on a node.
