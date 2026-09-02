@@ -157,9 +157,11 @@ function num(v: string): number {
 export function InboundsEditor({
   serverId,
   restartsPanel,
+  readOnly = false,
 }: {
   serverId: number;
   restartsPanel: boolean;
+  readOnly?: boolean;
 }) {
   const { t } = useTranslation();
   const [list, setList] = useState<Inbound[] | null>(null);
@@ -247,24 +249,27 @@ export function InboundsEditor({
             onEdit={() => setEditing({ id: v.id, v: toInput(v) })}
             onDelete={() => setConfirmDel(v)}
             onRegen={() => regen(v)}
+            readOnly={readOnly}
           />
         ))}
       </div>
 
-      <div>
-        <Button
-          variant="light"
-          onClick={() => setEditing({ id: 0, v: blank() })}
-          disabled={busy || applying || full}
-        >
-          {t("inb.add")}
-        </Button>
-        {full && (
-          <p className="mt-2 text-xs text-ink-muted">
-            {t("inb.limitReached", { max: catalog.max })}
-          </p>
-        )}
-      </div>
+      {!readOnly && (
+        <div>
+          <Button
+            variant="light"
+            onClick={() => setEditing({ id: 0, v: blank() })}
+            disabled={busy || applying || full}
+          >
+            {t("inb.add")}
+          </Button>
+          {full && (
+            <p className="mt-2 text-xs text-ink-muted">
+              {t("inb.limitReached", { max: catalog.max })}
+            </p>
+          )}
+        </div>
+      )}
 
       <Modal
         open={!!editing}

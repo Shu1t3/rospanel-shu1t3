@@ -72,6 +72,7 @@ import {
 } from "./api";
 import { ApplyingModal, useXrayApply } from "./apply";
 import { ConnectionsEditor } from "./ConnectionsEditor";
+import { InboundsEditor } from "./InboundsEditor";
 import { ServerSnapshots } from "./ServerSnapshots";
 import { canonicalDns, DnsEditor } from "./DnsEditor";
 import { helperStatus } from "./egress";
@@ -1533,6 +1534,7 @@ function NodeSettingsDialog({
   const dialogTabs = [
     { value: "general", label: t("settings.tabGeneral") },
     { value: "connections", label: t("nodes.tabConnections") },
+    { value: "inbounds", label: t("nodes.tabInbounds") },
     { value: "routing", label: t("nodes.tabRouting") },
     { value: "dns", label: "DNS" },
     ...(!node.is_rented
@@ -1547,7 +1549,7 @@ function NodeSettingsDialog({
   return (
     <Modal open onClose={onClose} title={t("nodes.settingsOf", { name: node.name })} size="xl">
       {node.is_rented && (
-        <div className="mb-4 rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-3 text-xs text-indigo-950 dark:text-indigo-200">
+        <div className="mb-4 rounded-xl border border-indigo-500/20 bg-indigo-50/5 p-3 text-xs text-indigo-950 dark:text-indigo-200">
           <div className="flex items-center gap-2 font-medium">
             <span className="h-2 w-2 rounded-full bg-indigo-500" />
             <span>{t("nodes.ownerSupremacy")}</span>
@@ -1638,6 +1640,14 @@ function NodeSettingsDialog({
           reset={node.is_rented ? undefined : () => resetNodeConnections(node.id)}
           serverId={node.id}
           restartsPanel={false}
+        />
+      )}
+
+      {tab === "inbounds" && (
+        <InboundsEditor
+          serverId={node.id}
+          restartsPanel={false}
+          readOnly={node.is_rented}
         />
       )}
 
@@ -1911,6 +1921,7 @@ function MasterSettingsDialog({
             tabs={[
               { value: "general", label: t("settings.tabGeneral") },
               { value: "connections", label: t("nodes.tabConnections") },
+              { value: "inbounds", label: t("nodes.tabInbounds") },
               { value: "routing", label: t("nodes.tabRouting") },
               { value: "dns", label: "DNS" },
               { value: "geo", label: "Geo" },
@@ -1967,6 +1978,8 @@ function MasterSettingsDialog({
               restartsPanel
             />
           )}
+
+          {tab === "inbounds" && <InboundsEditor serverId={0} restartsPanel />}
 
           {tab === "routing" && (
             <div className="flex flex-col gap-4">
