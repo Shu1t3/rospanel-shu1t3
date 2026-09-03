@@ -109,8 +109,8 @@ func TestRouteTiersByRole(t *testing.T) {
 			wantOwner: 200, wantAdmin: 200, wantOperator: denied, wantNoAuth: 401,
 		},
 		{
-			name: "admin roster (admin and up)", method: "GET", path: "/api/admins",
-			wantOwner: 200, wantAdmin: 200, wantOperator: denied, wantNoAuth: 401,
+			name: "admin roster (owner only)", method: "GET", path: "/api/admins",
+			wantOwner: 200, wantAdmin: denied, wantOperator: denied, wantNoAuth: 401,
 		},
 		{
 			name: "create admin (owner only)", method: "POST", path: "/api/admins",

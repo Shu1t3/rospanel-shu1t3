@@ -157,8 +157,8 @@ func TestValidateLanesTooMany(t *testing.T) {
 
 func TestRoutingConfigDirectDomainStrategy(t *testing.T) {
 	rc := RoutingConfig{
-		DirectDomains:        []string{"vk.com"},
-		DirectDomainStrategy: "UseIPv4",
+		DirectDomains:  []string{"vk.com"},
+		DirectStrategy: "UseIPv4",
 	}
 	raw, err := json.Marshal(rc)
 	if err != nil {
@@ -168,7 +168,7 @@ func TestRoutingConfigDirectDomainStrategy(t *testing.T) {
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.DirectDomainStrategy != "UseIPv4" {
-		t.Errorf("DirectDomainStrategy = %q, want UseIPv4", out.DirectDomainStrategy)
+	if out.DirectStrategy != "UseIPv4" {
+		t.Errorf("DirectStrategy = %q, want UseIPv4", out.DirectStrategy)
 	}
 }

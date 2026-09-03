@@ -59,6 +59,7 @@ func TestMCPFleetWritesReachTheStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create node: %v", err)
 	}
+	_ = st.SaveNodeWarp(node.ID, "priv", "pub", "endpoint", "172.16.0.2/32", "", "")
 	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
 	defer hook.Close()
 

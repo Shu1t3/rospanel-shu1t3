@@ -159,131 +159,115 @@ func (s *Service) clearPending(chatID int64) {
 
 // Run drives the bot until ctx is cancelled: it long-polls for updates and, in a
 // sibling goroutine, fires scheduled backups. When the bot is disabled or has no
-type adminNotifyTask struct {
-	html    string
-	menuMsg string
-	menuBtn [][]InlineButton
-	isMenu  bool
-}
-
-// Run drives the bot until ctx is cancelled: it long-polls for updates and, in a
-// sibling goroutine, fires scheduled backups. When the bot is disabled or has no
 // token it idles, re-checking periodically.
 func (s *Service) Run(ctx context.Context) {
 	go s.backupLoop(ctx)
-
-	notifyQueue := make(chan adminNotifyTask, 256)
-
+	// Everything this bot pushes goes through one queue: the panel raises these from
+	// its poll loops and webhooks, which must not wait on Telegram (see notifyqueue.go).
+	q := newNotifyQueue("admin bot")
+	q.run(ctx, 2)
 	// Broadcast admin events (payments, outages, blocklist hits) to the authorized
 	// admin chats.
 	s.panel.SetAdminNotifier(func(html string) {
-		select {
-		case notifyQueue <- adminNotifyTask{html: html, isMenu: false}:
-		default:
-			log.Printf("telegram: admin notify queue full, dropped message")
-		}
+		q.submit(func(ctx context.Context) { s.sendAdminBroadcast(ctx, html) })
 	})
-
-	// A signup awaiting moderation: post it with approve/reject buttons.
 	s.panel.SetAdminModerationNotifier(func(reqID int64, name, plan string) {
-		set, err := s.store.GetSettings()
-		if err != nil || strings.TrimSpace(set.TGBotToken) == "" || !set.AdminEventEnabled(model.AdminEventRegistered) {
-			return
-		}
-		lang := s.lang()
-		msg := i18n.T(lang, "admin.regRequest", esc(name))
-		if plan != "" {
-			msg += "\n" + i18n.T(lang, "admin.planIs", esc(plan))
-		}
-		msg += "\n\n" + i18n.T(lang, "admin.approveAccess")
-		rows := [][]InlineButton{{
-			{Text: i18n.T(lang, "admin.btnApprove"), CallbackData: fmt.Sprintf("reg:%d:ok", reqID)},
-			{Text: i18n.T(lang, "admin.btnReject"), CallbackData: fmt.Sprintf("reg:%d:no", reqID)},
-		}}
-		select {
-		case notifyQueue <- adminNotifyTask{menuMsg: msg, menuBtn: rows, isMenu: true}:
-		default:
-			log.Printf("telegram: admin moderation queue full, dropped prompt")
-		}
+		q.submit(func(ctx context.Context) { s.sendModerationPrompt(ctx, reqID, name, plan) })
 	})
-	// A sign-in from an address the admin had not used: say where from, on what,
-	// and offer the one action that helps if it was somebody else.
 	s.panel.SetAdminLoginNotifier(func(a core.LoginAlert) {
-		set, err := s.store.GetSettings()
-		if err != nil || strings.TrimSpace(set.TGBotToken) == "" {
-			return
-		}
-		lang := s.lang()
-		where := esc(a.IP)
-		if a.Country != "" {
-			where += " " + geo.Flag(a.Country) + " " + esc(a.Country)
-		}
-		if a.Org != "" {
-			where += " · " + esc(a.Org)
-		}
-		client := esc(a.Client)
-		if client == "" {
-			client = i18n.T(lang, "admin.unknownClient")
-		}
-		when := time.Unix(a.At, 0).In(s.panel.Location()).Format("02.01.2006 15:04")
-		msg := i18n.T(lang, "notify.adminLogin", esc(a.Username), where, client, when)
-		rows := [][]InlineButton{{
-			{Text: i18n.T(lang, "admin.btnNotMe"), CallbackData: fmt.Sprintf("sess:%d:kill", a.AdminID)},
-		}}
-		select {
-		case notifyQueue <- adminNotifyTask{menuMsg: msg, menuBtn: rows, isMenu: true}:
-		default:
-			log.Printf("telegram: admin login alert queue full, dropped alert")
-		}
+		q.submit(func(ctx context.Context) { s.sendLoginAlert(ctx, a) })
 	})
+	s.pollLoop(ctx)
+}
 
-	var notifyWg sync.WaitGroup
-	for range 4 {
-		notifyWg.Add(1)
-		go func() {
-			defer notifyWg.Done()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case task, ok := <-notifyQueue:
-					if !ok {
-						return
-					}
-					set, err := s.store.GetSettings()
-					if err != nil {
-						continue
-					}
-					token := strings.TrimSpace(set.TGBotToken)
-					if token == "" {
-						continue
-					}
-					chats := set.TelegramChatIDs()
-					if len(chats) == 0 {
-						continue
-					}
-					c := NewClient(token, set.TelegramProxyURL())
-					sendCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-					for _, id := range chats {
-						if sendCtx.Err() != nil {
-							break
-						}
-						if task.isMenu {
-							if err := c.SendMenu(sendCtx, id, task.menuMsg, task.menuBtn); err != nil && ctx.Err() == nil {
-								log.Printf("telegram: moderation prompt to %d failed: %v", id, err)
-							}
-						} else {
-							if err := c.SendMessage(sendCtx, id, task.html); err != nil && ctx.Err() == nil {
-								log.Printf("telegram: admin notify to %d failed: %v", id, err)
-							}
-						}
-					}
-					cancel()
-				}
-			}
-		}()
+// sendAdminBroadcast delivers one message to every authorized admin chat.
+func (s *Service) sendAdminBroadcast(ctx context.Context, html string) {
+	set, err := s.store.GetSettings()
+	if err != nil {
+		log.Printf("telegram: admin notify: settings: %v", err)
+		return
 	}
-	defer notifyWg.Wait()
+	token := strings.TrimSpace(set.TGBotToken)
+	if token == "" {
+		log.Printf("telegram: admin notify dropped — no bot token")
+		return
+	}
+	chats := set.TelegramChatIDs()
+	if len(chats) == 0 {
+		// The whole feature is silent in this state and nothing else says so: every
+		// alert the panel raises is built, gated, and then delivered to nobody.
+		log.Printf("telegram: admin notify dropped — no linked admin chats")
+		return
+	}
+	c := NewClient(strings.TrimSpace(set.TGBotToken), set.TelegramProxyURL())
+	for _, id := range chats {
+		// Logged, never swallowed: a chat that blocked the bot, a stale chat id or a
+		// revoked token fails per send, and with the error discarded the panel looked
+		// exactly like a panel that had nothing to say.
+		if err := c.SendMessage(ctx, id, html); err != nil {
+			log.Printf("telegram: admin notify to %d failed: %v", id, err)
+		}
+	}
+}
+
+// sendModerationPrompt posts a signup awaiting moderation, with its buttons.
+func (s *Service) sendModerationPrompt(ctx context.Context, reqID int64, name, plan string) {
+	set, err := s.store.GetSettings()
+	if err != nil || strings.TrimSpace(set.TGBotToken) == "" || !set.AdminEventEnabled(model.AdminEventRegistered) {
+		return
+	}
+	lang := s.lang()
+	msg := i18n.T(lang, "admin.regRequest", esc(name))
+	if plan != "" {
+		msg += "\n" + i18n.T(lang, "admin.planIs", esc(plan))
+	}
+	msg += "\n\n" + i18n.T(lang, "admin.approveAccess")
+	rows := [][]InlineButton{{
+		{Text: i18n.T(lang, "admin.btnApprove"), CallbackData: fmt.Sprintf("reg:%d:ok", reqID)},
+		{Text: i18n.T(lang, "admin.btnReject"), CallbackData: fmt.Sprintf("reg:%d:no", reqID)},
+	}}
+	c := NewClient(strings.TrimSpace(set.TGBotToken), set.TelegramProxyURL())
+	for _, id := range set.TelegramChatIDs() {
+		if err := c.SendMenu(ctx, id, msg, rows); err != nil {
+			log.Printf("telegram: moderation prompt to %d failed: %v", id, err)
+		}
+	}
+}
+
+// sendLoginAlert reports a sign-in from an address the admin had not used: where
+// from, on what, and the one action that helps if it was somebody else.
+func (s *Service) sendLoginAlert(ctx context.Context, a core.LoginAlert) {
+	set, err := s.store.GetSettings()
+	if err != nil || strings.TrimSpace(set.TGBotToken) == "" {
+		return
+	}
+	lang := s.lang()
+	where := esc(a.IP)
+	if a.Country != "" {
+		where += " " + geo.Flag(a.Country) + " " + esc(a.Country)
+	}
+	if a.Org != "" {
+		where += " · " + esc(a.Org)
+	}
+	client := esc(a.Client)
+	if client == "" {
+		client = i18n.T(lang, "admin.unknownClient")
+	}
+	when := time.Unix(a.At, 0).In(s.panel.Location()).Format("02.01.2006 15:04")
+	msg := i18n.T(lang, "notify.adminLogin", esc(a.Username), where, client, when)
+	rows := [][]InlineButton{{
+		{Text: i18n.T(lang, "admin.btnNotMe"), CallbackData: fmt.Sprintf("sess:%d:kill", a.AdminID)},
+	}}
+	c := NewClient(strings.TrimSpace(set.TGBotToken), set.TelegramProxyURL())
+	for _, id := range set.TelegramChatIDs() {
+		if err := c.SendMenu(ctx, id, msg, rows); err != nil {
+			log.Printf("telegram: login alert to %d failed: %v", id, err)
+		}
+	}
+}
+
+// pollLoop long-polls for updates until ctx ends, idling while the bot is off.
+func (s *Service) pollLoop(ctx context.Context) {
 	for {
 		if ctx.Err() != nil {
 			return
@@ -303,9 +287,9 @@ func (s *Service) Run(ctx context.Context) {
 			}
 			// Log a persistent error (e.g. a bad token, or a webhook conflict) once,
 			// not every cycle — otherwise it floods the journal forever.
-			if key := pollErrorKey(err); key != s.lastPollErr {
+			if msg := err.Error(); msg != s.lastPollErr {
 				log.Printf("telegram: getUpdates: %v", err)
-				s.lastPollErr = key
+				s.lastPollErr = msg
 			}
 			if !sleep(ctx, pollBackoff(err)) {
 				return
@@ -390,7 +374,7 @@ func (s *Service) handleMessage(ctx context.Context, client *Client, m *Message)
 	}
 	// A pending prompt (e.g. "send the new user's name") consumes the next message.
 	if s.takePending(chatID) == "add" {
-		s.doAdd(ctx, client, chatID, text)
+		s.doAdd(ctx, client, chatID, set, text)
 		return
 	}
 	// Any other text just opens the menu — the whole UI is buttons.
@@ -449,7 +433,7 @@ func (s *Service) handleCallback(ctx context.Context, client *Client, cb *Callba
 	case data == "add":
 		s.promptAdd(ctx, client, chatID, msgID)
 	case data == "backup":
-		s.cmdBackup(ctx, client, chatID)
+		s.cmdBackup(ctx, client, chatID, set)
 	case strings.HasPrefix(data, "sess:"):
 		s.handleSessionKill(ctx, client, chatID, msgID, cb.From, strings.TrimPrefix(data, "sess:"))
 	}
@@ -529,7 +513,7 @@ func (s *Service) handleUserAction(ctx context.Context, client *Client, chatID, 
 		_ = s.panel.ResetTraffic(ctx, id)
 		s.showUserCard(ctx, client, chatID, msgID, set, id)
 	case "plans":
-		s.showUserPlans(ctx, client, chatID, msgID, id)
+		s.showUserPlans(ctx, client, chatID, msgID, set, id)
 	case "del": // ask for confirmation in place
 		u, ok := s.findUser(id)
 		if !ok {
@@ -640,7 +624,7 @@ func (s *Service) showUserCard(ctx context.Context, client *Client, chatID, msgI
 }
 
 // showUserPlans lets the admin assign a tariff (or switch back to manual limits).
-func (s *Service) showUserPlans(ctx context.Context, client *Client, chatID, msgID int64, userID int64) {
+func (s *Service) showUserPlans(ctx context.Context, client *Client, chatID, msgID int64, set *model.Settings, userID int64) {
 	lang := s.lang()
 	u, ok := s.findUser(userID)
 	if !ok {
@@ -680,7 +664,7 @@ func (s *Service) promptAdd(ctx context.Context, client *Client, chatID, msgID i
 }
 
 // doAdd creates a user, without a data limit or expiry, from the prompted name.
-func (s *Service) doAdd(ctx context.Context, client *Client, chatID int64, text string) {
+func (s *Service) doAdd(ctx context.Context, client *Client, chatID int64, set *model.Settings, text string) {
 	lang := s.lang()
 	name := strings.TrimSpace(text)
 	if name == "" {
@@ -716,7 +700,7 @@ func (s *Service) sendSubscription(ctx context.Context, client *Client, chatID i
 	}
 }
 
-func (s *Service) cmdBackup(ctx context.Context, client *Client, chatID int64) {
+func (s *Service) cmdBackup(ctx context.Context, client *Client, chatID int64, set *model.Settings) {
 	lang := s.lang()
 	s.send(ctx, client, chatID, i18n.T(lang, "admin.preparingBackup"))
 	if err := SendBackup(ctx, client, []int64{chatID}, s.dataDir,

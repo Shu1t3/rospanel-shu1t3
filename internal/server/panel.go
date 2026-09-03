@@ -163,15 +163,19 @@ func (rt *Router) subServers(local *model.Settings, userID int64, clientIP strin
 	if err != nil {
 		return nil, err
 	}
-	happNodes, err := rt.mgr.Store().ListEnabledHappNodes()
-	if err != nil {
-		happNodes = nil
+	servers := sub.Servers(sets, custom, access)
+	ordered := sub.Order(servers, local.SubOrderMode, rt.mgr.CountryOfIP(clientIP), rt.mgr.OnlineByServer())
+	// External servers ride on the master's entry (the one every subscription has;
+	// the ordering may hide a node, never the master's own list of extras).
+	if ext := rt.mgr.EnabledExtServers(); len(ext) > 0 {
+		for i := range ordered {
+			if ordered[i].Set.ServerID == model.LocalNodeID {
+				ordered[i].External = ext
+				break
+			}
+		}
 	}
-	// Ordered for THIS client: their country, each server's live load and the
-	// operator's weights decide who comes first, and a full server can drop out.
-	// Under the manual mode with no weights this is the old order, unchanged.
-	servers := sub.ServersWithHapp(sets, custom, happNodes, access)
-	return sub.Order(servers, local.SubOrderMode, rt.mgr.CountryOfIP(clientIP), rt.mgr.OnlineByServer()), nil
+	return ordered, nil
 }
 
 // localInbounds is the master's own custom inbounds, or none when they can't be
@@ -264,6 +268,7 @@ func (rt *Router) panelMux() http.Handler {
 	authedAny("POST /api/account/totp/disable", rt.totpDisable)
 	// The caller's own open sessions (see panel_sessions.go). Same shape as 2FA: no
 	// id of another admin anywhere in the path.
+	authedAny("GET /api/changelog", rt.changelog)
 	authedAny("GET /api/account/sessions", rt.listSessions)
 	authedAny("DELETE /api/account/sessions/{id}", withID(rt.revokeSession))
 	authedAny("POST /api/account/sessions/revoke-others", rt.revokeOtherSessions)
@@ -273,7 +278,7 @@ func (rt *Router) panelMux() http.Handler {
 	authedOwner("GET /api/admin-audit", rt.adminAudit)
 	authedOwner("GET /api/admin-audit/catalog", rt.adminAuditCatalog)
 	authedOwner("GET /api/admin-audit/export", rt.exportAdminAudit)
-	authed("GET /api/admins", rt.listAdmins)
+	authedOwner("GET /api/admins", rt.listAdmins)
 	authedOwner("POST /api/admins", rt.createAdmin)
 	authedOwnerID("POST /api/admins/{id}/role", rt.setAdminRole)
 	authedOwnerID("POST /api/admins/{id}/password", rt.resetAdminPassword)
@@ -304,6 +309,14 @@ func (rt *Router) panelMux() http.Handler {
 	authed("POST /api/settings/dns", rt.setXrayDNS)
 	authed("POST /api/settings/local-backup", rt.setLocalBackup)
 	authed("POST /api/settings/autodelete", rt.setUserAutoDelete)
+	// External subscriptions: other people's servers handed on to users.
+	authed("GET /api/external", rt.listExternal)
+	authed("POST /api/external", rt.createExternal)
+	authedID("DELETE /api/external/{id}", rt.deleteExternal)
+	authedID("POST /api/external/{id}/sync", rt.syncExternal)
+	authedID("POST /api/external/{id}/enabled", rt.setExternalEnabled)
+	authedID("POST /api/external/{id}/servers", rt.setExternalServersEnabled)
+	authedID("POST /api/external/servers/{id}/enabled", rt.setExternalServerEnabled)
 	authed("GET /api/settings/abuse", rt.getAbuseSettings)
 	authed("POST /api/settings/abuse", rt.saveAbuseSettings)
 	authed("POST /api/settings/abuse/refresh", rt.refreshAbuse)

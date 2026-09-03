@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import i18n from "./i18n";
 import { useTranslation } from "react-i18next";
-import { ChangelogDropdown } from "./ChangelogDropdown";
 import {
   applyUpdate,
   checkUpdate,
@@ -278,17 +277,7 @@ export function GeneralSettings() {
     if (!upd?.latest) return;
     const ok = await confirm({
       title: t("general.updateTitle", { version: upd.latest }),
-      body: (
-        <div className="space-y-3">
-          <p>{t("general.updateBody")}</p>
-          <ChangelogDropdown
-            version={upd.latest}
-            rawNotes={upd.notes}
-            compact
-            allowVersionSelect={false}
-          />
-        </div>
-      ),
+      body: t("general.updateBody"),
       confirmLabel: t("general.update"),
     });
     if (!ok) return;
@@ -370,16 +359,6 @@ export function GeneralSettings() {
             </Button>
           )}
         </div>
-
-        {(upd?.latest || version) && (
-          <ChangelogDropdown
-            className="mt-3"
-            version={upd?.available && upd.latest ? upd.latest : version}
-            rawNotes={upd?.available ? upd.notes : undefined}
-            defaultOpen={!!upd?.available}
-            allowVersionSelect={true}
-          />
-        )}
 
         <Modal
           open={updating}

@@ -68,6 +68,23 @@ export type BadgeColor = "gray" | "green" | "orange" | "red";
 export type StatusBadge = { label: string; color: BadgeColor };
 export type Opt = { value: string; label: string };
 
+// directStrategies() are the ways the direct outbound may resolve a name before
+// dialling it (Xray's freedom domainStrategy). The default is Xray's own — naming
+// a family instead makes the panel's DNS decide and pins the address family, which
+// is what fixes "only through the tunnel some sites crawl" on a host whose IPv6
+// route is broken.
+// AsIs is not offered separately: it IS Xray's default, so listing both gave the
+// same behaviour two names. A config that carries it explicitly (set through the
+// API) is shown as the default — see fromRouting.
+export const directStrategies = (): Opt[] => [
+  { value: "", label: i18n.t("route.stratDefault") },
+  { value: "UseIP", label: i18n.t("route.stratUseIP") },
+  { value: "UseIPv4", label: i18n.t("route.stratUseIPv4") },
+  { value: "UseIPv6", label: i18n.t("route.stratUseIPv6") },
+  { value: "UseIPv4v6", label: i18n.t("route.stratUseIPv4v6") },
+  { value: "UseIPv6v4", label: i18n.t("route.stratUseIPv6v4") },
+];
+
 // proxyRefresh() are the URL auto-refresh cadence options (minutes; -1 = never).
 export const proxyRefresh = (): Opt[] => [
   { value: "30", label: i18n.t("route.every30m") },
@@ -90,7 +107,7 @@ export const EMPTY: RoutingConfig = {
   opera_ips: [],
   direct_domains: [],
   direct_ips: [],
-  direct_domain_strategy: "UseIPv4",
+  direct_strategy: "",
   routing_order: ["warp", "opera", "direct"],
   lanes: [],
   proxy_refresh_minutes: 30,
@@ -100,16 +117,6 @@ export const EMPTY: RoutingConfig = {
 // A proxy lane is labelled by its own name instead.
 const builtinLaneName = (lane: string): string =>
   lane === "direct" ? i18n.t("route.direct") : lane === "warp" ? "WARP" : "Opera VPN";
-
-// freedomDomainStrategies offers domain resolution modes for direct outbound.
-export const freedomDomainStrategies = () => [
-  { value: "UseIPv4", label: i18n.t("route.stratUseIPv4") },
-  { value: "UseIPv4v6", label: i18n.t("route.stratUseIPv4v6") },
-  { value: "UseIPv6v4", label: i18n.t("route.stratUseIPv6v4") },
-  { value: "UseIP", label: i18n.t("route.stratUseIP") },
-  { value: "UseIPv6", label: i18n.t("route.stratUseIPv6") },
-  { value: "AsIs", label: i18n.t("route.stratAsIs") },
-];
 
 // Opera VPN regions opera-proxy supports.
 export const operaCountries = () => [
@@ -208,7 +215,8 @@ export function hydrateRouting(
     opera_ips: src.opera_ips ?? [],
     direct_domains: src.direct_domains ?? [],
     direct_ips: src.direct_ips ?? [],
-    direct_domain_strategy: src.direct_domain_strategy ?? "UseIPv4",
+    // "AsIs" and "" mean the same to Xray; the editor shows one of them.
+    direct_strategy: src.direct_strategy === "AsIs" ? "" : (src.direct_strategy ?? ""),
     lanes,
     routing_order: normalizeOrder(
       src.routing_order,
@@ -755,11 +763,12 @@ export function RoutingEditor({
       {/* Direct */}
       <Section title={t("route.direct")} desc={withCatchAllNote(t("route.directHint"), "direct")}>
         <Select
-          label={t("route.domainStrategy")}
-          data={freedomDomainStrategies()}
-          value={cfg.direct_domain_strategy || "UseIPv4"}
-          onChange={(v) => set({ direct_domain_strategy: v })}
+          label={t("route.directStrategy")}
+          data={directStrategies()}
+          value={cfg.direct_strategy ?? ""}
+          onChange={(v) => set({ direct_strategy: v })}
         />
+        <p className="-mt-1 text-xs text-ink-muted">{t("route.directStrategyHint")}</p>
         <TagsInput
           label={t("route.domains")}
           value={cfg.direct_domains}

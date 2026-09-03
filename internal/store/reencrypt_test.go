@@ -1,130 +1,146 @@
 package store
 
 import (
+	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 )
 
-// ReencryptSensitiveFields names its columns as STRINGS, so nothing but this test
-// notices when one is renamed or dropped by a migration. It matters more than it
-// looks: the function bails on the first bad column, so a stale name doesn't just
-// skip that field — it silently stops re-encrypting every secret after it, and the
-// panel logs one warning at startup and carries on.
-func TestReencryptCoversItsColumns(t *testing.T) {
-	st := newStore(t)
-	if err := st.ReencryptSensitiveFields(); err != nil {
-		t.Fatalf("reencrypt on a fresh database: %v", err)
-	}
-
-	// With a plaintext secret in place (what a restore from an old backup leaves),
-	// the pass must come back wrapped rather than untouched.
-	if err := st.SetSystemProxy(model.SystemProxy{
-		SocksEnabled: true, SocksPort: 1080,
-		Accounts: []model.SystemProxyAccount{{User: "u", Pass: "secret-pass"}},
-	}); err != nil {
-		t.Fatalf("set proxy: %v", err)
-	}
-	var stored string
-	if err := st.db.QueryRow(`SELECT proxy_accounts FROM settings WHERE id = 1`).Scan(&stored); err != nil {
-		t.Fatalf("read back: %v", err)
-	}
-	if strings.Contains(stored, "secret-pass") {
-		t.Errorf("the proxy password is in the database in clear: %s", stored)
-	}
-	if !strings.Contains(stored, `"user":"u"`) {
-		t.Errorf("the login should stay readable for debugging: %s", stored)
-	}
-	set, err := st.GetSettings()
+// A database restored from a backup written before a field was encrypted — or from
+// an install that never had encryption on — carries plaintext secrets. The sweep
+// wraps every one of them, and a secret it cannot read back is left alone rather
+// than replaced by a blob nobody can decrypt.
+func TestReencryptCoversEverySecretColumn(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "enc.db"))
 	if err != nil {
-		t.Fatalf("get settings: %v", err)
+		t.Fatalf("open: %v", err)
 	}
-	if len(set.ProxyAccounts) != 1 || set.ProxyAccounts[0].Pass != "secret-pass" {
-		t.Errorf("accounts did not round-trip: %+v", set.ProxyAccounts)
-	}
-}
+	defer st.Close()
 
-func TestReencryptAllTables(t *testing.T) {
-	st := newStore(t)
-
-	// 1. Insert plaintext secrets across nodes, webhooks, inbounds, admins
-	_, err := st.db.Exec(`INSERT INTO nodes (name, host, reality_private_key, warp_private_key, zerossl_eab_hmac, proxy_accounts)
-		VALUES ('n1', '1.2.3.4', 'plain-reality-priv', 'plain-warp-priv', 'plain-hmac', '[{"user":"nodeuser","pass":"nodepass"}]')`)
+	// Plant plaintext where each writer would have put an envelope.
+	u, err := st.CreateUser("u1", "uuid-1", "pw", "tok-1", 0, 0, 0)
 	if err != nil {
-		t.Fatalf("insert node: %v", err)
+		t.Fatal(err)
 	}
-
-	_, err = st.db.Exec(`INSERT INTO webhooks (url, secret, events, enabled, created_at)
-		VALUES ('https://example.com/hook', 'plain-webhook-secret', 'user.created', 1, 1000)`)
+	if _, err := st.db.Exec(`UPDATE users SET password = 'plain-pw', wg_private_key = 'plain-wg' WHERE id = ?`, u.ID); err != nil {
+		t.Fatal(err)
+	}
+	adminID, err := st.CreateAdmin("owner", "hash", model.RoleOwner, false)
 	if err != nil {
-		t.Fatalf("insert webhook: %v", err)
+		t.Fatal(err)
 	}
-
-	_, err = st.db.Exec(`INSERT INTO inbounds (server_id, enabled, sort, name, protocol, port, opts, created_at)
-		VALUES (0, 1, 1, 'vless-in', 'vless', 8443, '{"reality_private_key":"plain-inbound-priv"}', 1000)`)
+	if _, err := st.db.Exec(`UPDATE admins SET totp_secret = 'plain-totp', totp_pending = 'plain-pending' WHERE id = ?`, adminID); err != nil {
+		t.Fatal(err)
+	}
+	n, err := st.CreateNode("edge", "203.0.113.10", "")
 	if err != nil {
-		t.Fatalf("insert inbound: %v", err)
+		t.Fatal(err)
 	}
-
-	_, err = st.db.Exec(`INSERT INTO admins (username, password_hash, role, totp_secret, totp_pending)
-		VALUES ('testadmin', 'hash', 'admin', 'plain-totp-secret', 'plain-totp-pending')`)
+	if _, err := st.db.Exec(`UPDATE nodes SET reality_private_key = 'plain-reality', warp_private_key = 'plain-warp',
+		awg_private_key = 'plain-awg', zerossl_eab_hmac = 'plain-eab' WHERE id = ?`, n.ID); err != nil {
+		t.Fatal(err)
+	}
+	w, err := st.CreateWebhook("https://example.com/hook", []string{model.WebhookUserCreated}, true)
 	if err != nil {
-		t.Fatalf("insert admin: %v", err)
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`UPDATE webhooks SET secret = 'plain-hook' WHERE id = ?`, w.ID); err != nil {
+		t.Fatal(err)
+	}
+	in, err := st.CreateInbound(model.Inbound{
+		ServerID: model.LocalNodeID, Name: "extra", Protocol: model.InbVLESS, Port: 2053, Enabled: true,
+		Opts: model.InboundOpts{Transport: model.TrTCP, Security: model.SecReality, RealityPrivateKey: "plain-inb"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`UPDATE inbounds SET opts = ? WHERE id = ?`,
+		`{"transport":"tcp","security":"reality","reality_private_key":"plain-inb"}`, in.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`UPDATE settings SET awg_private_key = 'plain-awg-master',
+		proxy_accounts = ? WHERE id = 1`, `[{"user":"proxy","pass":"plain-proxy"}]`); err != nil {
+		t.Fatal(err)
 	}
 
-	// 2. Run ReencryptSensitiveFields
 	if err := st.ReencryptSensitiveFields(); err != nil {
 		t.Fatalf("reencrypt: %v", err)
 	}
 
-	// 3. Verify nodes
-	var nodeReality, nodeWarp, nodeHMAC, nodeProxy string
-	if err := st.db.QueryRow(`SELECT reality_private_key, warp_private_key, zerossl_eab_hmac, proxy_accounts FROM nodes WHERE name = 'n1'`).
-		Scan(&nodeReality, &nodeWarp, &nodeHMAC, &nodeProxy); err != nil {
-		t.Fatalf("query node: %v", err)
+	// Every one of them is now an envelope on disk…
+	raw := func(query string, args ...any) string {
+		var v string
+		if err := st.db.QueryRow(query, args...).Scan(&v); err != nil {
+			t.Fatalf("read back: %v", err)
+		}
+		return v
 	}
-	if !strings.HasPrefix(nodeReality, "enc:v1:") || !strings.HasPrefix(nodeWarp, "enc:v1:") || !strings.HasPrefix(nodeHMAC, "enc:v1:") {
-		t.Errorf("node keys not encrypted: reality=%s warp=%s hmac=%s", nodeReality, nodeWarp, nodeHMAC)
+	for _, c := range []struct{ what, got string }{
+		{"user password", raw(`SELECT password FROM users WHERE id = ?`, u.ID)},
+		{"user wg key", raw(`SELECT wg_private_key FROM users WHERE id = ?`, u.ID)},
+		{"admin totp", raw(`SELECT totp_secret FROM admins WHERE id = ?`, adminID)},
+		{"admin pending totp", raw(`SELECT totp_pending FROM admins WHERE id = ?`, adminID)},
+		{"node reality key", raw(`SELECT reality_private_key FROM nodes WHERE id = ?`, n.ID)},
+		{"node warp key", raw(`SELECT warp_private_key FROM nodes WHERE id = ?`, n.ID)},
+		{"node awg key", raw(`SELECT awg_private_key FROM nodes WHERE id = ?`, n.ID)},
+		{"node eab secret", raw(`SELECT zerossl_eab_hmac FROM nodes WHERE id = ?`, n.ID)},
+		{"webhook secret", raw(`SELECT secret FROM webhooks WHERE id = ?`, w.ID)},
+		{"master awg key", raw(`SELECT awg_private_key FROM settings WHERE id = 1`)},
+	} {
+		if !strings.HasPrefix(c.got, "enc:v1:") {
+			t.Errorf("%s left in plaintext: %q", c.what, c.got)
+		}
 	}
-	if !strings.Contains(nodeProxy, "enc:v1:") {
-		t.Errorf("node proxy accounts not encrypted: %s", nodeProxy)
+	if opts := raw(`SELECT opts FROM inbounds WHERE id = ?`, in.ID); strings.Contains(opts, "plain-inb") {
+		t.Errorf("inbound REALITY key left in plaintext: %s", opts)
 	}
-
-	// 4. Verify webhooks
-	var hookSec string
-	if err := st.db.QueryRow(`SELECT secret FROM webhooks WHERE url = 'https://example.com/hook'`).Scan(&hookSec); err != nil {
-		t.Fatalf("query webhook: %v", err)
+	var accs []model.SystemProxyAccount
+	if err := json.Unmarshal([]byte(raw(`SELECT proxy_accounts FROM settings WHERE id = 1`)), &accs); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.HasPrefix(hookSec, "enc:v1:") {
-		t.Errorf("webhook secret not encrypted: %s", hookSec)
-	}
-
-	// 5. Verify inbounds
-	var inOpts string
-	if err := st.db.QueryRow(`SELECT opts FROM inbounds WHERE name = 'vless-in'`).Scan(&inOpts); err != nil {
-		t.Fatalf("query inbound: %v", err)
-	}
-	if !strings.Contains(inOpts, "enc:v1:") {
-		t.Errorf("inbound opts not encrypted: %s", inOpts)
-	}
-
-	// 6. Verify admins
-	var adminTotp, adminPending string
-	if err := st.db.QueryRow(`SELECT totp_secret, totp_pending FROM admins WHERE username = 'testadmin'`).
-		Scan(&adminTotp, &adminPending); err != nil {
-		t.Fatalf("query admin: %v", err)
-	}
-	if !strings.HasPrefix(adminTotp, "enc:v1:") || !strings.HasPrefix(adminPending, "enc:v1:") {
-		t.Errorf("admin totp not encrypted: totp=%s pending=%s", adminTotp, adminPending)
+	if len(accs) != 1 || !strings.HasPrefix(accs[0].Pass, "enc:v1:") {
+		t.Errorf("system proxy password left in plaintext: %+v", accs)
 	}
 
-	// 7. Verify decryption reads back original plaintext
-	node, err := st.GetNode(1)
-	if err != nil {
-		t.Fatalf("read node: %v", err)
+	// …and every reader still gets the value back.
+	gotUser, err := st.GetUser(u.ID)
+	if err != nil || gotUser.Password != "plain-pw" || gotUser.WGPrivateKey != "plain-wg" {
+		t.Fatalf("user secrets not readable after the sweep: %+v (%v)", gotUser, err)
 	}
-	if node.RealityPrivateKey != "plain-reality-priv" || node.WarpPrivateKey != "plain-warp-priv" || node.ZeroSSLEABHMAC != "plain-hmac" {
-		t.Errorf("node secrets did not decrypt properly: %+v", node)
+	totp, err := st.AdminTOTPByID(adminID)
+	if err != nil || totp.Secret != "plain-totp" || totp.Pending != "plain-pending" {
+		t.Fatalf("second factor not readable: %+v (%v)", totp, err)
+	}
+	gotNode, err := st.GetNode(n.ID)
+	if err != nil || gotNode.RealityPrivateKey != "plain-reality" || gotNode.WarpPrivateKey != "plain-warp" ||
+		gotNode.AWGPrivateKey != "plain-awg" || gotNode.ZeroSSLEABHMAC != "plain-eab" {
+		t.Fatalf("node keys not readable: %+v (%v)", gotNode, err)
+	}
+	hooks, err := st.ListWebhooks()
+	if err != nil || len(hooks) != 1 || hooks[0].Secret != "plain-hook" {
+		t.Fatalf("webhook secret not readable: %+v (%v)", hooks, err)
+	}
+	gotIn, err := st.GetInbound(in.ID)
+	if err != nil || gotIn.Opts.RealityPrivateKey != "plain-inb" {
+		t.Fatalf("inbound key not readable: %+v (%v)", gotIn, err)
+	}
+	set, err := st.GetSettings()
+	if err != nil || set.AWGPrivateKey != "plain-awg-master" {
+		t.Fatalf("master AWG key not readable: %v", err)
+	}
+	if len(set.ProxyAccounts) != 1 || set.ProxyAccounts[0].Pass != "plain-proxy" {
+		t.Fatalf("system proxy password not readable: %+v", set.ProxyAccounts)
+	}
+
+	// Running it again changes nothing: an envelope is not re-wrapped.
+	before := raw(`SELECT password FROM users WHERE id = ?`, u.ID)
+	if err := st.ReencryptSensitiveFields(); err != nil {
+		t.Fatalf("second sweep: %v", err)
+	}
+	if after := raw(`SELECT password FROM users WHERE id = ?`, u.ID); after != before {
+		t.Error("an already-encrypted secret was wrapped twice")
 	}
 }

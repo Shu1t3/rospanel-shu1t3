@@ -273,6 +273,8 @@ func runServer(dataDir string) {
 	runBG(func() { autobackup.New(mgr, st, dataDir).Run(srvCtx) })
 	// Periodic Happ proxy subscriptions sync (auto-refresh every 59 min).
 	runBG(func() { mgr.RunHappScheduler(srvCtx) })
+	// Re-read external subscriptions hourly.
+	runBG(func() { mgr.RunExtSubLoop(srvCtx) })
 	// All three bots reach Telegram through the same egress, and in the WARP / Opera
 	// modes that egress is something this very startup brought up moments ago — Xray
 	// needs a couple of seconds past "process started" before its inbound accepts.

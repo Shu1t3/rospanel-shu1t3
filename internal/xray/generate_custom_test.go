@@ -707,7 +707,7 @@ func TestSniffingRouteOnlyAndDirectFreedomDomainStrategy(t *testing.T) {
 		t.Errorf("serialized sniffing missing explicit routeOnly:false: %s", raw)
 	}
 
-	// 2. Verify default freedom outbound uses UseIPv4
+	// 2. Verify default freedom outbound has nil settings (default Xray behavior)
 	var direct *Outbound
 	for i := range cfg.Outbounds {
 		if cfg.Outbounds[i].Tag == "direct" {
@@ -718,13 +718,12 @@ func TestSniffingRouteOnlyAndDirectFreedomDomainStrategy(t *testing.T) {
 	if direct == nil {
 		t.Fatal("direct outbound not found")
 	}
-	fs, ok := direct.Settings.(FreedomSettings)
-	if !ok || fs.DomainStrategy != "UseIPv4" {
-		t.Errorf("direct freedom settings = %+v, want DomainStrategy: UseIPv4", direct.Settings)
+	if direct.Settings != nil {
+		t.Errorf("default direct freedom settings = %+v, want nil", direct.Settings)
 	}
 
 	// 3. Verify customized direct domain strategy is respected
-	set.Routing.DirectDomainStrategy = "UseIPv4v6"
+	set.Routing.DirectStrategy = "UseIPv4v6"
 	cfg2, err := Generate(set, nil, Options{PanelDest: "127.0.0.1:8080"}, nil)
 	if err != nil {
 		t.Fatalf("Generate with custom strategy failed: %v", err)

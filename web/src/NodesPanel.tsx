@@ -48,16 +48,6 @@ import {
   importRentedNode,
   getNodeReservedPorts,
   deleteNodeTenant,
-  createHappSubscription,
-  listHappNodes,
-  setHappNodeEnabled,
-  deleteHappNode,
-  syncHappSubscription,
-  deleteHappSubscription,
-  toggleAllHappNodes,
-  listHappSubscriptions,
-  type HappNode,
-  type HappSubscription,
   type NodeRentalSettings,
   type NodeTenant,
   type NodeRentalResp,
@@ -75,6 +65,7 @@ import { ConnectionsEditor } from "./ConnectionsEditor";
 import { InboundsEditor } from "./InboundsEditor";
 import { ServerSnapshots } from "./ServerSnapshots";
 import { canonicalDns, DnsEditor } from "./DnsEditor";
+import { ExternalServers } from "./ExternalServers";
 import { helperStatus } from "./egress";
 import { fmtBytes } from "./format";
 import { decoyLabel } from "./GeneralSettings";
@@ -593,12 +584,10 @@ function AddNodeDialog({
   onDone: () => void;
 }) {
   const { t } = useTranslation();
-  const [mode, setMode] = useState<"command" | "ssh" | "import" | "happ">("command");
+  const [mode, setMode] = useState<"command" | "ssh" | "import">("command");
   const [name, setName] = useState("");
   const [host, setHost] = useState("");
   const [shareLink, setShareLink] = useState("");
-  const [happUrl, setHappUrl] = useState("");
-  const [happName, setHappName] = useState("");
   const [busy, setBusy] = useState(false);
 
   // SSH (auto) fields.
@@ -633,22 +622,6 @@ function AddNodeDialog({
         name: name.trim() || undefined,
       });
       notifySuccess(t("nodes.importedSuccess"));
-      onDone();
-    } catch (e) {
-      notifyError(errMessage(e));
-      setBusy(false);
-    }
-  };
-
-  const submitHapp = async () => {
-    if (!happUrl.trim()) return;
-    setBusy(true);
-    try {
-      const res = await createHappSubscription({
-        name: happName.trim() || undefined,
-        url: happUrl.trim(),
-      });
-      notifySuccess(t("nodes.happImportedSuccess", { count: res.node_count }));
       onDone();
     } catch (e) {
       notifyError(errMessage(e));
@@ -699,7 +672,7 @@ function AddNodeDialog({
   return (
     <Modal open onClose={onClose} title={t("nodes.addNode")} size="lg" dismissible={!installing}>
       <div className="mb-4 inline-flex rounded-lg border border-gray-200 dark:border-gray-700 p-0.5 text-sm">
-        {(["command", "ssh", "import", "happ"] as const).map((m) => (
+        {(["command", "ssh", "import"] as const).map((m) => (
           <button
             key={m}
             onClick={() => setMode(m)}
@@ -713,33 +686,12 @@ function AddNodeDialog({
               ? t("nodes.tabCommand")
               : m === "ssh"
                 ? t("nodes.tabSsh")
-                : m === "import"
-                  ? t("nodes.tabImportShare")
-                  : t("nodes.tabHapp")}
+                : t("nodes.tabImportShare")}
           </button>
         ))}
       </div>
 
-      {mode === "happ" ? (
-        <div className="space-y-4">
-          <div className="rounded-xl border border-teal-500/20 bg-teal-500/5 p-3.5 text-xs text-teal-950 dark:text-teal-200">
-            <p className="font-medium">{t("nodes.happImportHint")}</p>
-          </div>
-          <Textarea
-            label={t("nodes.happUrl")}
-            value={happUrl}
-            onChange={setHappUrl}
-            rows={3}
-            placeholder="happ://crypt... / https://... / base64..."
-          />
-          <TextInput
-            label={t("groups.name")}
-            value={happName}
-            onChange={setHappName}
-            placeholder={t("nodes.namePlaceholder")}
-          />
-        </div>
-      ) : mode === "import" ? (
+      {mode === "import" ? (
         <div className="space-y-4">
           <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-3.5 text-xs text-indigo-950 dark:text-indigo-200">
             <p className="font-medium">{t("nodes.importShareHint")}</p>
@@ -824,11 +776,7 @@ function AddNodeDialog({
         <Button variant="light" color="gray" onClick={onClose} disabled={installing}>
           {t("common.cancel")}
         </Button>
-        {mode === "happ" ? (
-          <Button onClick={submitHapp} loading={busy} disabled={!happUrl.trim()}>
-            {t("nodes.happImportBtn")}
-          </Button>
-        ) : mode === "import" ? (
+        {mode === "import" ? (
           <Button onClick={submitImport} loading={busy} disabled={!shareLink.trim()}>
             {t("nodes.importNode")}
           </Button>
@@ -2456,422 +2404,9 @@ function NodeLogsDialog({ node, onClose }: { node: NodeView; onClose: () => void
   );
 }
 
-// isHappInfoStub detects informational/notice stubs from subscription providers (e.g. 0.0.0.0:1 or expiry notices).
-function isHappInfoStub(node: HappNode): boolean {
-  const host = (node.host || "").trim().toLowerCase();
-  const name = (node.name || "").toLowerCase();
-  if (host === "0.0.0.0" || host === "127.0.0.1" || host === "localhost" || node.port <= 1) {
-    return true;
-  }
-  return (
-    name.includes("expired") ||
-    name.includes("истекл") ||
-    name.includes("expiration") ||
-    name.includes("закончился") ||
-    name.includes("traffic limit")
-  );
-}
-
-// HappNodeCard renders one imported Happ proxy node.
-function HappNodeCard({
-  node,
-  onChanged,
-}: {
-  node: HappNode;
-  onChanged: () => void;
-}) {
-  const { t } = useTranslation();
-  const { confirm, confirmNode } = useConfirm();
-  const isStub = isHappInfoStub(node);
-
-  const toggleEnabled = async (enabled: boolean) => {
-    try {
-      await setHappNodeEnabled(node.id, enabled);
-      onChanged();
-    } catch (e) {
-      notifyError(errMessage(e));
-    }
-  };
-
-  const remove = async () => {
-    const ok = await confirm({
-      title: t("nodes.happDeleteNodeConfirm"),
-      confirmLabel: t("common.delete"),
-      danger: true,
-    });
-    if (!ok) return;
-    try {
-      await deleteHappNode(node.id);
-      notifySuccess(t("nodes.deleted"));
-      onChanged();
-    } catch (e) {
-      notifyError(errMessage(e));
-    }
-  };
-
-  const protoColor = (proto?: string): "brand" | "teal" | "purple" | "indigo" | "orange" | "gray" => {
-    switch ((proto || "").toLowerCase()) {
-      case "vless":
-        return "brand";
-      case "vmess":
-        return "teal";
-      case "trojan":
-        return "purple";
-      case "ss":
-        return "indigo";
-      case "hysteria2":
-      case "hysteria":
-        return "orange";
-      default:
-        return "gray";
-    }
-  };
-
-  return (
-    <div className={cn("px-4 py-3 transition-colors", !node.enabled && "opacity-60")}>
-      {confirmNode}
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span
-              className={cn(
-                "h-2.5 w-2.5 shrink-0 rounded-full",
-                node.enabled ? "bg-emerald-500 shadow-sm shadow-emerald-500/50" : "bg-gray-400 dark:bg-gray-600",
-              )}
-            />
-            <span className="truncate font-medium text-ink">{node.name || "Happ Server"}</span>
-            <Badge color={protoColor(node.protocol)} size="xs">
-              {(node.protocol || "UNKNOWN").toUpperCase()}
-            </Badge>
-            <span className="truncate font-mono text-xs text-ink-muted">
-              {node.host}:{node.port}
-            </span>
-            {isStub && (
-              <span
-                className="inline-flex items-center gap-1 cursor-help"
-                title={t("nodes.happInfoStubHint", { addr: `${node.host}:${node.port}` })}
-              >
-                <Badge color="orange" size="xs">
-                  ⚠️ {t("nodes.happInfoStubBadge")}
-                </Badge>
-              </span>
-            )}
-          </div>
-          {isStub && (
-            <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
-              {t("nodes.happInfoStubHint", { addr: `${node.host}:${node.port}` })}
-            </p>
-          )}
-        </div>
-
-        <div className="flex shrink-0 items-center gap-2">
-          <Switch checked={node.enabled} onChange={toggleEnabled} />
-          <IconButton title={t("nodes.happDeleteNode")} onClick={remove}>
-            <IconTrash size={16} />
-          </IconButton>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// HappManageModal lets the user filter, search, enable all / disable all, and manage nodes for a subscription.
-function HappManageModal({
-  sub,
-  nodes,
-  open,
-  onClose,
-  onChanged,
-}: {
-  sub: HappSubscription;
-  nodes: HappNode[];
-  open: boolean;
-  onClose: () => void;
-  onChanged: () => void;
-}) {
-  const { t } = useTranslation();
-  const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<"all" | "active" | "inactive" | "stubs">("all");
-  const [toggling, setToggling] = useState(false);
-
-  const subNodes = useMemo(() => nodes.filter((n) => n.subscription_id === sub.id), [nodes, sub.id]);
-  const activeCount = useMemo(() => subNodes.filter((n) => n.enabled).length, [subNodes]);
-  const stubCount = useMemo(() => subNodes.filter(isHappInfoStub).length, [subNodes]);
-
-  const filtered = useMemo(() => {
-    let list = subNodes;
-    if (filter === "active") list = list.filter((n) => n.enabled);
-    else if (filter === "inactive") list = list.filter((n) => !n.enabled);
-    else if (filter === "stubs") list = list.filter(isHappInfoStub);
-
-    const q = search.trim().toLowerCase();
-    if (q) {
-      list = list.filter(
-        (n) =>
-          (n.name || "").toLowerCase().includes(q) ||
-          (n.host || "").toLowerCase().includes(q) ||
-          (n.protocol || "").toLowerCase().includes(q) ||
-          String(n.port).includes(q),
-      );
-    }
-    return list;
-  }, [subNodes, filter, search]);
-
-  const handleToggleAll = async (enabled: boolean) => {
-    setToggling(true);
-    try {
-      await toggleAllHappNodes(sub.id, enabled);
-      notifySuccess(t("common.saved"));
-      onChanged();
-    } catch (e) {
-      notifyError(errMessage(e));
-    } finally {
-      setToggling(false);
-    }
-  };
-
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title={t("nodes.happManageModalTitle", { name: sub.name || `Happ #${sub.id}` })}
-      size="xl"
-    >
-      <div className="flex flex-col gap-4">
-        {/* Quick info & batch actions */}
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 pb-3 dark:border-gray-800">
-          <div className="flex items-center gap-2 text-sm text-ink-muted">
-            <span>
-              {t("nodes.happEnabledCount", { active: activeCount, total: subNodes.length })}
-            </span>
-            <Badge color="teal" size="xs">{t("nodes.happAutoSyncHint")}</Badge>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button
-              size="xs"
-              variant="light"
-              color="teal"
-              disabled={toggling || activeCount === subNodes.length}
-              onClick={() => handleToggleAll(true)}
-            >
-              {t("nodes.happEnableAll")}
-            </Button>
-            <Button
-              size="xs"
-              variant="light"
-              color="gray"
-              disabled={toggling || activeCount === 0}
-              onClick={() => handleToggleAll(false)}
-            >
-              {t("nodes.happDisableAll")}
-            </Button>
-          </div>
-        </div>
-
-        {/* Search and filter tabs */}
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex-1">
-            <TextInput
-              value={search}
-              onChange={setSearch}
-              placeholder={t("nodes.happSearchPlaceholder")}
-            />
-          </div>
-          <div className="flex flex-wrap gap-1">
-            {(["all", "active", "inactive", "stubs"] as const).map((f) => {
-              const label =
-                f === "all"
-                  ? `${t("nodes.happFilterAll")} (${subNodes.length})`
-                  : f === "active"
-                  ? `${t("nodes.happFilterActive")} (${activeCount})`
-                  : f === "inactive"
-                  ? `${t("nodes.happFilterInactive")} (${subNodes.length - activeCount})`
-                  : `${t("nodes.happFilterStubs")} (${stubCount})`;
-              if (f === "stubs" && stubCount === 0) return null;
-              return (
-                <button
-                  key={f}
-                  onClick={() => setFilter(f)}
-                  className={cn(
-                    "rounded-lg px-2.5 py-1 text-xs font-medium transition-colors",
-                    filter === f
-                      ? "bg-teal-500/10 text-teal-600 dark:bg-teal-500/20 dark:text-teal-400"
-                      : "text-ink-muted hover:bg-gray-100 dark:hover:bg-gray-800",
-                  )}
-                >
-                  {label}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Node list inside modal */}
-        <div className="max-h-[60vh] overflow-y-auto rounded-xl border border-gray-200/80 bg-gray-50/40 divide-y divide-gray-100 dark:border-gray-800 dark:bg-gray-900/40 dark:divide-gray-800">
-          {filtered.length === 0 ? (
-            <div className="p-6 text-center text-sm text-ink-muted">
-              {t("common.nothingFound")}
-            </div>
-          ) : (
-            filtered.map((n) => (
-              <HappNodeCard key={n.id} node={n} onChanged={onChanged} />
-            ))
-          )}
-        </div>
-
-        <div className="flex justify-end pt-2">
-          <Button onClick={onClose}>{t("common.done")}</Button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
-// HappSubscriptionCard renders a single Happ subscription in a compact, collapsible container.
-function HappSubscriptionCard({
-  sub,
-  nodes,
-  onChanged,
-}: {
-  sub: HappSubscription;
-  nodes: HappNode[];
-  onChanged: () => void;
-}) {
-  const { t } = useTranslation();
-  const { confirm, confirmNode } = useConfirm();
-  const [expanded, setExpanded] = useState(false);
-  const [managing, setManaging] = useState(false);
-  const [syncing, setSyncing] = useState(false);
-
-  const subNodes = useMemo(() => nodes.filter((n) => n.subscription_id === sub.id), [nodes, sub.id]);
-  const activeCount = useMemo(() => subNodes.filter((n) => n.enabled).length, [subNodes]);
-  const stubCount = useMemo(() => subNodes.filter(isHappInfoStub).length, [subNodes]);
-
-  const sync = async () => {
-    setSyncing(true);
-    try {
-      await syncHappSubscription(sub.id);
-      notifySuccess(t("nodes.happSynced"));
-      onChanged();
-    } catch (e) {
-      notifyError(errMessage(e));
-    } finally {
-      setSyncing(false);
-    }
-  };
-
-  const removeSub = async () => {
-    const ok = await confirm({
-      title: t("nodes.happDeleteSubConfirm", { name: sub.name || `Happ #${sub.id}` }),
-      confirmLabel: t("common.delete"),
-      danger: true,
-    });
-    if (!ok) return;
-    try {
-      await deleteHappSubscription(sub.id);
-      notifySuccess(t("nodes.deleted"));
-      onChanged();
-    } catch (e) {
-      notifyError(errMessage(e));
-    }
-  };
-
-  const timeAgo = (ts: number) => {
-    if (!ts) return "";
-    const sec = Math.floor(Date.now() / 1000 - ts);
-    if (sec < 60) return `${sec}s`;
-    if (sec < 3600) return `${Math.floor(sec / 60)}m`;
-    return `${Math.floor(sec / 3600)}h`;
-  };
-
-  return (
-    <div className="rounded-2xl border border-teal-500/20 bg-gradient-to-br from-teal-500/[0.03] via-transparent to-cyan-500/[0.02] shadow-sm dark:border-teal-500/30">
-      {confirmNode}
-      {/* Header row */}
-      <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-3 min-w-0 flex-1">
-          <span
-            className={cn(
-              "h-2.5 w-2.5 shrink-0 rounded-full",
-              activeCount > 0 ? "bg-teal-500 shadow-sm shadow-teal-500/50" : "bg-gray-400 dark:bg-gray-600",
-            )}
-          />
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-semibold text-ink truncate">
-                {sub.name || `Happ Subscription #${sub.id}`}
-              </span>
-              <Badge color="teal" size="xs">
-                {t("nodes.happEnabledCount", { active: activeCount, total: subNodes.length })}
-              </Badge>
-              {stubCount > 0 && (
-                <span title={t("nodes.happFilterStubs")}>
-                  <Badge color="orange" size="xs">
-                    ⚠️ {stubCount} {t("nodes.happFilterStubs")}
-                  </Badge>
-                </span>
-              )}
-              {sub.last_success_at > 0 && (
-                <span className="text-xs text-ink-muted">
-                  {t("nodes.happLastSync")} {timeAgo(sub.last_success_at)}
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
-          <Button size="xs" variant="light" color="teal" onClick={() => setManaging(true)}>
-            <IconGear size={14} className="mr-1 inline" />
-            {t("nodes.happConfigureNodes")}
-          </Button>
-          <Button size="xs" variant="light" color="gray" onClick={sync} loading={syncing}>
-            <IconRestart size={14} className="mr-1 inline" />
-            {t("common.refresh")}
-          </Button>
-          <IconButton title={expanded ? t("nodes.happCollapse") : t("nodes.happExpand")} onClick={() => setExpanded(!expanded)}>
-            <IconChevron size={16} className={cn("transition-transform duration-200", expanded ? "rotate-180" : "rotate-0")} />
-          </IconButton>
-          <IconButton title={t("nodes.happDeleteSub")} onClick={removeSub}>
-            <IconTrash size={16} />
-          </IconButton>
-        </div>
-      </div>
-
-      {/* Expandable in-line list */}
-      {expanded && (
-        <div className="border-t border-teal-500/10 p-3 dark:border-teal-500/20">
-          <div className="max-h-80 overflow-y-auto rounded-xl border border-gray-200/60 bg-white divide-y divide-gray-100 dark:border-gray-800 dark:bg-gray-900/60 dark:divide-gray-800">
-            {subNodes.length === 0 ? (
-              <p className="p-4 text-xs text-ink-muted text-center">{t("nodes.happNoNodes")}</p>
-            ) : (
-              subNodes.map((n) => (
-                <HappNodeCard key={n.id} node={n} onChanged={onChanged} />
-              ))
-            )}
-          </div>
-        </div>
-      )}
-
-      {managing && (
-        <HappManageModal
-          sub={sub}
-          nodes={nodes}
-          open={managing}
-          onClose={() => setManaging(false)}
-          onChanged={onChanged}
-        />
-      )}
-    </div>
-  );
-}
-
 export function NodesPanel() {
   const { t } = useTranslation();
   const [nodes, setNodes] = useState<NodeView[] | null>(null);
-  const [happNodes, setHappNodes] = useState<HappNode[] | null>(null);
-  const [happSubs, setHappSubs] = useState<HappSubscription[]>([]);
-  const [syncingHapp, setSyncingHapp] = useState(false);
   const [decoys, setDecoys] = useState<string[]>([]);
   // Geo categories feed the routing editor's domain/IP suggestions (same list for
   // the master and every node — one panel-side geosite/geoip).
@@ -2884,14 +2419,8 @@ export function NodesPanel() {
       .then((r) => setNodes(r.nodes))
       .catch((e) => notifyError(errMessage(e)));
 
-  const loadHapp = () => {
-    listHappNodes().then(setHappNodes).catch(() => {});
-    listHappSubscriptions().then(setHappSubs).catch(() => {});
-  };
-
   useEffect(() => {
     load();
-    loadHapp();
     getSettings()
       .then((s) => setDecoys(s.decoy_templates || []))
       .catch(() => {});
@@ -2905,22 +2434,6 @@ export function NodesPanel() {
       )
       .catch(() => {});
   }, []);
-
-  const syncAllHapp = async () => {
-    if (happSubs.length === 0) return;
-    setSyncingHapp(true);
-    try {
-      for (const sub of happSubs) {
-        await syncHappSubscription(sub.id);
-      }
-      notifySuccess(t("nodes.happSynced"));
-      loadHapp();
-    } catch (e) {
-      notifyError(errMessage(e));
-    } finally {
-      setSyncingHapp(false);
-    }
-  };
 
   // A requested restart resolves in a couple of seconds and its outcome is only
   // shown briefly, so the list polls fast for the whole of it — pending AND the
@@ -3007,42 +2520,7 @@ export function NodesPanel() {
         </div>
       )}
 
-      {happNodes && happNodes.length > 0 && (
-        <div className="space-y-3 pt-2">
-          <div className="flex flex-wrap items-center justify-between gap-2 px-1">
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-teal-600 dark:text-teal-400">
-                <span className="h-2 w-2 rounded-full bg-teal-500" />
-                <span>{t("nodes.happServersTitle")} ({happNodes.length})</span>
-              </div>
-              <Badge color="teal" size="xs">{t("nodes.happAutoSyncHint")}</Badge>
-            </div>
-            {happSubs.length > 0 && (
-              <Button variant="light" color="gray" size="xs" onClick={syncAllHapp} loading={syncingHapp}>
-                {t("nodes.happSyncAll")}
-              </Button>
-            )}
-          </div>
-          <div className="space-y-3">
-            {happSubs.length > 0 ? (
-              happSubs.map((sub) => (
-                <HappSubscriptionCard
-                  key={sub.id}
-                  sub={sub}
-                  nodes={happNodes}
-                  onChanged={loadHapp}
-                />
-              ))
-            ) : (
-              <Card className="divide-y divide-gray-100 dark:divide-gray-800">
-                {happNodes.map((n) => (
-                  <HappNodeCard key={n.id} node={n} onChanged={loadHapp} />
-                ))}
-              </Card>
-            )}
-          </div>
-        </div>
-      )}
+      <ExternalServers />
 
       {adding && (
         <AddNodeDialog
@@ -3051,12 +2529,10 @@ export function NodesPanel() {
             setAdding(false);
             setInstallCmd(cmd);
             load();
-            loadHapp();
           }}
           onDone={() => {
             setAdding(false);
             load();
-            loadHapp();
           }}
         />
       )}

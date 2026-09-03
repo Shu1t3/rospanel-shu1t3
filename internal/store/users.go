@@ -393,26 +393,6 @@ func setUserLimitsOn(ex execer, id, dataLimit, expireAt int64, deviceLimit int) 
 	return err
 }
 
-// BulkSetUserExpiry updates expire_at for multiple users in a single transaction.
-func (s *Store) BulkSetUserExpiry(updates map[int64]int64) error {
-	if len(updates) == 0 {
-		return nil
-	}
-	return s.withTx(func(tx *sql.Tx) error {
-		stmt, err := tx.Prepare(`UPDATE users SET expire_at = ? WHERE id = ?`)
-		if err != nil {
-			return err
-		}
-		defer stmt.Close()
-		for id, exp := range updates {
-			if _, err := stmt.Exec(exp, id); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
 // SetUserSpeedLimit sets the per-user bandwidth cap in kbit/s (0 = unlimited).
 //
 // Its own setter rather than a fourth argument to SetUserLimits: that signature is
@@ -653,27 +633,79 @@ func (s *Store) ResetTraffic(id, lastUp, lastDown int64) error {
 	return err
 }
 
-// BulkResetTraffic zeroes usage and re-baselines raw counters for multiple users
-// in a single transaction.
-func (s *Store) BulkResetTraffic(resets map[int64][2]int64) error {
-	if len(resets) == 0 {
-		return nil
+// UsersByIDs reads several users in one query. Ids that name nobody are simply
+// absent from the result, which is what makes this the "which of these exist"
+// filter as well as the read.
+func (s *Store) UsersByIDs(ids []int64) ([]model.User, error) {
+	if len(ids) == 0 {
+		return nil, nil
 	}
-	return s.withTx(func(tx *sql.Tx) error {
-		stmt, err := tx.Prepare(
-			`UPDATE users SET used_up=0, used_down=0, last_up=?, last_down=? WHERE id = ?`,
-		)
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	return s.queryUsers(`SELECT `+userCols+` FROM users WHERE id IN (`+placeholders(len(ids))+`)`, args...)
+}
+
+// ResetTrafficMany zeroes usage for several users in one transaction, each
+// re-baselined to its own live counters (see ResetTraffic). Returns the ids it
+// wrote — the same list back, since a missing id updates nothing and harms nobody.
+func (s *Store) ResetTrafficMany(baselines map[int64][2]int64) ([]int64, error) {
+	if len(baselines) == 0 {
+		return nil, nil
+	}
+	done := make([]int64, 0, len(baselines))
+	err := s.withTx(func(tx *sql.Tx) error {
+		stmt, err := tx.Prepare(`UPDATE users SET used_up=0, used_down=0, last_up=?, last_down=? WHERE id = ?`)
 		if err != nil {
 			return err
 		}
 		defer stmt.Close()
-		for id, t := range resets {
+		done = done[:0]
+		for id, t := range baselines {
 			if _, err := stmt.Exec(t[0], t[1], id); err != nil {
+				return err
+			}
+			done = append(done, id)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return done, nil
+}
+
+// SetUserExpiryMany writes a new expiry for several users in one transaction.
+func (s *Store) SetUserExpiryMany(expiries map[int64]int64) error {
+	if len(expiries) == 0 {
+		return nil
+	}
+	return s.withTx(func(tx *sql.Tx) error {
+		stmt, err := tx.Prepare(`UPDATE users SET expire_at = ? WHERE id = ?`)
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+		for id, expire := range expiries {
+			if _, err := stmt.Exec(expire, id); err != nil {
 				return err
 			}
 		}
 		return nil
 	})
+}
+
+// BulkResetTraffic zeroes usage and re-baselines raw counters for multiple users
+// in a single transaction.
+func (s *Store) BulkResetTraffic(resets map[int64][2]int64) error {
+	_, err := s.ResetTrafficMany(resets)
+	return err
+}
+
+// BulkSetUserExpiry updates expire_at for multiple users in a single transaction.
+func (s *Store) BulkSetUserExpiry(updates map[int64]int64) error {
+	return s.SetUserExpiryMany(updates)
 }
 
 // SetNotifiedExpireAt records the expiry a "runs out soon" warning was sent for.

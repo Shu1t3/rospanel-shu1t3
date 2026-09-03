@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { QRCodeSVG } from 'qrcode.react'
 import {
+  MAX_DEVICE_LIMIT,
   deleteUser,
   genUserTelegramLink,
   getBilling,
@@ -40,6 +41,7 @@ import {
   gbToBytes,
   isOnline,
   localDay,
+  deviceLimitOptions,
   quotaOptions,
   speedLimitOptions,
   ranges,
@@ -56,6 +58,7 @@ import { UserEventsModal } from './UserEventsModal'
 import {
   Badge,
   Button,
+  CustomizableSelect,
   Code,
   DatePicker,
   Divider,
@@ -106,6 +109,16 @@ function unixToDate(unix: number): string {
 // optLabel resolves a select value to its human label, for the confirmation text.
 function optLabel(data: { value: string; label: string }[], value: string): string {
   return data.find((o) => o.value === value)?.label ?? value
+}
+
+// fmtLimitOption names a limit value: the preset's label when it is one, the
+// formatter's wording otherwise (a value typed by hand).
+function fmtLimitOption(
+  data: { value: string; label: string }[],
+  value: string,
+  format: (n: number) => string,
+): string {
+  return data.find((o) => o.value === value)?.label ?? format(Number(value))
 }
 
 // resetLabel renders a reset period for display. Beyond the fixed resetPeriods()
@@ -195,79 +208,6 @@ function EditableName({ user, onChanged }: { user: User; onChanged: () => void }
         <IconClose size={18} />
       </button>
     </span>
-  )
-}
-
-function DeviceLimitControl({
-  value,
-  onChange,
-}: {
-  value: string
-  onChange: (val: string) => void
-}) {
-  const { t } = useTranslation()
-  const [draft, setDraft] = useState(value)
-
-  useEffect(() => {
-    setDraft(value)
-  }, [value])
-
-  const commit = (nextVal?: string) => {
-    const raw = nextVal !== undefined ? nextVal : draft
-    const n = parseInt(raw, 10)
-    const clamped = isNaN(n) ? 0 : Math.min(50, Math.max(0, n))
-    const str = String(clamped)
-    setDraft(str)
-    if (str !== value) {
-      onChange(str)
-    }
-  }
-
-  const presets = ['0', '1', '2', '3', '5', '10', '20', '50']
-
-  return (
-    <div className="flex flex-col gap-1.5">
-      <TextInput
-        label={t('userDetail.deviceLimit')}
-        type="number"
-        min={0}
-        max={50}
-        value={draft}
-        onChange={setDraft}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') {
-            e.preventDefault()
-            commit()
-          }
-        }}
-        onBlur={() => commit()}
-        placeholder="0"
-      />
-      <div className="flex flex-wrap items-center gap-1.5">
-        {presets.map((p) => {
-          const isSelected =
-            p === draft || (p === '0' && (draft === '' || draft === '0'))
-          return (
-            <button
-              key={p}
-              type="button"
-              onClick={() => commit(p)}
-              className={cn(
-                'rounded px-2 py-0.5 text-xs font-medium transition cursor-pointer',
-                isSelected
-                  ? 'bg-brand text-white shadow-xs'
-                  : 'bg-gray-100 text-ink-muted hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700',
-              )}
-            >
-              {p === '0' ? i18n.t('common.unlimited') : p}
-            </button>
-          )
-        })}
-      </div>
-      <p className="text-xs text-ink-muted">
-        {t('bill.deviceLimitHint')}
-      </p>
-    </div>
   )
 }
 
@@ -453,23 +393,13 @@ export function UserDetail({
   )
   const showGroupSearch = allGroups.length > 8
 
-  // confirmChange gates an edit in the management block. These controls apply
-  // to a live subscription the moment they're touched, so a misclick would
-  // otherwise silently change what the user is paying for.
-  const confirmChange = async (
-    field: string,
-    from: string,
-    to: string,
-    apply: () => void,
-    onCancel?: () => void,
-  ) => {
+  const confirmChange = async (field: string, from: string, to: string, apply: () => void) => {
     const ok = await confirm({
       title: t('userDetail.changeTitle'),
       body: t('userDetail.changeBody', { field, name: user!.name, from, to }),
       confirmLabel: t('common.edit'),
     })
     if (ok) apply()
-    else if (onCancel) onCancel()
   }
 
   // Unbinding frees a slot immediately — the device can rebind on its next fetch, so
@@ -723,40 +653,41 @@ export function UserDetail({
                   )
                 }
               />
-              <DeviceLimitControl
+              <CustomizableSelect
+                label={t('userDetail.deviceLimit')}
+                data={deviceLimitOptions()}
                 value={deviceLimit}
-                onChange={(v) => {
-                  const fromLabel =
-                    Number(deviceLimit) > 0
-                      ? t('devices.count', { count: Number(deviceLimit) })
-                      : t('devices.unlimited')
-                  const toLabel =
-                    Number(v) > 0
-                      ? t('devices.count', { count: Number(v) })
-                      : t('devices.unlimited')
+                format={(n) => t('devices.count', { count: n })}
+                max={MAX_DEVICE_LIMIT}
+                onChange={(v) =>
                   confirmChange(
                     t('userDetail.deviceLimit'),
-                    fromLabel,
-                    toLabel,
+                    fmtLimitOption(deviceLimitOptions(), deviceLimit, (n) => t('devices.count', { count: n })),
+                    fmtLimitOption(deviceLimitOptions(), v, (n) => t('devices.count', { count: n })),
                     () => {
                       setDeviceLimit(v)
                       saveLimits(user.data_limit, user.expire_at, Number(v))
                     },
-                    () => {
-                      setDeviceLimit((prev) => prev)
-                    },
                   )
-                }}
+                }
               />
-              <Select
+              <p className="-mt-1 text-xs text-ink-muted">
+                {t('userDetail.deviceLimitHint')}
+              </p>
+              <CustomizableSelect
                 label={t('userDetail.speedLimit')}
                 data={speedData}
                 value={speedLimit}
+                format={fmtSpeed}
+                units={[
+                  { factor: 1, label: t('speed.unitKbit') },
+                  { factor: 1000, label: t('speed.unitMbit') },
+                ]}
                 onChange={(v) =>
                   confirmChange(
                     t('userDetail.speedLimit'),
-                    optLabel(speedData, speedLimit),
-                    optLabel(speedData, v),
+                    fmtLimitOption(speedData, speedLimit, fmtSpeed),
+                    fmtLimitOption(speedData, v, fmtSpeed),
                     () => {
                       setSpeedLimit(v)
                       saveLimits(

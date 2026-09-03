@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import {
+  MAX_DEVICE_LIMIT,
   deleteTariffPlan,
   getBilling,
   getPayments,
@@ -19,6 +20,7 @@ import { useAction } from "./hooks";
 import i18n, { td } from "./i18n";
 import { errMessage, notifyError, notifySuccess } from "./notify";
 import {
+  CustomizableSelect,
   Badge,
   Button,
   CenterLoader,
@@ -255,7 +257,16 @@ const EMPTY_PLAN = (): TariffPlan => ({
 });
 
 
-const MAX_PLAN_DEVICES = 50;
+// devices() are the plan presets; the editor also takes any other number up to
+// MAX_DEVICE_LIMIT (see CustomizableSelect).
+const devices = () => [
+  { value: "0", label: i18n.t("common.unlimited") },
+  { value: "1", label: "1" },
+  { value: "2", label: "2" },
+  { value: "3", label: "3" },
+  { value: "5", label: "5" },
+  { value: "10", label: "10" },
+];
 
 const periods = () => [
   { value: "0", label: i18n.t("bill.unlimitedTerm") },
@@ -382,27 +393,16 @@ function PlanForm({
           value={gbFromBytes(plan.data_limit)}
           onChange={(v) => patch({ data_limit: gbToBytes(Number(v)) })}
         />
-        <div>
-          <TextInput
-            label={t("userDetail.deviceLimit")}
-            type="number"
-            min={0}
-            max={MAX_PLAN_DEVICES}
-            value={String(plan.device_limit)}
-            onChange={(v) =>
-              patch({
-                device_limit: Math.min(
-                  MAX_PLAN_DEVICES,
-                  Math.max(0, Number(v) || 0),
-                ),
-              })
-            }
-            placeholder="0"
-          />
-          <p className="mt-1 text-xs text-ink-muted">
-            {t("bill.deviceLimitHint")}
-          </p>
-        </div>
+        {/* The presets cover the plans people actually sell; "other" takes any
+            number up to the panel's ceiling, the same as the user card. */}
+        <CustomizableSelect
+          label={t("userDetail.deviceLimit")}
+          data={devices()}
+          value={String(plan.device_limit)}
+          max={MAX_DEVICE_LIMIT}
+          format={(n) => t("bill.nDevices", { count: n })}
+          onChange={(v) => patch({ device_limit: Number(v) })}
+        />
         <Select
           label={t("userDetail.speedLimit")}
           data={speedLimitOptions()}

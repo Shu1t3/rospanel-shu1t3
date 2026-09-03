@@ -19,10 +19,14 @@ import (
 // Protocols switched off in the Connections panel are omitted.
 func ShareLinks(u model.User, srv Server) []string {
 	set := srv.Set
-	links := make([]string, 0, 3+len(srv.Custom)+len(srv.HappNodes))
+	links := make([]string, 0, 3+len(srv.Custom))
 	if set.VLESSEnabled && srv.allowsBuiltin(model.LaneVLESS) {
 		links = append(links, link.VLESS(u, set))
 	}
+	// A REALITY lane with no public key cannot be dialled: the key is what the client
+	// authenticates the handshake with, and the panel mints it when the lane is first
+	// switched on. A node added before its keys landed would otherwise hand out a link
+	// with an empty pbk — one that fails with no message a user could act on.
 	if set.RealityEnabled && set.RealityPublicKey != "" && srv.allowsBuiltin(model.LaneReality) {
 		links = append(links, link.Reality(u, set))
 	}
@@ -37,13 +41,10 @@ func ShareLinks(u model.User, srv Server) []string {
 			links = append(links, l)
 		}
 	}
-	for _, hn := range srv.HappNodes {
-		if !hn.Enabled || !srv.allowsHapp(hn.ID) {
-			continue
-		}
-		if hn.URI != "" {
-			links = append(links, hn.URI)
-		}
+	// External servers go last and as received: the link is theirs, the label is
+	// theirs, only the choice of who gets it is ours.
+	for _, e := range srv.externalEndpoints() {
+		links = append(links, e.Link)
 	}
 	return links
 }

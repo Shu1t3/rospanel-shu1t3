@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { AdminsSettings } from "./AdminsSettings";
 import { getMe, logout } from "./api";
 import { Credentials } from "./Credentials";
+import { ChangelogModal } from "./ChangelogModal";
 import { LangChoice, LangPills } from "./LangSwitch";
 import { BrandLogo } from "./Logo";
 import { OverviewPanel } from "./OverviewPanel";
@@ -55,6 +56,7 @@ export function Dashboard({
   const isOwner = useIsOwner();
   const [menuOpen, setMenuOpen] = useState(false);
   const [credsOpen, setCredsOpen] = useState(false);
+  const [changelogOpen, setChangelogOpen] = useState(false);
   // Keep the payments-enabled flag fresh so the "Payments" item appears/vanishes
   // without a full reload: re-read on every top-level tab change AND whenever the
   // Both flags are saved in Settings, which fires an event when it does. Without a
@@ -95,9 +97,10 @@ export function Dashboard({
     ...(isAdmin ? [{ value: "nodes" as Tab, label: t("nav.servers") }] : []),
     ...(isAdmin ? [{ value: "settings" as Tab, label: t("nav.settings") }] : []),
   ];
-  // The roster isn't in NAV, so resolve it separately — accessible to Owner and Admins.
-  const canManageRoster = isOwner || isAdmin;
-  const onAdmins = seg[0] === "admins" && canManageRoster;
+  // The roster isn't in NAV, so resolve it separately — and only for the owner, so
+  // hand-typing /admins as anyone else lands on the dashboard rather than on a page
+  // whose every request would 403.
+  const onAdmins = seg[0] === "admins" && isOwner;
   const tab: Tab = onAdmins
     ? "admins"
     : ((NAV.find((n) => n.value === seg[0])?.value ?? "overview") as Tab);
@@ -183,10 +186,11 @@ export function Dashboard({
               <DropdownItem onClick={() => setCredsOpen(true)}>
                 {t("nav.credentials")}
               </DropdownItem>
-              {canManageRoster && (
-                <DropdownItem onClick={goAdmins}>
-                  {isOwner ? t("nav.admins") : t("nav.operators")}
-                </DropdownItem>
+              <DropdownItem onClick={() => setChangelogOpen(true)}>
+                {t("nav.changelog")}
+              </DropdownItem>
+              {isOwner && (
+                <DropdownItem onClick={goAdmins}>{t("nav.admins")}</DropdownItem>
               )}
               <DropdownDivider />
               <DropdownLabel>{t("common.language")}</DropdownLabel>
@@ -222,7 +226,7 @@ export function Dashboard({
               {n.label}
             </button>
           ))}
-          {canManageRoster && (
+          {isOwner && (
             <button
               onClick={goAdmins}
               className={cn(
@@ -230,10 +234,20 @@ export function Dashboard({
                 onAdmins ? "text-brand-800" : "text-accent",
               )}
             >
-              {isOwner ? t("nav.admins") : t("nav.operators")}
+              {t("nav.admins")}
             </button>
           )}
         </nav>
+        <hr className="my-4 border-gray-200" />
+        <button
+          onClick={() => {
+            setMenuOpen(false);
+            setChangelogOpen(true);
+          }}
+          className="py-2 text-left text-lg font-medium text-accent"
+        >
+          {t("nav.changelog")}
+        </button>
         <hr className="my-4 border-gray-200" />
         <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-muted">
           {t("common.language")}
@@ -292,6 +306,7 @@ export function Dashboard({
         </a>
       </footer>
 
+      {changelogOpen && <ChangelogModal onClose={() => setChangelogOpen(false)} />}
       {credsOpen && (
         <Credentials
           username={username}

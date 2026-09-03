@@ -3,9 +3,9 @@ package sub
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/extsub"
 	"net"
 
-	"github.com/Shu1t3/rospanel-shu1t3/internal/happ"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/link"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 )
@@ -87,13 +87,10 @@ func singboxProxies(u model.User, srv Server) (proxies []any, tags []string) {
 			tags = append(tags, tag)
 		}
 	}
-	for _, hn := range srv.HappNodes {
-		if !hn.Enabled || !srv.allowsHapp(hn.ID) {
-			continue
-		}
-		if o, tag, ok := happ.ToSingBox(hn); ok {
+	for _, e := range srv.externalEndpoints() {
+		if o, ok := extsub.SingBoxOutbound(e, e.Name); ok {
 			proxies = append(proxies, o)
-			tags = append(tags, tag)
+			tags = append(tags, e.Name)
 		}
 	}
 	return proxies, tags

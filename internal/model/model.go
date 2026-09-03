@@ -1463,17 +1463,17 @@ func ValidFingerprint(fp string) bool {
 // are raw Xray matchers (plain host, "domain:", "keyword:", "regexp:",
 // "geosite:", "ext:file:tag") and IP entries are CIDRs or "geoip:xx".
 type RoutingConfig struct {
-	BlockBittorrent      bool     `json:"block_bittorrent"`
-	BlockAds             bool     `json:"block_ads"` // block geosite:category-ads-all
-	BlockIPs             []string `json:"block_ips"` // CIDRs or geoip:xx
-	BlockDomains         []string `json:"block_domains"`
-	WarpDomains          []string `json:"warp_domains"`  // routed through Cloudflare WARP
-	WarpIPs              []string `json:"warp_ips"`      // CIDRs or geoip:xx, via WARP
-	OperaDomains         []string `json:"opera_domains"` // routed through Opera VPN
-	OperaIPs             []string `json:"opera_ips"`     // CIDRs or geoip:xx, via Opera VPN
-	DirectDomains        []string `json:"direct_domains"`
-	DirectIPs            []string `json:"direct_ips"`
-	DirectDomainStrategy string   `json:"direct_domain_strategy,omitempty"`
+	BlockBittorrent bool     `json:"block_bittorrent"`
+	BlockAds        bool     `json:"block_ads"` // block geosite:category-ads-all
+	BlockIPs        []string `json:"block_ips"` // CIDRs or geoip:xx
+	BlockDomains    []string `json:"block_domains"`
+	WarpDomains     []string `json:"warp_domains"`  // routed through Cloudflare WARP
+	WarpIPs         []string `json:"warp_ips"`      // CIDRs or geoip:xx, via WARP
+	OperaDomains    []string `json:"opera_domains"` // routed through Opera VPN
+	OperaIPs        []string `json:"opera_ips"`     // CIDRs or geoip:xx, via Opera VPN
+	DirectDomains   []string `json:"direct_domains"`
+	DirectIPs       []string `json:"direct_ips"`
+	DirectStrategy  string   `json:"direct_strategy,omitempty"`
 
 	// RoutingOrder is the precedence of the egress lanes; first-match-wins. It is a
 	// permutation of the built-in lanes ("warp"/"opera"/"direct") plus the ID of
@@ -1588,6 +1588,10 @@ func (rc *RoutingConfig) MigrateLanes() {
 // ValidateLanes checks the operator-supplied lanes before they are persisted.
 // Messages are user-facing (shown in the panel).
 func (rc *RoutingConfig) ValidateLanes() error {
+	if !ValidDirectStrategy(rc.DirectStrategy) {
+		return fieldErr("err.badDirectStrategy", "неизвестная стратегия DNS для прямого выхода {{value}}",
+			map[string]any{"value": rc.DirectStrategy})
+	}
 	if len(rc.Lanes) > MaxEgressLanes {
 		return fieldErr("err.laneTooMany", "слишком много полос: максимум {{max}}", map[string]any{"max": MaxEgressLanes})
 	}
@@ -1624,6 +1628,10 @@ type ProxyEndpoint struct {
 	Port     int
 	User     string
 	Pass     string
+	// Link is set when the upstream is a share link (vless://, trojan://, ss://,
+	// vmess://, hysteria2://) rather than a socks/http proxy: the outbound is then
+	// built from the link (see extsub.XrayOutbound), and Protocol names its scheme.
+	Link string
 }
 
 // BotLang returns the language tag the admin bot writes in, defaulting to "ru"
@@ -1633,4 +1641,28 @@ func (s *Settings) BotLang() string {
 		return v
 	}
 	return "ru"
+}
+
+// DefaultRealityDest is the donor a fresh install masquerades as: the value the
+// schema gives reality_dest, and what a factory reset puts back.
+const DefaultRealityDest = "max.ru"
+
+// MaxDeviceLimit is the highest simultaneous-device cap the panel accepts. It is
+// not a licence limit — 0 still means unlimited — but a number this side of a
+// typo: a "500" meant as "50" reads as a plan nobody notices is unmetered, and the
+// device table grows one row per address per user.
+const MaxDeviceLimit = 100
+
+// DirectStrategies are the freedom domainStrategy values the panel offers, from
+// Xray's own parser. "" (absent) means Xray's default.
+var DirectStrategies = []string{"", "AsIs", "UseIP", "UseIPv4", "UseIPv6", "UseIPv4v6", "UseIPv6v4"}
+
+// ValidDirectStrategy reports whether s is one the panel will emit.
+func ValidDirectStrategy(s string) bool {
+	for _, v := range DirectStrategies {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }

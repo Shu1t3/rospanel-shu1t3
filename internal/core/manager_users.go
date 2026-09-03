@@ -296,7 +296,7 @@ func (m *Manager) BulkUserAction(ctx context.Context, ids []int64, action string
 	case "delete":
 		affected, err = m.store.DeleteUsers(ids)
 		if err == nil {
-			m.auditBulk(ctx, names(before), model.EventUserDeleted, nil)
+			m.auditBulk(ctx, namesOf(before), model.EventUserDeleted, nil)
 			// One event per user, exactly as DeleteUser and the retention sweep emit —
 			// an integration mirroring the roster otherwise drifts silently, and only
 			// after a BULK delete: the same users removed one at a time are reported.
@@ -311,7 +311,7 @@ func (m *Manager) BulkUserAction(ctx context.Context, ids []int64, action string
 	case "reset":
 		reset := m.bulkResetTraffic(ids)
 		affected = int64(len(reset))
-		m.auditBulk(ctx, pick(names(before), reset), model.EventTrafficReset, nil)
+		m.auditBulk(ctx, pick(namesOf(before), reset), model.EventTrafficReset, nil)
 	case "extend":
 		if days <= 0 {
 			return 0, invalidCode("err.extendDaysRequired", "укажите число дней для продления")
@@ -319,64 +319,38 @@ func (m *Manager) BulkUserAction(ctx context.Context, ids []int64, action string
 		if days > maxExtendDays {
 			return 0, invalidCode("err.extendTooLong", "слишком большой срок продления (макс. {{max}} дней)", map[string]any{"max": maxExtendDays})
 		}
-		extended := m.bulkExtendExpiry(ids, days, before)
+		extended := m.bulkExtendExpiry(ids, days)
 		affected = int64(len(extended))
-		if len(extended) > 0 {
-			a := actor.From(ctx)
-			now := time.Now().Unix()
-			evs := make([]model.UserEvent, 0, len(extended))
-			for id, expire := range extended {
-				u := before[id]
-				evs = append(evs, model.UserEvent{
-					UserID:    id,
-					UserName:  u.Name,
-					Action:    model.EventUserLimits,
-					ActorKind: a.Kind,
-					ActorName: a.Name,
-					Details: map[string]any{
-						"data_limit": u.DataLimit, "device_limit": u.DeviceLimit,
-						"expire_at": expire, "extended_days": days, "bulk": true,
-					},
-					CreatedAt: now,
-				})
-			}
-			if err := m.store.AddUserEvents(evs); err != nil {
-				logErr("audit: bulk extend write failed", "err", err)
-			}
+		for id, expire := range extended {
+			u := before[id]
+			// Carry the untouched limits too: the row renders as a full "limits changed"
+			// statement, and omitting them would make it claim the user has none.
+			m.auditNamed(ctx, id, u.Name, model.EventUserLimits, map[string]any{
+				"data_limit": u.DataLimit, "device_limit": u.DeviceLimit,
+				"expire_at": expire, "extended_days": days, "bulk": true,
+			})
 		}
 	default:
 		return 0, invalidCode("err.unknownAction", "неизвестное действие {{value}}", map[string]any{"value": action})
 	}
-	if err != nil {
-		logErr("bulk user action failed", "action", action, "count", len(ids), "err", err)
-		return 0, err
-	}
 	logInfo("bulk user action", "action", action, "selected", len(ids), "affected", affected)
-	m.TriggerUserSync()
+	if affected > 0 {
+		m.TriggerReconcile()
+		m.notifyNodes()
+	}
 	return int(affected), nil
 }
 
-// snapshotUsers reads each id that still exists in a single batch query.
+// snapshotUsers reads each id that still exists. Ids with no row are simply absent.
 func (m *Manager) snapshotUsers(ids []int64) map[int64]model.User {
-	if len(ids) == 0 {
-		return map[int64]model.User{}
-	}
-	users, err := m.store.GetUsersByIDs(ids)
+	users, err := m.store.UsersByIDs(ids)
 	if err != nil {
+		logErr("bulk: reading the selected users failed", "users", len(ids), "err", err)
 		return map[int64]model.User{}
 	}
 	out := make(map[int64]model.User, len(users))
 	for _, u := range users {
 		out[u.ID] = u
-	}
-	return out
-}
-
-// names reduces a user snapshot to id→name, the shape the audit rows need.
-func names(users map[int64]model.User) map[int64]string {
-	out := make(map[int64]string, len(users))
-	for id, u := range users {
-		out[id] = u.Name
 	}
 	return out
 }
@@ -393,19 +367,28 @@ func changedEnabled(users map[int64]model.User, enable bool) map[int64]string {
 	return out
 }
 
-// pick narrows a name snapshot to the given ids.
+// namesOf maps each user to its name. Missing users are left out.
+func namesOf(m map[int64]model.User) map[int64]string {
+	out := make(map[int64]string, len(m))
+	for id, u := range m {
+		out[id] = u.Name
+	}
+	return out
+}
+
+// pick subsets names to only the ids that actually changed.
 func pick(names map[int64]string, ids []int64) map[int64]string {
 	out := make(map[int64]string, len(ids))
 	for _, id := range ids {
-		if n, ok := names[id]; ok {
-			out[id] = n
+		if name, ok := names[id]; ok {
+			out[id] = name
 		}
 	}
 	return out
 }
 
-// auditBulk writes audit rows in a single batch transaction, flagged as part of a
-// bulk action so the journal can tell a hand-picked change from a mass one.
+// auditBulk writes one audit row per user in names, flagged as part of a bulk action
+// so the journal can tell a hand-picked change from a mass one.
 func (m *Manager) auditBulk(ctx context.Context, names map[int64]string, action string, details map[string]any) {
 	if len(names) == 0 {
 		return
@@ -419,71 +402,67 @@ func (m *Manager) auditBulk(ctx context.Context, names map[int64]string, action 
 			d[k] = v
 		}
 		evs = append(evs, model.UserEvent{
-			UserID:    id,
-			UserName:  name,
-			Action:    action,
-			ActorKind: a.Kind,
-			ActorName: a.Name,
-			Details:   detailsOrNil(d),
-			CreatedAt: now,
+			UserID: id, UserName: name, Action: action,
+			ActorKind: a.Kind, ActorName: a.Name,
+			Details: detailsOrNil(d), CreatedAt: now,
 		})
 	}
 	if err := m.store.AddUserEvents(evs); err != nil {
-		logErr("audit: bulk write failed", "action", action, "count", len(evs), "err", err)
+		logErr("audit: bulk write failed", "action", action, "rows", len(evs), "err", err)
 	}
 }
 
-// bulkResetTraffic zeroes usage for many users in a single transaction,
-// re-baselining each one's raw counters to the live Xray value fetched once up front.
+// bulkResetTraffic zeroes usage for many users, re-baselining each one's raw
+// counters to the live Xray value fetched once up front (see store.ResetTraffic).
 // It returns the ids it actually reset.
 func (m *Manager) bulkResetTraffic(ids []int64) []int64 {
-	if len(ids) == 0 {
-		return nil
-	}
 	stats, _ := m.sup.QueryStats(m.sup.APIAddr()) // nil map on error → (0,0) baselines
-	resets := make(map[int64][2]int64, len(ids))
-	var done []int64
+	baselines := make(map[int64][2]int64, len(ids))
 	for _, id := range ids {
 		t := stats[fmt.Sprintf("u%d", id)]
-		resets[id] = [2]int64{t.Up, t.Down}
-		done = append(done, id)
+		baselines[id] = [2]int64{t.Up, t.Down}
 	}
-	if err := m.store.BulkResetTraffic(resets); err != nil {
-		logErr("bulk reset traffic failed", "err", err)
+	done, err := m.store.ResetTrafficMany(baselines)
+	if err != nil {
+		logErr("bulk: resetting traffic failed", "users", len(ids), "err", err)
 		return nil
 	}
 	return done
 }
 
-// bulkExtendExpiry pushes each selected user's expiry out by `days` in a single
-// transaction, anchored at the later of now and their current expiry so stacking adds
-// time rather than resetting it. Users with no expiry (0 = never) are skipped.
-// It returns each extended user's new expiry.
-func (m *Manager) bulkExtendExpiry(ids []int64, days int, before map[int64]model.User) map[int64]int64 {
+// bulkExtendExpiry pushes each selected user's expiry out by `days`, anchored at the
+// later of now and their current expiry so stacking adds time rather than resetting
+// it. Users with no expiry (0 = never) are skipped. It returns each extended user's
+// new expiry.
+func (m *Manager) bulkExtendExpiry(ids []int64, days int) map[int64]int64 {
+	// expire_at is read-modify-written here, so it takes the same lock every plan and
+	// payment write holds — otherwise a purchase confirming concurrently is extended
+	// from a baseline this loop already read, and one of the two periods is lost.
 	m.applyPlanMu.Lock()
 	defer m.applyPlanMu.Unlock()
 	now := time.Now().Unix()
 	add := int64(days) * 86400
-	updates := map[int64]int64{}
-	for _, id := range ids {
-		u, ok := before[id]
-		if !ok || u.ExpireAt == 0 {
-			continue
+	users, err := m.store.UsersByIDs(ids)
+	if err != nil {
+		logErr("bulk: reading the selected users failed", "users", len(ids), "err", err)
+		return nil
+	}
+	out := make(map[int64]int64, len(users))
+	for _, u := range users {
+		if u.ExpireAt == 0 {
+			continue // never expires; there is nothing to push out
 		}
 		base := now
 		if u.ExpireAt > now {
 			base = u.ExpireAt
 		}
-		updates[id] = base + add
+		out[u.ID] = base + add
 	}
-	if len(updates) == 0 {
-		return map[int64]int64{}
+	if err := m.store.SetUserExpiryMany(out); err != nil {
+		logErr("bulk: extending expiry failed", "users", len(out), "err", err)
+		return nil
 	}
-	if err := m.store.BulkSetUserExpiry(updates); err != nil {
-		logErr("bulk extend expiry failed", "err", err)
-		return map[int64]int64{}
-	}
-	return updates
+	return out
 }
 
 // RotateSubToken issues a new subscription URL token for a user. Protocol

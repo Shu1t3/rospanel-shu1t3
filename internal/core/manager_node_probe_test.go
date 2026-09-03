@@ -97,7 +97,7 @@ func TestConfigCheckMatchesOnID(t *testing.T) {
 }
 
 func TestProbePortSkipsNodeXrayPorts(t *testing.T) {
-	m := testConnManager(t)
+	m := newTestManager(t)
 
 	node, err := m.store.CreateNode("edge-probe", "edge.example.com", "tok")
 	if err != nil {

@@ -28,7 +28,7 @@ type UserService struct {
 	clientProxy string // proxy the cached client was built with; a change rebuilds it
 	commandsFor string // token whose command menu was already published
 	offset      int64
-	lastPollErr string           // last getUpdates error (dedups log spam on a bad token)
+	lastPollErr string
 	pending     map[int64]string // chatID → "reg" (awaiting display name)
 
 	regMu     sync.Mutex
@@ -126,55 +126,25 @@ func (s *UserService) clearPending(chatID int64) {
 	s.mu.Unlock()
 }
 
-type userNotifyTask struct {
-	chatID int64
-	text   string
-}
-
 // Run long-polls the user bot until ctx is cancelled.
 func (s *UserService) Run(ctx context.Context) {
-	notifyQueue := make(chan userNotifyTask, 256)
-
-	// Let the panel push payment confirmations to a user's chat via this bot.
+	// Let the panel push messages to a user's chat via this bot — off the goroutine
+	// that raised them (see notifyqueue.go): these come from the traffic poll and the
+	// payment path, where a sweep can touch many users at once.
+	q := newNotifyQueue("user bot")
+	q.run(ctx, 4)
 	s.panel.SetUserNotifier(func(chatID int64, html string) {
-		select {
-		case notifyQueue <- userNotifyTask{chatID: chatID, text: html}:
-		default:
-			log.Printf("telegram: user notify queue full, dropped message to %d", chatID)
-		}
-	})
-
-	var notifyWg sync.WaitGroup
-	for range 4 {
-		notifyWg.Add(1)
-		go func() {
-			defer notifyWg.Done()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case task, ok := <-notifyQueue:
-					if !ok {
-						return
-					}
-					set, err := s.store.GetSettings()
-					if err != nil || strings.TrimSpace(set.TGUserBotToken) == "" {
-						continue
-					}
-					c := NewClient(strings.TrimSpace(set.TGUserBotToken), set.TelegramProxyURL())
-					sendCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-					if err := c.SendMessage(sendCtx, task.chatID, task.text); err != nil {
-						if ctx.Err() == nil {
-							log.Printf("telegram: user notify to %d failed: %v", task.chatID, err)
-						}
-					}
-					cancel()
-				}
+		q.submit(func(ctx context.Context) {
+			set, err := s.store.GetSettings()
+			if err != nil || strings.TrimSpace(set.TGUserBotToken) == "" {
+				return
 			}
-		}()
-	}
-	defer notifyWg.Wait()
-
+			c := NewClient(strings.TrimSpace(set.TGUserBotToken), set.TelegramProxyURL())
+			if err := c.SendMessage(ctx, chatID, html); err != nil {
+				log.Printf("telegram: user notify to %d failed: %v", chatID, err)
+			}
+		})
+	})
 	for {
 		if ctx.Err() != nil {
 			return
@@ -194,18 +164,10 @@ func (s *UserService) Run(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			if key := pollErrorKey(err); key != s.lastPollErr {
-				log.Printf("telegram user: getUpdates: %v", err)
-				s.lastPollErr = key
-			}
 			if !sleep(ctx, pollBackoff(err)) {
 				return
 			}
 			continue
-		}
-		if s.lastPollErr != "" {
-			log.Printf("telegram user: polling recovered")
-			s.lastPollErr = ""
 		}
 		for _, u := range updates {
 			s.offset = u.UpdateID + 1
@@ -663,7 +625,7 @@ func userSelfCard(u model.User, set *model.Settings, panel Panel, lang i18n.Lang
 			fmt.Fprintf(&b, "%s\n", i18n.T(lang, "user.cardPlan", esc(name)))
 		}
 	} else if set.BillingEnabled {
-		fmt.Fprintf(&b, "%s\n", i18n.T(lang, "user.cardPlanManual"))
+		b.WriteString(i18n.T(lang, "user.cardPlanManual") + "\n")
 	}
 
 	// Expiry + remaining time.
@@ -675,7 +637,7 @@ func userSelfCard(u model.User, set *model.Settings, panel Panel, lang i18n.Lang
 			fmt.Fprintf(&b, "%s\n", i18n.T(lang, "user.cardExpiredOn", exp))
 		}
 	} else {
-		fmt.Fprintf(&b, "%s\n", i18n.T(lang, "user.cardNoExpiry"))
+		b.WriteString(i18n.T(lang, "user.cardNoExpiry") + "\n")
 	}
 
 	// Traffic.

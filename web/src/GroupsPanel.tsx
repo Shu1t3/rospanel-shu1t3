@@ -167,15 +167,18 @@ export function GroupsPanel() {
               placeholder={t("groups.namePlaceholder")}
             />
             <div className="flex flex-col gap-2">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-ink-muted">{t("groups.grantsIntro")}</span>
-                <Badge color="gray">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm text-ink-muted">{t("groups.grantsIntro")}</p>
+                <Badge color={editing.grants.size > 0 ? "brand" : "gray"}>
                   {t("groups.nConnections", { count: editing.grants.size })}
                 </Badge>
               </div>
-              <div className="max-h-64 overflow-y-auto rounded-xl border border-gray-200/80 bg-gray-50/40 p-2 space-y-2.5">
+              {/* The list grows with every server and every external subscription;
+                  it scrolls inside the dialog so the members and the buttons below
+                  stay in reach. */}
+              <div className="flex max-h-72 flex-col gap-3 overflow-y-auto pr-1">
                 {targets.map((srv) => (
-                  <div key={srv.server_id} className="rounded-xl border border-gray-200/80 bg-white p-3 shadow-xs">
+                  <div key={srv.server_id} className="rounded-xl border border-gray-200/80 bg-gray-50/60 p-3">
                     <p className="mb-2 text-sm font-semibold text-ink">{srv.server_name}</p>
                     <div className="flex flex-col gap-1.5">
                       {srv.lanes.map((l) => (
@@ -199,13 +202,13 @@ export function GroupsPanel() {
                           onToggle={(g) => setEditing({ ...editing, grants: g })}
                         />
                       ))}
-                      {srv.happ_nodes?.map((h) => (
+                      {srv.external?.map((e) => (
                         <GrantRow
-                          key={h.token}
-                          token={h.token}
-                          label={h.name}
-                          badge="Happ"
-                          off={!h.enabled}
+                          key={e.token}
+                          token={e.token}
+                          label={e.name}
+                          badge={t("groups.externalBadge")}
+                          off={!e.enabled}
                           grants={editing.grants}
                           onToggle={(g) => setEditing({ ...editing, grants: g })}
                         />

@@ -880,6 +880,24 @@ func NewReservedPorts() ReservedPorts {
 	}
 }
 
+// ProtoOf maps an inbound protocol to the transport it listens on ("tcp" or "udp").
+func ProtoOf(protocol string) string {
+	if protocol == InbHysteria {
+		return "udp"
+	}
+	return "tcp"
+}
+
+// On reports who holds `port` on the given transport ("tcp" or "udp"), or ok=false.
+func (r ReservedPorts) On(proto string, port int) (string, bool) {
+	if proto == "udp" {
+		who, ok := r.UDP[port]
+		return who, ok
+	}
+	who, ok := r.TCP[port]
+	return who, ok
+}
+
 // HoldTCP marks a TCP port as reserved.
 func (r *ReservedPorts) HoldTCP(port int, who string) {
 	if port <= 0 {
@@ -936,8 +954,7 @@ func ValidateInboundSet(list []Inbound, reserved ReservedPorts, takenNames []str
 			names[strings.ToLower(n)] = true
 		}
 	}
-	portsTCP := map[int]string{}
-	portsUDP := map[int]string{}
+	ports := map[string]map[int]string{"tcp": {}, "udp": {}}
 	type hopRange struct {
 		name     string
 		from, to int
@@ -958,24 +975,18 @@ func ValidateInboundSet(list []Inbound, reserved ReservedPorts, takenNames []str
 			continue
 		}
 
-		isUDP := in.Protocol == InbHysteria
-		if isUDP {
-			if who, taken := reserved.UDP[in.Port]; taken {
-				return fieldErr("err.portTakenBy", "порт {{port}} уже занят ({{who}}) — выберите другой", map[string]any{"port": in.Port, "who": who})
-			}
-			if who, dup := portsUDP[in.Port]; dup {
-				return fieldErr("err.portTakenByInbound", "порт {{port}} уже занят подключением «{{who}}»", map[string]any{"port": in.Port, "who": who})
-			}
-			portsUDP[in.Port] = in.Name
-		} else {
-			if who, taken := reserved.TCP[in.Port]; taken {
-				return fieldErr("err.portTakenBy", "порт {{port}} уже занят ({{who}}) — выберите другой", map[string]any{"port": in.Port, "who": who})
-			}
-			if who, dup := portsTCP[in.Port]; dup {
-				return fieldErr("err.portTakenByInbound", "порт {{port}} уже занят подключением «{{who}}»", map[string]any{"port": in.Port, "who": who})
-			}
-			portsTCP[in.Port] = in.Name
+		// Per transport: a UDP listener and a TCP one may share a number, and the
+		// built-in lanes do exactly that by default (Vision on TCP/443, Hysteria2 on
+		// UDP/443). Refusing across transports turned a legal configuration into an
+		// error the operator could not resolve.
+		proto := ProtoOf(in.Protocol)
+		if who, taken := reserved.On(proto, in.Port); taken {
+			return fieldErr("err.portTakenBy", "порт {{port}} уже занят ({{who}}) — выберите другой", map[string]any{"port": in.Port, "who": who})
 		}
+		if who, dup := ports[proto][in.Port]; dup {
+			return fieldErr("err.portTakenByInbound", "порт {{port}} уже занят подключением «{{who}}»", map[string]any{"port": in.Port, "who": who})
+		}
+		ports[proto][in.Port] = in.Name
 
 		if in.UsesHopping() {
 			from := in.Opts.HopStart
@@ -997,15 +1008,9 @@ func ValidateInboundSet(list []Inbound, reserved ReservedPorts, takenNames []str
 	}
 	// A hop range must not swallow another inbound's base port: the nftables redirect
 	// would silently steal its traffic.
+	// A hop range is a UDP funnel, so only UDP listeners can be swallowed by it.
 	for _, h := range hops {
-		for p, who := range portsUDP {
-			if p >= h.from && p <= h.to && who != h.name {
-				return fieldErr("err.hopRangeCoversInbound",
-					"диапазон хопа «{{name}}» ({{from}}–{{to}}) накрывает порт {{port}} подключения «{{who}}»",
-					map[string]any{"name": h.name, "from": h.from, "to": h.to, "port": p, "who": who})
-			}
-		}
-		for p, who := range portsTCP {
+		for p, who := range ports["udp"] {
 			if p >= h.from && p <= h.to && who != h.name {
 				return fieldErr("err.hopRangeCoversInbound",
 					"диапазон хопа «{{name}}» ({{from}}–{{to}}) накрывает порт {{port}} подключения «{{who}}»",
@@ -1013,13 +1018,6 @@ func ValidateInboundSet(list []Inbound, reserved ReservedPorts, takenNames []str
 			}
 		}
 		for p, who := range reserved.UDP {
-			if p >= h.from && p <= h.to {
-				return fieldErr("err.hopRangeCoversPort",
-					"диапазон хопа «{{name}}» ({{from}}–{{to}}) накрывает порт {{port}} ({{who}})",
-					map[string]any{"name": h.name, "from": h.from, "to": h.to, "port": p, "who": who})
-			}
-		}
-		for p, who := range reserved.TCP {
 			if p >= h.from && p <= h.to {
 				return fieldErr("err.hopRangeCoversPort",
 					"диапазон хопа «{{name}}» ({{from}}–{{to}}) накрывает порт {{port}} ({{who}})",

@@ -139,12 +139,14 @@ type Sniffing struct {
 	RouteOnly    bool     `json:"routeOnly"`
 }
 
-// Outbound is one egress. Settings is protocol-specific (nil for blackhole).
+// Outbound is one egress. Settings is protocol-specific (nil for freedom/blackhole).
 type Outbound struct {
-	Tag            string          `json:"tag,omitempty"`
-	Protocol       string          `json:"protocol"`
-	Settings       any             `json:"settings,omitempty"`
-	StreamSettings *StreamSettings `json:"streamSettings,omitempty"`
+	Tag      string `json:"tag,omitempty"`
+	Protocol string `json:"protocol"`
+	Settings any    `json:"settings,omitempty"`
+	// StreamSettings is set for an outbound built from a share link (a lane whose
+	// upstream is another VPN server); the panel's own outbounds need none.
+	StreamSettings any `json:"streamSettings,omitempty"`
 }
 
 // FreedomSettings is the "settings" object for a freedom outbound.

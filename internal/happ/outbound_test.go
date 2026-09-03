@@ -3,6 +3,8 @@ package happ
 import (
 	"encoding/base64"
 	"testing"
+
+	"github.com/Shu1t3/rospanel-shu1t3/internal/xray"
 )
 
 func TestToXrayOutboundVLESS(t *testing.T) {
@@ -23,7 +25,8 @@ func TestToXrayOutboundVLESS(t *testing.T) {
 	if ob.Protocol != "vless" {
 		t.Errorf("expected protocol vless, got %q", ob.Protocol)
 	}
-	if ob.StreamSettings == nil || ob.StreamSettings.Network != "ws" || ob.StreamSettings.Security != "tls" {
+	ss, ok := ob.StreamSettings.(*xray.StreamSettings)
+	if !ok || ss == nil || ss.Network != "ws" || ss.Security != "tls" {
 		t.Errorf("streamSettings mismatch: %+v", ob.StreamSettings)
 	}
 }
@@ -112,16 +115,17 @@ func TestToXrayOutboundVLESSReality(t *testing.T) {
 	if ob.Tag != "happ-15" {
 		t.Errorf("expected tag happ-15, got %q", ob.Tag)
 	}
-	if ob.StreamSettings == nil {
-		t.Fatalf("expected streamSettings, got nil")
+	ss, ok := ob.StreamSettings.(*xray.StreamSettings)
+	if !ok || ss == nil {
+		t.Fatalf("expected *xray.StreamSettings, got %T", ob.StreamSettings)
 	}
-	if ob.StreamSettings.Security != "reality" {
-		t.Errorf("expected security reality, got %q", ob.StreamSettings.Security)
+	if ss.Security != "reality" {
+		t.Errorf("expected security reality, got %q", ss.Security)
 	}
-	if ob.StreamSettings.TLSSettings != nil {
-		t.Errorf("expected tlsSettings to be nil for reality, got %+v", ob.StreamSettings.TLSSettings)
+	if ss.TLSSettings != nil {
+		t.Errorf("expected tlsSettings to be nil for reality, got %+v", ss.TLSSettings)
 	}
-	rs := ob.StreamSettings.RealitySettings
+	rs := ss.RealitySettings
 	if rs == nil {
 		t.Fatalf("expected realitySettings, got nil")
 	}

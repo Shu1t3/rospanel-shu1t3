@@ -3,6 +3,7 @@ import {
   createContext,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -939,7 +940,7 @@ export function Select({
         <AnchoredPopover anchor={ref.current} onClose={() => setOpen(false)}>
           {(rect) => (
             <div
-              className="animate-scale-in origin-top overflow-hidden rounded-xl border border-gray-200 bg-white shadow-lg"
+              className="animate-scale-in origin-top overflow-clip rounded-xl border border-gray-200 bg-white shadow-lg"
               style={{ position: 'fixed', left: rect.left, top: rect.bottom + 4, width: rect.width }}
             >
               {searchable && (
@@ -1097,7 +1098,7 @@ export function TagsInput({
         <AnchoredPopover anchor={boxRef.current} onClose={closePopover}>
           {(rect) => (
             <div
-              className="animate-scale-in origin-top overflow-hidden rounded-xl border border-gray-200 bg-white shadow-lg"
+              className="animate-scale-in origin-top overflow-clip rounded-xl border border-gray-200 bg-white shadow-lg"
               style={{ position: 'fixed', left: rect.left, top: rect.bottom + 4, width: rect.width }}
             >
               <div className="border-b border-gray-100 p-2">
@@ -1299,6 +1300,102 @@ export function DatePicker({
       )}
     </Field>
   )
+}
+
+// CustomizableSelect is a preset picker with a "custom…" entry that opens a number
+// field — optionally with a unit switch — so a value that is not on the list (a
+// 7-device family, a 3 Mbit/s plan) can still be set without leaving the card. The
+// value handed back is in the unit the server stores.
+export function CustomizableSelect({
+  label,
+  data,
+  value,
+  format,
+  units,
+  max,
+  onChange,
+}: {
+  label: string;
+  data: { value: string; label: string }[];
+  value: string;
+  // format words a value that is not one of the presets — one the operator typed,
+  // or one the API set.
+  format: (n: number) => string;
+  // units, when given, offer the number in more than one unit (kbit/Mbit); the
+  // value handed back is always in the first unit, which is what the server stores.
+  units?: { factor: number; label: string }[];
+  // max is the highest value accepted, so the field cannot offer what the server
+  // would refuse.
+  max?: number;
+  onChange: (v: string) => void;
+}) {
+  const { t } = useTranslation();
+  const [custom, setCustom] = useState(false);
+  const [raw, setRaw] = useState("");
+  const [unit, setUnit] = useState(0);
+  const isPreset = data.some((o) => o.value === value);
+  const options = useMemo(
+    () => [
+      ...data,
+      ...(!isPreset ? [{ value, label: format(Number(value)) }] : []),
+      { value: "__custom", label: t("common.customValue") },
+    ],
+    [data, isPreset, value, format, t],
+  );
+  const apply = () => {
+    const n = Math.floor(Number(raw));
+    if (!Number.isFinite(n) || n < 0) return;
+    const factor = units?.[unit]?.factor ?? 1;
+    if (max !== undefined && n * factor > max) return;
+    setCustom(false);
+    setRaw("");
+    onChange(String(n * factor));
+  };
+  return (
+    <div className="flex flex-col gap-2">
+      <Select
+        label={label}
+        data={options}
+        value={custom ? "__custom" : value}
+        onChange={(v) => {
+          if (v === "__custom") setCustom(true);
+          else {
+            setCustom(false);
+            onChange(v);
+          }
+        }}
+      />
+      {custom && (
+        <div className="flex items-end gap-2">
+          <div className="min-w-0 flex-1">
+            <TextInput
+              type="number"
+              value={raw}
+              onChange={setRaw}
+              placeholder={t("common.customValuePlaceholder")}
+              autoFocus
+            />
+          </div>
+          {units && units.length > 1 && (
+            <div className="w-28">
+              <Select
+                value={String(unit)}
+                onChange={(v) => setUnit(Number(v))}
+                data={units.map((u, i) => ({ value: String(i), label: u.label }))}
+              />
+            </div>
+          )}
+          <Button
+            size="sm"
+            onClick={apply}
+            disabled={raw.trim() === "" || (max !== undefined && Number(raw) * (units?.[unit]?.factor ?? 1) > max)}
+          >
+            {t("common.apply")}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* ------------------------------------------------------------------ switch */
@@ -1599,7 +1696,7 @@ export function Modal({
       />
       <div
         className={cn(
-          "relative z-10 flex max-h-[90vh] w-full animate-fade-in-up flex-col overflow-hidden rounded-2xl bg-white shadow-xl",
+          "relative z-10 flex max-h-[90vh] w-full animate-fade-in-up flex-col overflow-clip rounded-2xl bg-white shadow-xl",
           maxW,
         )}
       >
@@ -1694,7 +1791,7 @@ export function Drawer({
       />
       <div
         className={cn(
-          "absolute top-0 flex h-full flex-col overflow-hidden bg-white shadow-xl",
+          "absolute top-0 flex h-full flex-col overflow-clip bg-white shadow-xl",
           side === "right"
             ? "right-0 animate-slide-in-right"
             : "left-0 animate-slide-in-left",
@@ -1865,7 +1962,7 @@ export function InfoModal({
         className="absolute inset-0 animate-fade-in bg-black/50"
         onClick={onClose}
       />
-      <div className="relative z-10 flex max-h-[85vh] w-full max-w-2xl animate-fade-in-up flex-col overflow-hidden rounded-2xl bg-white shadow-xl">
+      <div className="relative z-10 flex max-h-[85vh] w-full max-w-2xl animate-fade-in-up flex-col overflow-clip rounded-2xl bg-white shadow-xl">
         <div className="sticky top-0 flex items-center justify-between gap-2 border-b border-gray-100 bg-white px-5 py-4">
           <div className="flex items-center gap-2">
             {icon && <span className="text-accent">{icon}</span>}
@@ -1947,7 +2044,7 @@ export function ToolDialog({
         className="absolute inset-0 animate-fade-in bg-black/50"
         onClick={onClose}
       />
-      <div className="relative z-10 flex h-[80vh] w-full max-w-4xl animate-fade-in-up flex-col overflow-hidden rounded-2xl bg-white shadow-xl">
+      <div className="relative z-10 flex h-[80vh] w-full max-w-4xl animate-fade-in-up flex-col overflow-clip rounded-2xl bg-white shadow-xl">
         <div className="border-b border-gray-100 px-4 py-3 sm:px-5 sm:py-4">
           <div className="flex items-center justify-between gap-2">
             <h2 className="text-lg font-bold text-ink">{title}</h2>

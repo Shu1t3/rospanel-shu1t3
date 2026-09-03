@@ -2,369 +2,62 @@ package core
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
-	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
 )
 
-func testConnManager(t *testing.T) *Manager {
-	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "test-conn.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
+// A node reset puts every knob of its connections back to the factory state and
+// drops its custom inbounds with the grants that named them — through the same
+// path a save takes, so it is validated like one.
+func TestResetNodeConnectionsRestoresTheFactoryState(t *testing.T) {
+	m := nodeTestManager(t)
+	syncedNode(t, m.store, "edge", "26.7.28")
+	nodes, err := m.store.ListNodes()
+	if err != nil || len(nodes) != 1 {
+		t.Fatalf("nodes: %v %v", nodes, err)
 	}
-	t.Cleanup(func() { st.Close() })
-	m := &Manager{
-		store: st,
-		nodes: newNodeRegistry(),
-	}
-	return m
-}
+	id := nodes[0].ID
 
-func TestResetConnectionsMaster(t *testing.T) {
-	m := testConnManager(t)
-
-	// 1. Mutate settings away from defaults
-	if err := m.store.SetProtocolEnabled("vless", false); err != nil {
-		t.Fatalf("disable vless: %v", err)
+	// Bend the node away from the defaults: a custom port set, REALITY off, a custom
+	// inbound with a group grant.
+	bent := DefaultConnections()
+	bent.Protocols["reality"] = false
+	bent.HysteriaPort, bent.HopStart, bent.HopEnd = 8443, 8443, 8443
+	bent.RealityPort = 9443
+	bent.TLSMin13 = false
+	if err := m.ApplyNodeConnections(id, bent); err != nil {
+		t.Fatalf("bend: %v", err)
 	}
-	if err := m.store.SetProtocolNames("CustomVLESS", "CustomREALITY", "CustomHy2"); err != nil {
-		t.Fatalf("set names: %v", err)
-	}
-	if err := m.store.SetFingerprints("chrome", "chrome"); err != nil {
-		t.Fatalf("set fp: %v", err)
-	}
-	if err := m.store.SetHysteriaPorts(50000, 50000, 50010, "10-30"); err != nil {
-		t.Fatalf("set hy ports: %v", err)
-	}
-	if err := m.store.SetRealityPorts(9443, "custom.donor.com"); err != nil {
-		t.Fatalf("set reality: %v", err)
-	}
-	if err := m.store.SetAntiDPI(false, false, false, 60000); err != nil {
-		t.Fatalf("set anti-dpi: %v", err)
-	}
-
-	// Add a custom inbound to master
-	_, err := m.CreateInbound(context.Background(), model.Inbound{
-		ServerID: model.LocalNodeID,
-		Name:     "TestInbound",
-		Protocol: "vless",
-		Port:     12345,
-		Opts: model.InboundOpts{
-			Transport: "ws",
-			Security:  "tls",
-			Path:      "/ws-path",
-		},
+	in, err := m.store.CreateInbound(model.Inbound{
+		ServerID: id, Name: "ws-cdn", Protocol: model.InbVLESS, Port: 2053, Enabled: true,
+		Opts: model.InboundOpts{Transport: model.TrWS, Security: model.SecNone, Path: "/cdn"},
 	})
 	if err != nil {
-		t.Fatalf("create inbound: %v", err)
+		t.Fatalf("inbound: %v", err)
+	}
+	if _, err := m.CreateGroup("cdn", []string{model.InboundToken(in.ID)}); err != nil {
+		t.Fatal(err)
 	}
 
-	// 2. Perform ResetConnections
-	status, err := m.ResetConnections()
+	st, err := m.ResetNodeConnections(context.Background(), id)
 	if err != nil {
-		t.Fatalf("ResetConnections: %v", err)
+		t.Fatalf("reset: %v", err)
 	}
-
-	// 3. Verify master status is back to factory defaults
-	if status.HysteriaPort != 443 || status.HopStart != 443 || status.HopEnd != 443 {
-		t.Errorf("expected HysteriaPort=443, got %d", status.HysteriaPort)
+	if st.HysteriaPort != 443 || st.HopStart != 443 || st.RealityPort != 8443 || !st.TLSMin13 {
+		t.Fatalf("transport not reset: %+v", st)
 	}
-	if status.RealityPort != 8443 || status.RealityDest != "max.ru" {
-		t.Errorf("expected RealityPort=8443, RealityDest=max.ru, got port %d, dest %q", status.RealityPort, status.RealityDest)
-	}
-	if !status.TLSFragment || !status.TLSMin13 || !status.BlockQUIC {
-		t.Errorf("expected all AntiDPI=true, got frag=%v, min13=%v, quic=%v", status.TLSFragment, status.TLSMin13, status.BlockQUIC)
-	}
-
-	for _, proto := range status.Protocols {
-		if proto.Key == "reality" || proto.Key == "awg" {
-			if proto.Enabled {
-				t.Errorf("expected %s disabled after reset", proto.Key)
-			}
-			continue
-		}
-		if !proto.Enabled {
-			t.Errorf("expected protocol %q enabled", proto.Key)
-		}
-		if proto.DisplayName != "" {
-			t.Errorf("expected protocol %q display name to be empty, got %q", proto.Key, proto.DisplayName)
-		}
-		if proto.Fingerprint != "" && proto.Fingerprint != "firefox" {
-			t.Errorf("expected fingerprint firefox, got %q", proto.Fingerprint)
+	for _, p := range st.Protocols {
+		want := p.Key != "awg"
+		if p.Enabled != want {
+			t.Errorf("protocol %s enabled=%v, want %v", p.Key, p.Enabled, want)
 		}
 	}
-
-	// Verify custom inbounds were cleared on master
-	inbounds, err := m.store.Inbounds(model.LocalNodeID)
-	if err != nil {
-		t.Fatalf("read inbounds: %v", err)
+	if left, _ := m.store.Inbounds(id); len(left) != 0 {
+		t.Fatalf("custom inbounds survived the reset: %+v", left)
 	}
-	if len(inbounds) != 0 {
-		t.Errorf("expected 0 inbounds after reset, got %d", len(inbounds))
-	}
-}
-
-func TestResetNodeConnections(t *testing.T) {
-	m := testConnManager(t)
-
-	node, err := m.store.CreateNode("edge-1", "edge1.example.com", "coming-soon")
-	if err != nil {
-		t.Fatalf("create node: %v", err)
-	}
-
-	// Mutate node connections
-	if err := m.store.SetNodeProtocols(node.ID, false, true, true); err != nil {
-		t.Fatalf("set node protocols: %v", err)
-	}
-	if err := m.store.SetNodeRealityDest(node.ID, "donor.node.com"); err != nil {
-		t.Fatalf("set node reality dest: %v", err)
-	}
-
-	// Add custom inbound to node
-	_, err = m.CreateInbound(context.Background(), model.Inbound{
-		ServerID: node.ID,
-		Name:     "NodeInbound",
-		Protocol: "vless",
-		Port:     15432,
-		Opts: model.InboundOpts{
-			Transport: "ws",
-			Security:  "tls",
-			Path:      "/node-ws",
-		},
-	})
-
-	if err != nil {
-		t.Fatalf("create node inbound: %v", err)
-	}
-
-	// Perform ResetNodeConnections
-	status, err := m.ResetNodeConnections(node.ID)
-	if err != nil {
-		t.Fatalf("ResetNodeConnections: %v", err)
-	}
-
-	for _, proto := range status.Protocols {
-		if proto.Key == "reality" || proto.Key == "awg" {
-			if proto.Enabled {
-				t.Errorf("expected node %s disabled after reset", proto.Key)
-			}
-			continue
-		}
-		if !proto.Enabled {
-			t.Errorf("expected node protocol %q enabled", proto.Key)
-		}
-	}
-	if status.HysteriaPort != 443 || status.RealityPort != 8443 {
-		t.Errorf("expected reset ports 443 / 8443, got %d / %d", status.HysteriaPort, status.RealityPort)
-	}
-
-	// Verify node inbounds were cleared
-	inbounds, err := m.store.Inbounds(node.ID)
-	if err != nil {
-		t.Fatalf("read node inbounds: %v", err)
-	}
-	if len(inbounds) != 0 {
-		t.Errorf("expected 0 node inbounds after reset, got %d", len(inbounds))
-	}
-}
-
-func TestResetNodeConnectionsRentedNodeForbidden(t *testing.T) {
-	m := testConnManager(t)
-
-	rented, err := m.store.CreateRentedNode("Rented 1", "rented.example.com", "master.example.com", 10, "token_123", "tenant_xyz", 60, 40000, "v1.2.0", "1.8.24", "pubkey123", "sid123", "/rpath", "dest.com:443", "sha123", false, true, true, true, 443, 8443, 443, "node_path_secret")
-	if err != nil {
-		t.Fatalf("create rented node: %v", err)
-	}
-
-	_, err = m.ResetNodeConnections(rented.ID)
-	if err == nil {
-		t.Fatal("expected ResetNodeConnections to fail for rented node")
-	}
-}
-
-func TestCustomInboundAllowedWhenDefaultDisabled(t *testing.T) {
-	m := testConnManager(t)
-
-	// 1. By default, VLESS-Vision and Hysteria2 are enabled on 443.
-	// Creating an enabled inbound on 443 must be rejected because built-in is enabled.
-	_, err := m.CreateInbound(context.Background(), model.Inbound{
-		ServerID: model.LocalNodeID,
-		Name:     "Custom443",
-		Protocol: "vless",
-		Port:     443,
-		Enabled:  true,
-		Opts: model.InboundOpts{
-			Transport: "ws",
-			Security:  "tls",
-			Path:      "/ws",
-		},
-	})
-	if err == nil {
-		t.Fatal("expected port 443 collision when VLESS-Vision is enabled")
-	}
-
-	// 2. Disable VLESS-Vision and Hysteria2.
-	if err := m.store.SetProtocolEnabled("vless", false); err != nil {
-		t.Fatalf("disable vless: %v", err)
-	}
-	if err := m.store.SetProtocolEnabled("hysteria2", false); err != nil {
-		t.Fatalf("disable hysteria2: %v", err)
-	}
-
-	// 3. Now creating custom inbound on 443 must SUCCEED because built-in protocols are disabled!
-	in, err := m.CreateInbound(context.Background(), model.Inbound{
-		ServerID: model.LocalNodeID,
-		Name:     "Custom443",
-		Protocol: "vless",
-		Port:     443,
-		Enabled:  true,
-		Opts: model.InboundOpts{
-			Transport: "ws",
-			Security:  "tls",
-			Path:      "/ws",
-		},
-	})
-	if err != nil {
-		t.Fatalf("create custom inbound on 443 when built-in is disabled failed: %v", err)
-	}
-	if in.ID == 0 {
-		t.Fatal("expected valid inbound ID")
-	}
-
-	// 4. If the user now attempts to re-enable VLESS-Vision on 443 while custom inbound is active,
-	// ApplyConnections must reject the collision.
-	err = m.ApplyConnections(ConnectionsUpdate{
-		Protocols: map[string]bool{
-			"vless":     true,
-			"reality":   true,
-			"hysteria2": false,
-		},
-		Fingerprints: map[string]string{"vless": "firefox", "reality": "firefox"},
-		Names:        map[string]string{},
-		VLESSPort:    443,
-		HysteriaPort: 443,
-		HopStart:     443,
-		HopEnd:       443,
-		RealityPort:  8443,
-		RealityDest:  "max.ru",
-	})
-	if err == nil {
-		t.Fatal("expected collision error when re-enabling VLESS on 443 while custom inbound holds 443")
-	}
-}
-
-func TestTCPUDPCoexistenceOnPort443(t *testing.T) {
-	m := testConnManager(t)
-
-	// Built-in VLESS (TCP:443) is enabled.
-	// Custom Hysteria2 (UDP:443) should SUCCEED because it's UDP and VLESS is TCP!
-	in, err := m.CreateInbound(context.Background(), model.Inbound{
-		ServerID: model.LocalNodeID,
-		Name:     "CustomHy443",
-		Protocol: "hysteria2",
-		Port:     443,
-		Enabled:  true,
-		Opts: model.InboundOpts{
-			Transport: "hysteria",
-			Security:  "tls",
-		},
-	})
-	// In testConnManager, Hysteria2 built-in is on UDP:443 by default in settings.
-	// Let's first disable built-in Hysteria2 so only VLESS (TCP:443) is enabled.
-	if err := m.store.SetProtocolEnabled("hysteria2", false); err != nil {
-		t.Fatalf("disable built-in hysteria2: %v", err)
-	}
-
-	in, err = m.CreateInbound(context.Background(), model.Inbound{
-		ServerID: model.LocalNodeID,
-		Name:     "CustomHy443",
-		Protocol: "hysteria2",
-		Port:     443,
-		Enabled:  true,
-		Opts: model.InboundOpts{
-			Transport: "hysteria",
-			Security:  "tls",
-		},
-	})
-	if err != nil {
-		t.Fatalf("expected custom UDP:443 to succeed alongside built-in TCP:443 VLESS, got: %v", err)
-	}
-	if in.ID == 0 {
-		t.Fatal("expected valid inbound ID")
-	}
-
-	// Now re-saving connections with VLESS on TCP:443 should succeed without colliding with UDP:443 custom inbound.
-	err = m.ApplyConnections(ConnectionsUpdate{
-		Protocols: map[string]bool{
-			"vless":     true,
-			"reality":   false,
-			"hysteria2": false,
-		},
-		Fingerprints: map[string]string{"vless": "firefox"},
-		Names:        map[string]string{},
-		VLESSPort:    443,
-		HysteriaPort: 50000,
-		HopStart:     50000,
-		HopEnd:       50000,
-		RealityPort:  8443,
-		RealityDest:  "max.ru",
-	})
-	if err != nil {
-		t.Fatalf("ApplyConnections failed with TCP:443 VLESS and UDP:443 custom inbound: %v", err)
-	}
-}
-
-func TestVLESSCustomPortAndCollisions(t *testing.T) {
-	m := testConnManager(t)
-
-	// Change VLESS port to 9443
-	err := m.ApplyConnections(ConnectionsUpdate{
-		Protocols: map[string]bool{
-			"vless":     true,
-			"reality":   true,
-			"hysteria2": true,
-		},
-		Fingerprints: map[string]string{"vless": "firefox", "reality": "firefox"},
-		Names:        map[string]string{},
-		VLESSPort:    9443,
-		HysteriaPort: 443,
-		HopStart:     443,
-		HopEnd:       443,
-		RealityPort:  8443,
-		RealityDest:  "max.ru",
-	})
-	if err != nil {
-		t.Fatalf("ApplyConnections with custom VLESSPort failed: %v", err)
-	}
-
-	status, err := m.ConnectionsInfo()
-	if err != nil {
-		t.Fatalf("ConnectionsInfo: %v", err)
-	}
-	if len(status.Protocols) > 0 && status.Protocols[0].Port != "9443" {
-		t.Errorf("expected VLESS port 9443, got %s", status.Protocols[0].Port)
-	}
-
-	// Attempting to set VLESS and REALITY to the same TCP port should fail
-	err = m.ApplyConnections(ConnectionsUpdate{
-		Protocols: map[string]bool{
-			"vless":     true,
-			"reality":   true,
-			"hysteria2": true,
-		},
-		Fingerprints: map[string]string{"vless": "firefox", "reality": "firefox"},
-		Names:        map[string]string{},
-		VLESSPort:    8443,
-		HysteriaPort: 443,
-		HopStart:     443,
-		HopEnd:       443,
-		RealityPort:  8443,
-		RealityDest:  "max.ru",
-	})
-	if err == nil {
-		t.Fatal("expected collision error when VLESS and REALITY both use TCP 8443")
+	groups, _ := m.Groups()
+	if len(groups) != 1 || len(groups[0].Grants) != 0 {
+		t.Fatalf("grants not swept: %+v", groups)
 	}
 }

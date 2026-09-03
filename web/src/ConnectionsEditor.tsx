@@ -17,11 +17,11 @@ import {
   CenterLoader,
   cn,
   IconChevron,
-  Modal,
   Select,
   Switch,
   TagsInput,
   TextInput,
+  useConfirm,
 } from "./ui";
 
 function Field({ label, value }: { label: string; value: string }) {
@@ -115,7 +115,7 @@ export function ConnectionsEditor({
   });
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [reservedPorts, setReservedPorts] = useState<PortInfo[]>([]);
-  const [confirmReset, setConfirmReset] = useState(false);
+  const { confirm, confirmNode } = useConfirm();
 
   const applyStatus = (s: ConnectionsStatus) => {
     setStatus(s);
@@ -172,34 +172,22 @@ export function ConnectionsEditor({
   }, [serverId]);
 
   const protocolsChanged = Object.keys(enabled).some((k) => enabled[k] !== saved.enabled[k]);
-  const hyChanged =
-    hy.port !== saved.hy.port ||
-    hy.start !== saved.hy.start ||
-    hy.end !== saved.hy.end ||
-    hy.interval !== saved.hy.interval;
+  const portsChanged = hy.port !== saved.hy.port || hy.start !== saved.hy.start || hy.end !== saved.hy.end;
+  const hyChanged = portsChanged || hy.interval !== saved.hy.interval;
   const realityChanged =
     reality.port !== saved.reality.port ||
     reality.dests.join(",") !== saved.reality.dests.join(",") ||
-    reality.antiReplay !== saved.reality.antiReplay ||
-    regenReality;
+    reality.antiReplay !== saved.reality.antiReplay;
   const fpsChanged = Object.keys(fps).some((k) => fps[k] !== saved.fps[k]);
   const namesChanged = Object.keys(names).some((k) => names[k] !== saved.names[k]);
   const antiServerChanged = anti.min13 !== saved.anti.min13;
-  const antiClientChanged =
-    anti.fragment !== saved.anti.fragment || anti.blockQuic !== saved.anti.blockQuic;
-  const awgChanged =
-    awgCfg.port !== (saved.awg?.port ?? 0) ||
-    awgCfg.dns !== (saved.awg?.dns ?? "") ||
-    regenAwg;
+  const antiClientChanged = anti.fragment !== saved.anti.fragment || anti.blockQuic !== saved.anti.blockQuic;
+  const awgChanged = awgCfg.port !== (saved.awg?.port ?? 0) || awgCfg.dns !== (saved.awg?.dns ?? "") || regenAwg;
   const dirty =
-    fpsChanged ||
-    namesChanged ||
-    protocolsChanged ||
-    hyChanged ||
-    realityChanged ||
-    antiServerChanged ||
-    antiClientChanged ||
-    awgChanged;
+    fpsChanged || namesChanged || protocolsChanged || hyChanged ||
+    realityChanged || regenReality || antiServerChanged || antiClientChanged || awgChanged;
+  // Config-affecting changes restart Xray (on the master) or re-push to the node.
+  const restartsXray = protocolsChanged || portsChanged || realityChanged || regenReality || antiServerChanged;
 
   const cancel = () => {
     setEnabled(saved.enabled);
@@ -211,6 +199,25 @@ export function ConnectionsEditor({
     setAwgCfg(saved.awg);
     setRegenReality(false);
     setRegenAwg(false);
+  };
+
+  // A reset takes the same road as a save — validated, reconciled, audited — and on
+  // the master restarts Xray like any port change would.
+  const doReset = async () => {
+    if (!reset) return;
+    const ok = await confirm({
+      title: t("conn.resetTitle"),
+      body: t("conn.resetBody"),
+      confirmLabel: t("conn.resetConfirm"),
+      danger: true,
+    });
+    if (!ok) return;
+    const run1 = async () => {
+      applyStatus(await reset());
+      notifySuccess(t("conn.resetDone"));
+    };
+    if (restartsPanel) applyXray(run1);
+    else run(run1);
   };
 
   const doSave = () => {
@@ -237,20 +244,8 @@ export function ConnectionsEditor({
       applyStatus(s);
       notifySuccess(t("common.saved"));
     };
-    if (restartsPanel) applyXray(run1);
+    if (restartsPanel && restartsXray) applyXray(run1);
     else run(run1);
-  };
-
-  const doFactoryReset = () => {
-    if (!reset) return;
-    const task = async () => {
-      const s = await reset();
-      applyStatus(s);
-      setConfirmReset(false);
-      notifySuccess(t("conn.resetFactoryDone"));
-    };
-    if (restartsPanel) applyXray(task);
-    else run(task);
   };
 
   const setHyNum = (key: keyof Hy) => (v: string) =>
@@ -517,23 +512,26 @@ export function ConnectionsEditor({
         </div>
       </div>
 
-      {/* Save bar */}
+      {reset && (
+        <div className="rounded-xl border border-red-200/70 bg-red-50/40 p-4">
+          <h3 className="font-bold text-ink">{t("conn.resetTitle")}</h3>
+          <p className="mt-0.5 text-sm text-ink-muted">{t("conn.resetHint")}</p>
+          {/* Below the text, not beside it: beside, the row squeezes the button into
+              three lines as soon as the hint is longer than a sentence. */}
+          <div className="mt-3 flex justify-end">
+            <Button variant="light" color="red" className="whitespace-nowrap" onClick={doReset} disabled={busy || applying}>
+              {t("conn.reset")}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {confirmNode}
       <div className="flex flex-col gap-2 border-t border-gray-100 pt-3 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-xs text-ink-muted">
           {t("conn.saveHint")}
         </p>
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          {reset && (
-            <Button
-              size="sm"
-              variant="light"
-              color="orange"
-              onClick={() => setConfirmReset(true)}
-              disabled={busy || applying}
-            >
-              {t("conn.resetFactory")}
-            </Button>
-          )}
+        <div className="flex justify-end gap-2">
           <Button
             variant="light"
             color="gray"
@@ -547,30 +545,6 @@ export function ConnectionsEditor({
           </Button>
         </div>
       </div>
-
-      {/* Factory reset modal */}
-      <Modal
-        open={confirmReset}
-        onClose={() => setConfirmReset(false)}
-        title={t("conn.resetFactoryTitle")}
-      >
-        <div className="flex flex-col gap-3">
-          <p className="text-sm text-ink-muted">{t("conn.resetFactoryDesc")}</p>
-          <div className="flex justify-end gap-2">
-            <Button variant="light" color="gray" onClick={() => setConfirmReset(false)}>
-              {t("common.cancel")}
-            </Button>
-            <Button
-              color="red"
-              loading={busy || applying}
-              onClick={doFactoryReset}
-            >
-              {t("conn.resetFactory")}
-            </Button>
-          </div>
-        </div>
-      </Modal>
-
       <ApplyingModal open={applying} />
     </div>
   );

@@ -2,10 +2,10 @@ package sub
 
 import (
 	"fmt"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/extsub"
 	"strings"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/branding"
-	"github.com/Shu1t3/rospanel-shu1t3/internal/happ"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/link"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 )
@@ -57,6 +57,7 @@ func clashProxies(u model.User, srv Server) []clashProxy {
 			"  - {name: %q, type: vless, server: %q, port: %d, uuid: %q, network: tcp, tls: true, udp: true, servername: %q, flow: xtls-rprx-vision, client-fingerprint: %s, skip-cert-verify: %s}",
 			n, set.Host, set.VLESSPort, u.UUID, set.SNI, set.VLESSFP(), sv)})
 	}
+	// No public key, no dialable lane — see ShareLinks.
 	if set.RealityEnabled && set.RealityPublicKey != "" && srv.allowsBuiltin(model.LaneReality) {
 		n := link.Label(model.ProtoReality, set)
 		out = append(out, clashProxy{n, fmt.Sprintf(
@@ -81,12 +82,9 @@ func clashProxies(u model.User, srv Server) []clashProxy {
 			out = append(out, p)
 		}
 	}
-	for _, hn := range srv.HappNodes {
-		if !hn.Enabled || !srv.allowsHapp(hn.ID) {
-			continue
-		}
-		if name, line, ok := happ.ToClash(hn); ok {
-			out = append(out, clashProxy{name: name, line: line})
+	for _, e := range srv.externalEndpoints() {
+		if name, line, ok := extsub.ClashProxy(e); ok {
+			out = append(out, clashProxy{name, line})
 		}
 	}
 	return out
@@ -226,8 +224,7 @@ func ClashYAMLMulti(u model.User, servers []Server) string {
 	b.WriteString("proxies:\n")
 	quoted := make([]string, len(proxies))
 	for i, p := range proxies {
-		b.WriteString(p.line)
-		b.WriteByte('\n')
+		b.WriteString(p.line + "\n")
 		quoted[i] = fmt.Sprintf("%q", p.name)
 	}
 	group := clashGroupName(u, local)
