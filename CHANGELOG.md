@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.21.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.20.2...v2.21.0) (2026-09-03)
+
+
+### Features
+
+* синхронизация с апстримом AppsGanin/rospanel (v2.12.0 и v2.12.1) ([269879c](https://github.com/Shu1t3/rospanel-shu1t3/commit/269879c219ea0ff441396b1878d0e32d83436e73))
+
 ## [2.20.2](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.20.1...v2.20.2) (2026-09-02)
 
 
