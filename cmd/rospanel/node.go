@@ -206,6 +206,7 @@ func installNodeSystemd(dataDir string) {
 		"AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN\n" +
 		"NoNewPrivileges=yes\n" +
 		"ProtectSystem=strict\n" +
+		"DeviceAllow=/dev/net/tun rw\n" +
 		"ReadWritePaths=/usr/local/bin /etc/systemd/system\n" +
 		"ProtectHome=yes\n" +
 		"PrivateTmp=yes\n" +
