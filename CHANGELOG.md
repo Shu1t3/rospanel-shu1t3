@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.23.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.23.0...v2.23.1) (2026-09-04)
+
+
+### Bug Fixes
+
+* разрешить доступ к /dev/net/tun в systemd-юнитах для AWG ([927fdf8](https://github.com/Shu1t3/rospanel-shu1t3/commit/927fdf8115fb60b53523b6d680c0d5a92281fd37))
+
 ## [2.23.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.22.0...v2.23.0) (2026-09-04)
 
 
