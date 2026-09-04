@@ -270,6 +270,36 @@ export interface ConnInfo {
   fingerprint: string // uTLS fingerprint; "" for Hysteria2 (no uTLS)
 }
 
+export interface AWGParams {
+  jc: number
+  jmin: number
+  jmax: number
+  s1: number
+  s2: number
+  s3?: number
+  s4?: number
+  h1: string | number
+  h2: string | number
+  h3: string | number
+  h4: string | number
+  i1?: string
+  i2?: string
+  i3?: string
+  i4?: string
+  i5?: string
+  header_protection_key?: string
+  content_padding_addition?: string
+  random_trailers?: boolean
+  disable_cookies?: boolean
+  rekey_after_time?: string
+  rekey_timeout?: string
+  reject_after_time?: string
+  keepalive_timeout?: string
+  max_handshake_attempts?: string
+}
+
+// ConnectionsStatus is the public connection surface: where clients connect and
+// how, per protocol.
 export interface ConnectionsStatus {
   host: string
   sni: string
@@ -292,7 +322,7 @@ export interface ConnectionsStatus {
   // tunnel and mean nothing for a node.
   awg_port: number
   awg_public_key: string
-  awg_params: { jc: number; jmin: number; jmax: number; s1: number; s2: number; h1: number; h2: number; h3: number; h4: number }
+  awg_params: AWGParams
   awg_dns: string
   awg_running: boolean
   awg_error?: string
@@ -315,9 +345,10 @@ export interface ConnectionsUpdate {
   tls_fragment: boolean
   tls_min13: boolean
   block_quic: boolean
-  awg_port: number
-  awg_dns: string
-  regen_awg_keys: boolean
+  awg_port?: number
+  awg_dns?: string
+  awg_params?: AWGParams
+  regen_awg_keys?: boolean
 }
 
 export const applyConnections = (u: ConnectionsUpdate) =>

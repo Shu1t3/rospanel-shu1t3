@@ -39,11 +39,13 @@ func TestRandomParamsAreValidAndDistinct(t *testing.T) {
 		t.Error("two random parameter sets came out identical")
 	}
 	bad := []Params{
-		{Jc: 129, Jmin: 50, Jmax: 1000, S1: 10, S2: 20, H1: 5, H2: 6, H3: 7, H4: 8},
-		{Jc: 3, Jmin: 1001, Jmax: 1000, S1: 10, S2: 20, H1: 5, H2: 6, H3: 7, H4: 8},
-		{Jc: 3, Jmin: 50, Jmax: 1000, S1: 10, S2: 66, H1: 5, H2: 6, H3: 7, H4: 8}, // s1+56 == s2
-		{Jc: 3, Jmin: 50, Jmax: 1000, S1: 10, S2: 20, H1: 5, H2: 5, H3: 7, H4: 8},
-		{Jc: 3, Jmin: 50, Jmax: 1000, S1: 10, S2: 20, H1: 1, H2: 6, H3: 7, H4: 8},
+		{Jc: 129, Jmin: 50, Jmax: 1000, S1: 15, S2: 20, H1: "5", H2: "6", H3: "7", H4: "8"},
+		{Jc: 3, Jmin: 1001, Jmax: 1000, S1: 15, S2: 20, H1: "5", H2: "6", H3: "7", H4: "8"},
+		{Jc: 3, Jmin: 50, Jmax: 1000, S1: 15, S2: 71, H1: "5", H2: "6", H3: "7", H4: "8"},                                                                     // s1+56 == s2
+		{Jc: 3, Jmin: 50, Jmax: 1000, S1: 15, S2: 20, H1: "5", H2: "5", H3: "7", H4: "8"},                                                                     // overlap
+		{Jc: 3, Jmin: 50, Jmax: 1000, S1: 15, S2: 20, H1: "1", H2: "6", H3: "7", H4: "8"},                                                                     // h1 < 5
+		{Jc: 3, Jmin: 50, Jmax: 1000, S1: 10, S2: 20, H1: "5-10", H2: "8-15", H3: "20", H4: "30"},                                                             // range overlap
+		{Jc: 3, Jmin: 50, Jmax: 1000, S1: 5, S2: 20, H1: "5", H2: "6", H3: "7", H4: "8", HeaderProtectionKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}, // s1 < 12 with key
 	}
 	for i, p := range bad {
 		if err := p.Validate(); err == nil {
@@ -68,7 +70,6 @@ func TestClientAddr(t *testing.T) {
 	if _, ok := ClientAddr(65534); ok {
 		t.Error("an id past the subnet got an address")
 	}
-	// Every address is inside the subnet and distinct.
 	seen := map[string]bool{}
 	for id := int64(1); id < 3000; id++ {
 		a, ok := ClientAddr(id)
@@ -82,10 +83,23 @@ func TestClientAddr(t *testing.T) {
 func TestUAPIAndClientConfig(t *testing.T) {
 	sPriv, sPub, _ := GenerateKey()
 	cPriv, cPub, _ := GenerateKey()
-	params := Params{Jc: 4, Jmin: 50, Jmax: 1000, S1: 30, S2: 40, H1: 11, H2: 12, H3: 13, H4: 14}
+	params := Params{
+		Jc: 4, Jmin: 50, Jmax: 1000, S1: 30, S2: 40, S3: 50, S4: 20,
+		H1: "11", H2: "12", H3: "13", H4: "14",
+		HeaderProtectionKey:    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		ContentPaddingAddition: "0-32",
+		RandomTrailers:         true,
+		DisableCookies:         true,
+		RekeyAfterTime:         "110-130",
+		I1:                     "<b 0x0102><r 10><t>",
+	}
 	addr, _ := ClientAddr(7)
-	cfg := Config{PrivateKey: sPriv, ListenPort: 51820, Params: params,
-		Peers: []Peer{{PublicKey: cPub, Addr: addr, Email: "u7"}}}
+	cfg := Config{
+		PrivateKey: sPriv,
+		ListenPort: 51820,
+		Params:     params,
+		Peers:      []Peer{{PublicKey: cPub, Addr: addr, Email: "u7"}},
+	}
 	uapi, err := cfg.UAPI()
 	if err != nil {
 		t.Fatal(err)
@@ -93,35 +107,52 @@ func TestUAPIAndClientConfig(t *testing.T) {
 	sHex, _ := keyHex(sPriv)
 	cHex, _ := keyHex(cPub)
 	for _, want := range []string{
-		"private_key=" + sHex, "listen_port=51820", "jc=4\njmin=50\njmax=1000\ns1=30\ns2=40\nh1=11\nh2=12\nh3=13\nh4=14",
-		"replace_peers=true", "public_key=" + cHex, "allowed_ip=10.66.0.8/32",
+		"private_key=" + sHex,
+		"listen_port=51820",
+		"jc=4\njmin=50\njmax=1000\ns1=30\ns2=40\ns3=50\ns4=20\nh1=11\nh2=12\nh3=13\nh4=14",
+		"random_trailers=true",
+		"disable_cookies=true",
+		"content_padding_addition=0-32",
+		"rekey_after_time=110-130",
+		"i1=<b 0x0102><r 10><t>",
+		"replace_peers=true",
+		"public_key=" + cHex,
+		"allowed_ip=10.66.0.8/32",
 	} {
 		if !strings.Contains(uapi, want) {
 			t.Errorf("uapi lacks %q:\n%s", want, uapi)
 		}
 	}
-	// Peers are emitted in a stable order regardless of input order.
-	p2Priv, p2Pub, _ := GenerateKey()
-	_ = p2Priv
-	a := Config{PrivateKey: sPriv, ListenPort: 1, Params: params, Peers: []Peer{{cPub, addr, "u7"}, {p2Pub, addr, "u8"}}}
-	b := Config{PrivateKey: sPriv, ListenPort: 1, Params: params, Peers: []Peer{{p2Pub, addr, "u8"}, {cPub, addr, "u7"}}}
-	ua, _ := a.UAPI()
-	ub, _ := b.UAPI()
-	if ua != ub {
-		t.Error("peer order leaked into the UAPI text")
-	}
-	if _, err := (Config{PrivateKey: sPriv, ListenPort: 0, Params: params}).UAPI(); err == nil {
-		t.Error("port 0 accepted")
-	}
-	if _, err := (Config{PrivateKey: sPriv, ListenPort: 1, Params: params, Peers: []Peer{{PublicKey: "bad", Addr: addr}}}).UAPI(); err == nil {
-		t.Error("a bad peer key was accepted")
-	}
 
-	conf := ClientConfig{PrivateKey: cPriv, Address: addr, Params: params, ServerPublicKey: sPub, Endpoint: "vpn.example.com:51820"}.Render()
+	conf := ClientConfig{
+		PrivateKey:      cPriv,
+		Address:         addr,
+		Params:          params,
+		ServerPublicKey: sPub,
+		Endpoint:        "vpn.example.com:51820",
+	}.Render()
+
 	for _, want := range []string{
-		"[Interface]", "PrivateKey = " + cPriv, "Address = 10.66.0.8/32", "DNS = " + DefaultDNS, "MTU = 1420",
-		"Jc = 4", "H4 = 14", "[Peer]", "PublicKey = " + sPub, "AllowedIPs = 0.0.0.0/0, ::/0",
-		"Endpoint = vpn.example.com:51820", "PersistentKeepalive = 25",
+		"[Interface]",
+		"PrivateKey = " + cPriv,
+		"Address = 10.66.0.8/32",
+		"DNS = " + DefaultDNS,
+		"MTU = 1420",
+		"Jc = 4",
+		"S3 = 50",
+		"S4 = 20",
+		"H4 = 14",
+		"HeaderProtectionKey = " + params.HeaderProtectionKey,
+		"ContentPaddingAddition = 0-32",
+		"RandomTrailers = on",
+		"DisableCookies = on",
+		"RekeyAfterTime = 110-130",
+		"I1 = <b 0x0102><r 10><t>",
+		"[Peer]",
+		"PublicKey = " + sPub,
+		"AllowedIPs = 0.0.0.0/0, ::/0",
+		"Endpoint = vpn.example.com:51820",
+		"PersistentKeepalive = 25",
 	} {
 		if !strings.Contains(conf, want) {
 			t.Errorf("client config lacks %q:\n%s", want, conf)

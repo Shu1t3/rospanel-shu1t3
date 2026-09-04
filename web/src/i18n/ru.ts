@@ -2106,6 +2106,32 @@ const ru = {
     retryFailed: "Повторить неудачные ({{count}})",
   },
 
+  awg: {
+    running: "работает",
+    stopped: "остановлен",
+    error: "ошибка",
+    serverPublicKey: "Публичный ключ сервера",
+    activeParams: "Активные параметры AWG 3.1",
+    showAdvanced: "Показать расширенные параметры (AWG 3.1)",
+    hideAdvanced: "Скрыть расширенные параметры",
+    randomTrailers: "Случайные трейлеры (Random Trailers)",
+    randomTrailersHint: "Добавляет случайные трейлеры к пакетам для затруднения эвристического DPI анализа",
+    disableCookies: "Отключить Cookies (Disable Cookies)",
+    disableCookiesHint: "Отключает использование WireGuard/AWG cookie в механизме рукопожатия",
+    cpsTitle: "Пользовательские сигнатуры пакетов (I1–I5)",
+    cpsHint: "Кастомная структура пакетов рукопожатия и данных. По умолчанию пустые (стандартный протокол AWG 3.1). Выберите готовый пресет маскировки или введите теги вручную.",
+    presetLabel: "Пресет маскировки пакетов",
+    presets: {
+      custom: "Пользовательский / Пусто",
+      quic: "QUIC Initial (маскировка под HTTP/3 / QUIC)",
+      tls: "TLS ClientHello (маскировка под HTTPS / TLS)",
+      dns: "DNS Query (маскировка под DNS UDP)",
+      h3: "HTTP/3 Datagram (маскировка под медиа-трафик HTTP/3)",
+      dtls: "DTLS Handshake (маскировка под WebRTC / DTLS)",
+      wgNoise: "WireGuard Noise (кастомный шум для рукопожатий)",
+    },
+  },
+
   conn: {
     reset: "Сбросить к заводским",
     resetTitle: "Заводские настройки подключений",

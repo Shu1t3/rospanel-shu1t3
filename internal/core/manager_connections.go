@@ -282,11 +282,12 @@ type ConnectionsUpdate struct {
 	TLSMin13    bool `json:"tls_min13"`
 	BlockQUIC   bool `json:"block_quic"`
 
-	// AmneziaWG: port (0 = keep / pick one), in-tunnel DNS, and a request for a
-	// fresh keypair + parameters (every client config handed out so far dies).
-	AWGPort      int    `json:"awg_port"`
-	AWGDNS       string `json:"awg_dns"`
-	RegenAWGKeys bool   `json:"regen_awg_keys"`
+	// AmneziaWG: port (0 = keep / pick one), in-tunnel DNS, custom obfuscation
+	// parameters (AWG 3.1), and a request for fresh keys + parameters.
+	AWGPort      int              `json:"awg_port"`
+	AWGDNS       string           `json:"awg_dns"`
+	AWGParams    *model.AWGParams `json:"awg_params,omitempty"`
+	RegenAWGKeys bool             `json:"regen_awg_keys"`
 }
 
 // realityHostRe validates a REALITY destination: a real domain (≥1 dot) with an
@@ -494,6 +495,16 @@ func (m *Manager) ApplyConnections(u ConnectionsUpdate) error {
 		if err := m.ensureMasterAWGIdentity(set, u.RegenAWGKeys); err != nil {
 			return err
 		}
+	}
+	if u.AWGParams != nil && !u.RegenAWGKeys && !u.AWGParams.IsZero() {
+		engineParams := awgParams(*u.AWGParams)
+		if err := engineParams.Validate(); err != nil {
+			return fmt.Errorf("awg: invalid parameters: %w", err)
+		}
+		if err := m.store.SaveAWGKeys(set.AWGPrivateKey, set.AWGPublicKey, *u.AWGParams); err != nil {
+			return err
+		}
+		set.AWGParams = *u.AWGParams
 	}
 	if err := m.store.SetFingerprints(vlessFp, realityFp); err != nil {
 		return err

@@ -2100,6 +2100,32 @@ const en: Dict = {
     retryFailed: "Retry the failures ({{count}})",
   },
 
+  awg: {
+    running: "running",
+    stopped: "stopped",
+    error: "error",
+    serverPublicKey: "Server public key",
+    activeParams: "Active AWG 3.1 Parameters",
+    showAdvanced: "Show advanced parameters (AWG 3.1)",
+    hideAdvanced: "Hide advanced parameters",
+    randomTrailers: "Random Trailers",
+    randomTrailersHint: "Appends random trailers to packets to evade heuristic DPI analysis",
+    disableCookies: "Disable Cookies",
+    disableCookiesHint: "Disables WireGuard/AWG cookie mechanism during handshake",
+    cpsTitle: "Custom Packet Signatures (I1–I5)",
+    cpsHint: "Custom structure for handshake and data packets. Empty by default (standard AWG 3.1). Choose an obfuscation preset or enter tags manually.",
+    presetLabel: "Obfuscation Preset",
+    presets: {
+      custom: "Custom / Empty",
+      quic: "QUIC Initial (masquerade as HTTP/3 / QUIC)",
+      tls: "TLS ClientHello (masquerade as HTTPS / TLS)",
+      dns: "DNS Query (masquerade as DNS UDP)",
+      h3: "HTTP/3 Datagram (masquerade as HTTP/3 media)",
+      dtls: "DTLS Handshake (masquerade as WebRTC / DTLS)",
+      wgNoise: "WireGuard Noise (custom noise for handshake)",
+    },
+  },
+
   conn: {
     reset: "Reset to factory defaults",
     resetTitle: "Factory connection settings",

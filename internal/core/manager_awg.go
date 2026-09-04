@@ -20,11 +20,63 @@ import (
 
 // awgParams converts the stored parameter block to the engine's.
 func awgParams(p model.AWGParams) awg.Params {
-	return awg.Params{Jc: p.Jc, Jmin: p.Jmin, Jmax: p.Jmax, S1: p.S1, S2: p.S2, H1: p.H1, H2: p.H2, H3: p.H3, H4: p.H4}
+	return awg.Params{
+		Jc:                     p.Jc,
+		Jmin:                   p.Jmin,
+		Jmax:                   p.Jmax,
+		S1:                     p.S1,
+		S2:                     p.S2,
+		S3:                     p.S3,
+		S4:                     p.S4,
+		H1:                     p.H1,
+		H2:                     p.H2,
+		H3:                     p.H3,
+		H4:                     p.H4,
+		I1:                     p.I1,
+		I2:                     p.I2,
+		I3:                     p.I3,
+		I4:                     p.I4,
+		I5:                     p.I5,
+		HeaderProtectionKey:    p.HeaderProtectionKey,
+		ContentPaddingAddition: p.ContentPaddingAddition,
+		RandomTrailers:         p.RandomTrailers,
+		DisableCookies:         p.DisableCookies,
+		RekeyAfterTime:         p.RekeyAfterTime,
+		RekeyTimeout:           p.RekeyTimeout,
+		RejectAfterTime:        p.RejectAfterTime,
+		KeepaliveTimeout:       p.KeepaliveTimeout,
+		MaxHandshakeAttempts:   p.MaxHandshakeAttempts,
+	}
 }
 
 func modelAWGParams(p awg.Params) model.AWGParams {
-	return model.AWGParams{Jc: p.Jc, Jmin: p.Jmin, Jmax: p.Jmax, S1: p.S1, S2: p.S2, H1: p.H1, H2: p.H2, H3: p.H3, H4: p.H4}
+	return model.AWGParams{
+		Jc:                     p.Jc,
+		Jmin:                   p.Jmin,
+		Jmax:                   p.Jmax,
+		S1:                     p.S1,
+		S2:                     p.S2,
+		S3:                     p.S3,
+		S4:                     p.S4,
+		H1:                     p.H1,
+		H2:                     p.H2,
+		H3:                     p.H3,
+		H4:                     p.H4,
+		I1:                     p.I1,
+		I2:                     p.I2,
+		I3:                     p.I3,
+		I4:                     p.I4,
+		I5:                     p.I5,
+		HeaderProtectionKey:    p.HeaderProtectionKey,
+		ContentPaddingAddition: p.ContentPaddingAddition,
+		RandomTrailers:         p.RandomTrailers,
+		DisableCookies:         p.DisableCookies,
+		RekeyAfterTime:         p.RekeyAfterTime,
+		RekeyTimeout:           p.RekeyTimeout,
+		RejectAfterTime:        p.RejectAfterTime,
+		KeepaliveTimeout:       p.KeepaliveTimeout,
+		MaxHandshakeAttempts:   p.MaxHandshakeAttempts,
+	}
 }
 
 // awgOnlineWindow is how recent a peer's last handshake must be to count as a

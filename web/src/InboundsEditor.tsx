@@ -32,6 +32,7 @@ import {
   Textarea,
   TextInput,
 } from "./ui";
+import { AwgEditor } from "./AwgEditor";
 
 // Labels for the wire values, so the UI never shows a bare protocol slug.
 const PROTOCOL_LABELS: Record<string, string> = {
@@ -226,6 +227,12 @@ export function InboundsEditor({
 
   return (
     <div className="flex flex-col gap-3">
+      <AwgEditor
+        serverId={serverId}
+        restartsPanel={restartsPanel}
+        readOnly={readOnly}
+      />
+
       <div className="rounded-xl border border-gray-200/80 bg-gray-50/60 p-4">
         <h3 className="mb-1 font-bold text-ink">{t("inb.title")}</h3>
         <p className="text-sm text-ink-muted">

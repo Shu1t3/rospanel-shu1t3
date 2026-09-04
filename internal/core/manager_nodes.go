@@ -1007,6 +1007,16 @@ func (m *Manager) ApplyNodeConnections(id int64, u ConnectionsUpdate) error {
 			return err
 		}
 	}
+	if u.AWGParams != nil && !u.RegenAWGKeys && !u.AWGParams.IsZero() {
+		engineParams := awgParams(*u.AWGParams)
+		if err := engineParams.Validate(); err != nil {
+			return fmt.Errorf("awg: invalid parameters: %w", err)
+		}
+		if err := m.store.SaveNodeAWGKeys(id, n.AWGPrivateKey, n.AWGPublicKey, *u.AWGParams); err != nil {
+			return err
+		}
+		n.AWGParams = *u.AWGParams
+	}
 	// REALITY donor + optional key regeneration.
 	if n.IsRented && realityDest == "" && n.RealityDest != "" {
 		realityDest = n.RealityDest
