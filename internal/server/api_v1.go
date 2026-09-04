@@ -685,7 +685,7 @@ func (rt *Router) apiUserConnections(w http.ResponseWriter, r *http.Request, id 
 		writeAPIManagerErr(w, err)
 		return
 	}
-	writeAPIPage(w, r, conns)
+	writeAPIPage(w, r, toConnectionDTOs(conns))
 }
 
 func (rt *Router) apiCreateUser(w http.ResponseWriter, r *http.Request) {
@@ -957,10 +957,7 @@ func (rt *Router) apiListPlans(w http.ResponseWriter, r *http.Request) {
 		writeAPIManagerErr(w, err)
 		return
 	}
-	if plans == nil {
-		plans = []model.TariffPlan{}
-	}
-	writeAPIData(w, http.StatusOK, plans)
+	writeAPIData(w, http.StatusOK, toTariffPlanDTOs(plans))
 }
 
 func (rt *Router) apiListOrders(w http.ResponseWriter, r *http.Request) {
@@ -970,21 +967,22 @@ func (rt *Router) apiListOrders(w http.ResponseWriter, r *http.Request) {
 		writeAPIManagerErr(w, err)
 		return
 	}
-	writeAPIPage(w, r, orders)
+	writeAPIPage(w, r, toPaymentOrderDTOs(orders))
 }
 
 // apiSavePlan creates a plan (no id) or updates an existing one (id set). The
 // body is a full TariffPlan object.
 func (rt *Router) apiSavePlan(w http.ResponseWriter, r *http.Request) {
-	var p model.TariffPlan
-	if !apiDecode(w, r, &p) {
+	var req tariffPlanDTO
+	if !apiDecode(w, r, &req) {
 		return
 	}
+	p := fromTariffPlanDTO(req)
 	if err := rt.mgr.SaveTariffPlan(&p); err != nil {
 		writeAPIManagerErr(w, err)
 		return
 	}
-	writeAPIData(w, http.StatusOK, p)
+	writeAPIData(w, http.StatusOK, toTariffPlanDTO(&p))
 }
 
 func (rt *Router) apiDeletePlan(w http.ResponseWriter, _ *http.Request, id int64) {
@@ -1009,7 +1007,7 @@ func (rt *Router) apiCreateOrder(w http.ResponseWriter, r *http.Request) {
 			writeAPIManagerErr(w, err)
 			return
 		}
-		writeAPIData(w, http.StatusCreated, map[string]any{"order": order, "message": msg})
+		writeAPIData(w, http.StatusCreated, map[string]any{"order": toPaymentOrderDTO(order), "message": msg})
 		return
 	}
 	order, err := rt.mgr.StartPlanPayment(r.Context(), i18n.EN, req.UserID, req.PlanID, req.Provider)
@@ -1017,7 +1015,7 @@ func (rt *Router) apiCreateOrder(w http.ResponseWriter, r *http.Request) {
 		writeAPIManagerErr(w, err)
 		return
 	}
-	writeAPIData(w, http.StatusCreated, map[string]any{"order": order, "pay_url": order.PayURL})
+	writeAPIData(w, http.StatusCreated, map[string]any{"order": toPaymentOrderDTO(order), "pay_url": order.PayURL})
 }
 
 // apiListProviders lists the enabled automatic payment methods (empty ⇒ only
@@ -1067,10 +1065,7 @@ func (rt *Router) apiStatsSeries(w http.ResponseWriter, r *http.Request) {
 		writeAPIManagerErr(w, err)
 		return
 	}
-	if series == nil {
-		series = []model.DailyPoint{}
-	}
-	writeAPIData(w, http.StatusOK, series)
+	writeAPIData(w, http.StatusOK, toDailyPointDTOs(series))
 }
 
 // apiStatsNodes is the /v1 twin of the panel's per-server split: which server
@@ -1146,7 +1141,7 @@ func (rt *Router) apiStatsUsers(w http.ResponseWriter, r *http.Request) {
 		writeAPIManagerErr(w, err)
 		return
 	}
-	writeAPIPage(w, r, totals)
+	writeAPIPage(w, r, toUserTotalDTOs(totals))
 }
 
 func (rt *Router) apiSummary(w http.ResponseWriter, _ *http.Request) {

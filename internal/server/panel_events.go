@@ -18,21 +18,18 @@ import (
 // eventsResponse is the paged envelope both endpoints return. Events is never null
 // (the UI iterates it directly); next_before is 0 when the last page was reached.
 type eventsResponse struct {
-	Events     []model.UserEvent `json:"events"`
-	NextBefore int64             `json:"next_before"`
+	Events     []userEventDTO `json:"events"`
+	NextBefore int64          `json:"next_before"`
 }
 
 // makeEventsResponse builds the envelope, reporting a cursor only when the page came
 // back full — a short page means there is nothing older to fetch.
 func makeEventsResponse(events []model.UserEvent, limit int) eventsResponse {
-	if events == nil {
-		events = []model.UserEvent{}
-	}
 	var next int64
 	if len(events) == limit && limit > 0 {
 		next = events[len(events)-1].ID
 	}
-	return eventsResponse{Events: events, NextBefore: next}
+	return eventsResponse{Events: toUserEventDTOs(events), NextBefore: next}
 }
 
 // eventPageArgs reads the shared ?limit / ?before paging params. The limit is

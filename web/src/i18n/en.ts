@@ -1591,6 +1591,13 @@ const en: Dict = {
       "Open the node's logs — most likely a config error or not enough resources.",
     nodeXrayStale: "running · version {{version}}, the panel expects {{want}}",
     nodeXrayOK: "running · version {{version}}",
+    awg: "AmneziaWG tunnel",
+    awgDown: "the service is not running on the node",
+    awgHint: "Check the node's server and AmneziaWG logs.",
+    awgOK: "running",
+    componentOK: "running",
+    componentDown: "service is not running",
+    componentDownHint: "Check the service status and logs on the node.",
     nodeUpdateHint: "Update the node: Manage → Update.",
     nodeConfigBuildFailed:
       "the panel cannot build a config for this node: {{err}}",

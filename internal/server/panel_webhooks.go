@@ -31,15 +31,12 @@ func (rt *Router) listWebhooks(w http.ResponseWriter, _ *http.Request) {
 		writeManagerErr(w, err)
 		return
 	}
-	if hooks == nil {
-		hooks = []model.Webhook{}
-	}
 	catalog := make([]map[string]string, 0, len(model.WebhookEventCatalog))
 	for _, e := range model.WebhookEventCatalog {
 		catalog = append(catalog, map[string]string{"key": e})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"webhooks": hooks,
+		"webhooks": toWebhookDTOs(hooks),
 		"events":   catalog,
 	})
 }
@@ -61,7 +58,7 @@ func (rt *Router) createWebhook(w http.ResponseWriter, r *http.Request) {
 		writeManagerErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, h)
+	writeJSON(w, http.StatusCreated, toWebhookDTO(h))
 }
 
 func (rt *Router) updateWebhook(w http.ResponseWriter, r *http.Request, id int64) {

@@ -18,8 +18,8 @@ import (
 // user journal.
 
 type adminAuditResponse struct {
-	Events     []model.AdminAudit `json:"events"`
-	NextBefore int64              `json:"next_before"`
+	Events     []adminAuditDTO `json:"events"`
+	NextBefore int64           `json:"next_before"`
 }
 
 // csvSafe neutralizes spreadsheet formula injection: a cell beginning with =, +, -, @,
@@ -77,7 +77,7 @@ func (rt *Router) adminAudit(w http.ResponseWriter, r *http.Request) {
 	limit, before := eventPageArgs(r)
 	f, ok := adminAuditFilterFromQuery(r, limit, before)
 	if !ok {
-		writeJSON(w, http.StatusOK, adminAuditResponse{Events: []model.AdminAudit{}})
+		writeJSON(w, http.StatusOK, adminAuditResponse{Events: []adminAuditDTO{}})
 		return
 	}
 
@@ -86,16 +86,13 @@ func (rt *Router) adminAudit(w http.ResponseWriter, r *http.Request) {
 		writeManagerErr(w, err)
 		return
 	}
-	if events == nil {
-		events = []model.AdminAudit{}
-	}
 	// A cursor only when the page came back full — a short page means there is
 	// nothing older to fetch.
 	var next int64
 	if len(events) == limit && limit > 0 {
 		next = events[len(events)-1].ID
 	}
-	writeJSON(w, http.StatusOK, adminAuditResponse{Events: events, NextBefore: next})
+	writeJSON(w, http.StatusOK, adminAuditResponse{Events: toAdminAuditDTOs(events), NextBefore: next})
 }
 
 // exportAdminAudit streams the filtered trail as CSV (newest first). It honours the
@@ -141,6 +138,6 @@ func (rt *Router) adminAuditCatalog(w http.ResponseWriter, _ *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"categories": cats,
-		"actions":    model.AdminAuditCatalog,
+		"actions":    toAdminAuditEntryDTOs(model.AdminAuditCatalog),
 	})
 }

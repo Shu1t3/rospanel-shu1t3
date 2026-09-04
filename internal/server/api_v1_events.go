@@ -21,13 +21,13 @@ type (
 	// apiEventsResp is the paged user-event envelope. Events is never null; NextBefore
 	// is 0 once the last page was reached.
 	apiEventsResp struct {
-		Events     []model.UserEvent `json:"events"`
-		NextBefore int64             `json:"next_before"`
+		Events     []userEventDTO `json:"events"`
+		NextBefore int64          `json:"next_before"`
 	}
 	// apiAdminAuditResp is the same envelope for the admin trail.
 	apiAdminAuditResp struct {
-		Events     []model.AdminAudit `json:"events"`
-		NextBefore int64              `json:"next_before"`
+		Events     []adminAuditDTO `json:"events"`
+		NextBefore int64           `json:"next_before"`
 	}
 )
 
@@ -106,21 +106,18 @@ func (rt *Router) apiAdminAudit(w http.ResponseWriter, r *http.Request) {
 		writeAPIManagerErr(w, err)
 		return
 	}
-	if events == nil {
-		events = []model.AdminAudit{}
-	}
 	var next int64
 	if len(events) == limit && limit > 0 {
 		next = events[len(events)-1].ID
 	}
-	writeAPIData(w, http.StatusOK, apiAdminAuditResp{Events: events, NextBefore: next})
+	writeAPIData(w, http.StatusOK, apiAdminAuditResp{Events: toAdminAuditDTOs(events), NextBefore: next})
 }
 
 // apiAuditCatalogResp is the admin-audit vocabulary: the category keys a `category`
 // filter accepts, and every action with the category it belongs to.
 type apiAuditCatalogResp struct {
-	Categories []string                `json:"categories"`
-	Actions    []model.AdminAuditEntry `json:"actions"`
+	Categories []string             `json:"categories"`
+	Actions    []adminAuditEntryDTO `json:"actions"`
 }
 
 // apiAdminAuditCatalog publishes that vocabulary, which is what makes the category
@@ -128,6 +125,6 @@ type apiAuditCatalogResp struct {
 func (rt *Router) apiAdminAuditCatalog(w http.ResponseWriter, _ *http.Request) {
 	writeAPIData(w, http.StatusOK, apiAuditCatalogResp{
 		Categories: model.AdminAuditCategories,
-		Actions:    model.AdminAuditCatalog,
+		Actions:    toAdminAuditEntryDTOs(model.AdminAuditCatalog),
 	})
 }

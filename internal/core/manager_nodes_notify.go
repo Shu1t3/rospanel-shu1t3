@@ -56,6 +56,11 @@ type nodeAlertState struct {
 	xrayDownAt     time.Time
 	lastXrayNotify time.Time
 
+	awgUp         bool
+	awgAlerted    bool
+	awgDownAt     time.Time
+	lastAWGNotify time.Time
+
 	// certErr is the last TLS error this node reported (empty ⇒ its cert is fine),
 	// recorded on sync and acted on by the sweep.
 	certErr       string
@@ -175,7 +180,9 @@ func (m *Manager) nodeAlertsFor(n *model.Node, now time.Time, diskUsed, diskTota
 	lang := m.botLang()
 
 	if !st.known {
+		awgRunning, _ := m.NodeAWGStatus(n.ID)
 		st.known, st.online, st.xrayUp = true, online, n.XrayRunning
+		st.awgUp = awgRunning
 		st.certSHA, st.certSelf = n.CertSHA256, n.CertSelfSigned
 		return nil // baseline: report changes from here on, never the starting state
 	}
@@ -235,6 +242,31 @@ func (m *Manager) nodeAlertsFor(n *model.Node, now time.Time, diskUsed, diskTota
 		out = append(out, nodeAlertMsg{model.AdminEventXrayDown, msg})
 	}
 	st.xrayUp = n.XrayRunning
+
+	if n.AWGEnabled != nil && *n.AWGEnabled {
+		awgRunning, awgErr := m.NodeAWGStatus(n.ID)
+		awgUp := awgRunning && awgErr == ""
+		switch {
+		case st.awgUp && !awgUp:
+			if now.Sub(st.lastAWGNotify) >= nodeXrayNotifyThrottle {
+				st.lastAWGNotify, st.awgAlerted, st.awgDownAt = now, true, now
+				errDetail := awgErr
+				if errDetail == "" {
+					errDetail = "stopped"
+				}
+				out = append(out, nodeAlertMsg{model.AdminEventXrayDown, fmt.Sprintf(
+					"AmneziaWG offline: %s (%s)", nodeLabel(n), errDetail)})
+			}
+		case !st.awgUp && awgUp && st.awgAlerted:
+			st.awgAlerted = false
+			msg := fmt.Sprintf("AmneziaWG online: %s", nodeLabel(n))
+			if down := now.Sub(st.awgDownAt); down > time.Second {
+				msg += "\n" + i18n.T(lang, "notify.downtime", fmtDowntime(down, lang))
+			}
+			out = append(out, nodeAlertMsg{model.AdminEventXrayDown, msg})
+		}
+		st.awgUp = awgUp
+	}
 
 	// A changed fingerprint on a CA-signed cert is a renewal that landed. Self-signed
 	// is the agent's fallback while ACME is unavailable, not an event: it changes on

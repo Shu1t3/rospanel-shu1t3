@@ -10,11 +10,11 @@ import (
 )
 
 type nodeRentalResp struct {
-	Settings              model.NodeRentalSettings `json:"settings"`
-	Tenants               []model.NodeTenant       `json:"tenants"`
-	AllocatedSpeedLimit   int                      `json:"allocated_speed_limit"`
-	AllocatedQuotaPercent int                      `json:"allocated_quota_percent"`
-	ShareLink             string                   `json:"share_link,omitempty"`
+	Settings              nodeRentalSettingsDTO `json:"settings"`
+	Tenants               []nodeTenantDTO       `json:"tenants"`
+	AllocatedSpeedLimit   int                   `json:"allocated_speed_limit"`
+	AllocatedQuotaPercent int                   `json:"allocated_quota_percent"`
+	ShareLink             string                `json:"share_link,omitempty"`
 }
 
 type importRentedReq struct {
@@ -41,8 +41,8 @@ func (rt *Router) nodeRentalSettings(w http.ResponseWriter, _ *http.Request, id 
 	}
 
 	writeJSON(w, http.StatusOK, nodeRentalResp{
-		Settings:              *settings,
-		Tenants:               tenants,
+		Settings:              toNodeRentalSettingsDTO(settings),
+		Tenants:               toNodeTenantDTOs(tenants),
 		AllocatedSpeedLimit:   speed,
 		AllocatedQuotaPercent: quota,
 		ShareLink:             shareLink,
@@ -50,16 +50,16 @@ func (rt *Router) nodeRentalSettings(w http.ResponseWriter, _ *http.Request, id 
 }
 
 func (rt *Router) saveNodeRentalSettings(w http.ResponseWriter, r *http.Request, id int64) {
-	var req model.NodeRentalSettings
+	var req nodeRentalSettingsDTO
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	updated, err := rt.mgr.UpdateNodeRentalSettings(id, req)
+	updated, err := rt.mgr.UpdateNodeRentalSettings(id, fromNodeRentalSettingsDTO(req))
 	if err != nil {
 		writeManagerErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, updated)
+	writeJSON(w, http.StatusOK, toNodeRentalSettingsDTO(updated))
 }
 
 func (rt *Router) getNodeShareLink(w http.ResponseWriter, _ *http.Request, id int64) {
@@ -95,10 +95,7 @@ func (rt *Router) nodeReservedPorts(w http.ResponseWriter, _ *http.Request, id i
 		writeManagerErr(w, err)
 		return
 	}
-	if ports == nil {
-		ports = []model.PortInfo{}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ports": ports})
+	writeJSON(w, http.StatusOK, map[string]any{"ports": toPortInfoDTOs(ports)})
 }
 
 func (rt *Router) deleteNodeTenant(w http.ResponseWriter, r *http.Request, id int64) {

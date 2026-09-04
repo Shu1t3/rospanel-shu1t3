@@ -10,7 +10,6 @@ import (
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/backup"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/core"
-	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/version"
 )
@@ -68,9 +67,9 @@ type oaHealthResp struct {
 // oaOrderResp / oaAffectedResp document the two non-model JSON responses so the
 // spec types them precisely (they mirror the maps the handlers write).
 type oaOrderResp struct {
-	Order   *model.PaymentOrder `json:"order"`
-	PayURL  string              `json:"pay_url,omitempty"` // hosted provider URL (when a provider is set)
-	Message string              `json:"message,omitempty"` // manual-payment instructions (no provider)
+	Order   *paymentOrderDTO `json:"order"`
+	PayURL  string           `json:"pay_url,omitempty"` // hosted provider URL (when a provider is set)
+	Message string           `json:"message,omitempty"` // manual-payment instructions (no provider)
 }
 
 // oaProviderResp is one enabled payment method returned by GET /v1/billing/providers.
@@ -130,7 +129,7 @@ func apiSpecRoutes() []oaRoute {
 			summary: "Cancel a paid subscription (drops to the free plan, or ends access)",
 			resp:    t(userView{})},
 		{method: "GET", path: "/v1/users/{id}/connections", tag: "Users", summary: "List the user's source IPs",
-			query: pageParams(), resp: t(model.Connection{}), list: true, meta: true},
+			query: pageParams(), resp: t(connectionDTO{}), list: true, meta: true},
 		{method: "GET", path: "/v1/users/{id}/devices", tag: "Users",
 			summary: "List the installs bound to the user by HWID, with the cap they count against",
 			query:   pageParams(), resp: t(apiDeviceList{}), meta: true},
@@ -151,10 +150,10 @@ func apiSpecRoutes() []oaRoute {
 			resp: t(oaProviderResp{}), list: true},
 		{method: "GET", path: "/v1/billing/plans", tag: "Billing", summary: "List tariff plans",
 			query: []oaParam{{name: "include_disabled", typ: "boolean", desc: "include disabled plans"}},
-			resp:  t(model.TariffPlan{}), list: true},
+			resp:  t(tariffPlanDTO{}), list: true},
 		{method: "POST", path: "/v1/billing/plans", tag: "Billing", summary: "Create or update a plan",
 			// id is what picks between the two: omit it to create, pass it to update.
-			req: t(model.TariffPlan{}), reqRequired: []string{"name"}, resp: t(model.TariffPlan{})},
+			req: t(tariffPlanDTO{}), reqRequired: []string{"name"}, resp: t(tariffPlanDTO{})},
 		{method: "DELETE", path: "/v1/billing/plans/{id}", tag: "Billing", summary: "Delete a plan"},
 		{method: "POST", path: "/v1/billing/plans/{id}/migrate", tag: "Billing",
 			summary:     "Move every user on this plan to another one",
@@ -163,12 +162,12 @@ func apiSpecRoutes() []oaRoute {
 		{method: "GET", path: "/v1/billing/orders", tag: "Billing", summary: "List payment orders",
 			query: append([]oaParam{{name: "status", typ: "string", desc: "pending | paid | cancelled"}},
 				pageParams()...),
-			resp: t(model.PaymentOrder{}), list: true, meta: true},
+			resp: t(paymentOrderDTO{}), list: true, meta: true},
 		{method: "POST", path: "/v1/billing/orders", tag: "Billing", summary: "Open a payment order",
 			req: t(apiCreateOrderReq{}), reqRequired: []string{"user_id", "plan_id"},
 			resp: t(oaOrderResp{}), status: 201},
 		{method: "GET", path: "/v1/billing/orders/{id}", tag: "Billing", summary: "Get one order",
-			resp: t(model.PaymentOrder{})},
+			resp: t(paymentOrderDTO{})},
 		{method: "POST", path: "/v1/billing/orders/{id}/confirm", tag: "Billing", summary: "Mark an order paid"},
 		{method: "POST", path: "/v1/billing/orders/{id}/cancel", tag: "Billing", summary: "Cancel an order"},
 		{method: "GET", path: "/v1/billing/settings", tag: "Billing",
@@ -179,7 +178,7 @@ func apiSpecRoutes() []oaRoute {
 			req:     t(apiBillingSettingsReq{}), resp: t(apiBillingSettingsReq{})},
 		{method: "GET", path: "/v1/billing/stats", tag: "Billing",
 			summary: "Revenue totals, per-provider split and the pending backlog",
-			resp:    t(model.PaymentStats{})},
+			resp:    t(paymentStatsDTO{})},
 		{method: "GET", path: "/v1/payments", tag: "Billing",
 			summary: "Payment providers with their settings form (secret values are never returned)"},
 		{method: "POST", path: "/v1/payments", tag: "Billing",
@@ -194,7 +193,7 @@ func apiSpecRoutes() []oaRoute {
 				{name: "from", typ: "string", desc: "YYYY-MM-DD (default: 29 days ago)"},
 				{name: "to", typ: "string", desc: "YYYY-MM-DD (default: today)"},
 			},
-			resp: t(model.DailyPoint{}), list: true},
+			resp: t(dailyPointDTO{}), list: true},
 		{method: "GET", path: "/v1/stats/nodes", tag: "Stats",
 			summary: "Traffic totals per server over the period",
 			query: []oaParam{
@@ -216,16 +215,16 @@ func apiSpecRoutes() []oaRoute {
 				oaParam{name: "from", typ: "string", desc: "YYYY-MM-DD"},
 				oaParam{name: "to", typ: "string", desc: "YYYY-MM-DD"},
 			),
-			resp: t(model.UserTotal{}), list: true, meta: true},
+			resp: t(userTotalDTO{}), list: true, meta: true},
 		{method: "GET", path: "/v1/stats/abuse", tag: "Stats", summary: "Recent blocklist matches across the fleet",
 			query: []oaParam{{name: "limit", typ: "integer", desc: "max rows (default 50, max 200)"}},
 			resp:  t(store.AbuseMatch{}), list: true},
 		{method: "GET", path: "/v1/stats/countries", tag: "Stats",
 			summary: "Recent connections grouped by country",
-			query:   pageParams(), resp: t(model.CountryStat{}), list: true, meta: true},
+			query:   pageParams(), resp: t(countryStatDTO{}), list: true, meta: true},
 		{method: "GET", path: "/v1/stats/asns", tag: "Stats",
 			summary: "Recent connections grouped by network operator (ASN)",
-			query:   pageParams(), resp: t(model.ASNStat{}), list: true, meta: true},
+			query:   pageParams(), resp: t(asnStatDTO{}), list: true, meta: true},
 
 		// Configuration. These change how the servers RUN, which is why every mutation
 		// below is audited like a node change.
@@ -246,10 +245,10 @@ func apiSpecRoutes() []oaRoute {
 			resp:    t(oaOKResp{}), destructive: true},
 		{method: "GET", path: "/v1/config/snapshots", tag: "Settings",
 			summary: "List the master's config save-points",
-			query:   pageParams(), resp: t(model.ConfigSnapshot{}), list: true, meta: true},
+			query:   pageParams(), resp: t(configSnapshotDTO{}), list: true, meta: true},
 		{method: "POST", path: "/v1/config/snapshots", tag: "Settings",
 			summary: "Take a config save-point",
-			req:     t(apiSnapshotReq{}), resp: t(model.ConfigSnapshot{}), status: 201},
+			req:     t(apiSnapshotReq{}), resp: t(configSnapshotDTO{}), status: 201},
 		{method: "POST", path: "/v1/config/snapshots/{id}/rollback", tag: "Settings",
 			summary: "Restore the whole server config from a save-point (restarts Xray fleet-wide)",
 			resp:    t(oaOKResp{}), destructive: true},
@@ -330,7 +329,7 @@ func apiSpecRoutes() []oaRoute {
 			resp: t(oaNodeCountResp{})},
 		{method: "POST", path: "/v1/nodes/{id}/proxy", tag: "Nodes",
 			summary: "Configure a server's system proxy (SOCKS/HTTP forward listeners; id 0 = the master)",
-			req:     t(model.SystemProxy{}), resp: t(model.SystemProxy{})},
+			req:     t(systemProxyDTO{}), resp: t(systemProxyDTO{})},
 		{method: "GET", path: "/v1/nodes/{id}/health", tag: "Nodes", summary: "One server's self-diagnostics",
 			resp: t(core.HealthReport{})},
 		{method: "GET", path: "/v1/nodes/{id}/logs", tag: "Nodes",
@@ -356,12 +355,12 @@ func apiSpecRoutes() []oaRoute {
 			resp: t(core.InboundView{})},
 		{method: "DELETE", path: "/v1/inbounds/{id}", tag: "Inbounds", summary: "Delete a custom inbound"},
 
-		{method: "GET", path: "/v1/groups", tag: "Groups", summary: "List user groups", resp: t(model.Group{}), list: true},
+		{method: "GET", path: "/v1/groups", tag: "Groups", summary: "List user groups", resp: t(groupDTO{}), list: true},
 		{method: "GET", path: "/v1/groups/targets", tag: "Groups",
 			summary: "Grantable connections per server, each with the token to put in `grants`",
 			resp:    t(core.GroupTarget{}), list: true},
 		{method: "POST", path: "/v1/groups", tag: "Groups", summary: "Create a group",
-			req: t(groupReq{}), reqRequired: []string{"name"}, resp: t(model.Group{}), status: 201},
+			req: t(groupReq{}), reqRequired: []string{"name"}, resp: t(groupDTO{}), status: 201},
 		{method: "POST", path: "/v1/groups/{id}", tag: "Groups", summary: "Update a group",
 			req: t(groupReq{}), reqRequired: []string{"name"}},
 		{method: "DELETE", path: "/v1/groups/{id}", tag: "Groups", summary: "Delete a group"},
@@ -371,12 +370,12 @@ func apiSpecRoutes() []oaRoute {
 			req: t(oaUserGroupsReq{}), reqRequired: []string{"group_ids"}},
 
 		{method: "GET", path: "/v1/webhooks", tag: "Webhooks", summary: "List webhook endpoints",
-			resp: t(model.Webhook{}), list: true},
+			resp: t(webhookDTO{}), list: true},
 		{method: "GET", path: "/v1/webhooks/events", tag: "Webhooks", summary: "Event keys a webhook can subscribe to",
 			resp: t(apiEventKey{}), list: true},
 		{method: "POST", path: "/v1/webhooks", tag: "Webhooks", summary: "Add a webhook endpoint",
 			req: t(apiWebhookReq{}), reqRequired: []string{"url", "events"},
-			resp: t(model.Webhook{}), status: 201},
+			resp: t(webhookDTO{}), status: 201},
 		{method: "POST", path: "/v1/webhooks/{id}", tag: "Webhooks", summary: "Update a webhook endpoint",
 			req: t(apiWebhookReq{}), reqRequired: []string{"url", "events"}, resp: t(oaOKResp{})},
 		{method: "DELETE", path: "/v1/webhooks/{id}", tag: "Webhooks", summary: "Delete a webhook endpoint"},

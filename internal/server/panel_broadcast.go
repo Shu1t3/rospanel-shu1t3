@@ -29,9 +29,9 @@ const maxBroadcastUpload = 20 << 20
 
 // broadcastForm is the composed message as the SPA sends it, in the "payload" field.
 type broadcastForm struct {
-	Text     string                  `json:"text"`
-	Audience string                  `json:"audience"`
-	Buttons  []model.BroadcastButton `json:"buttons"`
+	Text     string               `json:"text"`
+	Audience string               `json:"audience"`
+	Buttons  []broadcastButtonDTO `json:"buttons"`
 }
 
 // parseBroadcastForm reads the multipart body into a broadcast plus the attachment
@@ -52,7 +52,7 @@ func parseBroadcastForm(w http.ResponseWriter, r *http.Request) (*model.Broadcas
 	b := &model.Broadcast{
 		Text:     form.Text,
 		Audience: form.Audience,
-		Buttons:  form.Buttons,
+		Buttons:  fromBroadcastButtonDTOs(form.Buttons),
 	}
 	file, header, err := r.FormFile("media")
 	if err != nil {
@@ -83,10 +83,7 @@ func (rt *Router) listBroadcasts(w http.ResponseWriter, r *http.Request) {
 		writeManagerErr(w, err)
 		return
 	}
-	if list == nil {
-		list = []model.Broadcast{}
-	}
-	writeJSON(w, http.StatusOK, list)
+	writeJSON(w, http.StatusOK, toBroadcastDTOs(list))
 }
 
 func (rt *Router) getBroadcast(w http.ResponseWriter, r *http.Request, id int64) {
@@ -99,7 +96,7 @@ func (rt *Router) getBroadcast(w http.ResponseWriter, r *http.Request, id int64)
 		writeManagerErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, b)
+	writeJSON(w, http.StatusOK, toBroadcastDTO(b))
 }
 
 // broadcastAudience reports how many recipients an audience resolves to right now,
@@ -147,7 +144,7 @@ func (rt *Router) createBroadcast(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	created.Status = model.BroadcastRunning
-	writeJSON(w, http.StatusOK, created)
+	writeJSON(w, http.StatusOK, toBroadcastDTO(created))
 }
 
 func saveBroadcastMedia(dataDir string, id int64, src io.Reader) error {
@@ -187,7 +184,7 @@ func (rt *Router) setBroadcastStatus(w http.ResponseWriter, id int64, status str
 		writeManagerErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, b)
+	writeJSON(w, http.StatusOK, toBroadcastDTO(b))
 }
 
 func (rt *Router) retryBroadcast(w http.ResponseWriter, r *http.Request, id int64) {
@@ -200,7 +197,7 @@ func (rt *Router) retryBroadcast(w http.ResponseWriter, r *http.Request, id int6
 		writeManagerErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, b)
+	writeJSON(w, http.StatusOK, toBroadcastDTO(b))
 }
 
 // testBroadcast sends the composed message to the operator's own linked chats before

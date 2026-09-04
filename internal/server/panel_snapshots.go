@@ -2,8 +2,6 @@ package server
 
 import (
 	"net/http"
-
-	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 )
 
 // Server-config snapshots: undo a change that broke the server. A snapshot captures the
@@ -18,10 +16,7 @@ func (rt *Router) listConfigSnapshots(w http.ResponseWriter, _ *http.Request) {
 		writeManagerErr(w, err)
 		return
 	}
-	if snaps == nil {
-		snaps = []model.ConfigSnapshot{}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"snapshots": snaps})
+	writeJSON(w, http.StatusOK, map[string]any{"snapshots": toConfigSnapshotDTOs(snaps)})
 }
 
 func (rt *Router) createConfigSnapshot(w http.ResponseWriter, r *http.Request) {

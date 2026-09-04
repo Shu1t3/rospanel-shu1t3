@@ -356,6 +356,12 @@ type NodeView struct {
 	NodeVersion string `json:"node_version"`
 	XrayVersion string `json:"xray_version"`
 	XrayRunning bool   `json:"xray_running"`
+	AWGRunning  bool   `json:"awg_running"`
+	AWGError    string `json:"awg_error,omitempty"`
+	// Components contains the unified status of all monitored node services.
+	Components []nodeapi.ComponentStatus `json:"components,omitempty"`
+	// NodeStatus is the aggregated health of the node ("healthy", "degraded", "unhealthy", "offline", "disabled").
+	NodeStatus  string `json:"node_status,omitempty"`
 	VersionSkew bool   `json:"version_skew"` // running Xray differs from the pinned release
 	// SyncFails is the node's last-reported count of sync failures in the past hour.
 	// Nonzero means its long-poll to the panel is limping (transport degraded) even
@@ -474,6 +480,7 @@ func (m *Manager) NodeViews() ([]NodeView, error) {
 		// restart, matching how a node reports itself (see Supervisor.Serving).
 		XrayRunning:     m.sup.Serving(),
 		XrayVersion:     m.sup.Version(),
+		AWGRunning:      m.awg != nil && m.awg.Running(),
 		VLESSEnabled:    set.VLESSEnabled,
 		HysteriaEnabled: set.HysteriaEnabled,
 		RealityEnabled:  set.RealityEnabled,
@@ -503,6 +510,11 @@ func (m *Manager) NodeViews() ([]NodeView, error) {
 			Accounts: set.ProxyAccounts,
 		},
 	}
+	if m.awg != nil {
+		local.AWGError = m.awg.LastError()
+	}
+	local.Components = m.NodeComponents(model.LocalNodeID)
+	local.NodeStatus = AggregateComponentStatus(local.Components)
 	if t, ok := traffic[model.LocalNodeID]; ok {
 		local.TrafficUp, local.TrafficDown = t[0], t[1]
 	}
@@ -519,6 +531,7 @@ func (m *Manager) NodeViews() ([]NodeView, error) {
 
 	for i := range nodes {
 		n := &nodes[i]
+		comps := m.NodeComponents(n.ID)
 		v := NodeView{
 			ID:                 n.ID,
 			Name:               n.Name,
@@ -531,6 +544,10 @@ func (m *Manager) NodeViews() ([]NodeView, error) {
 			NodeVersion:        n.NodeVersion,
 			XrayVersion:        n.XrayVersion,
 			XrayRunning:        n.XrayRunning,
+			AWGRunning:         m.nodeAWGRunning[n.ID],
+			AWGError:           m.nodeAWGErr[n.ID],
+			Components:         comps,
+			NodeStatus:         m.NodeAggregatedStatus(n),
 			VersionSkew:        n.XrayVersion != "" && !xray.VersionMatchesPinned(n.XrayVersion),
 			XrayRestart:        m.NodeRestartState(n.ID),
 			VLESSEnabled:       derefBool(n.VLESSEnabled),
@@ -550,7 +567,7 @@ func (m *Manager) NodeViews() ([]NodeView, error) {
 			TrafficCoefficient: model.NodeCoefficientOr(n.TrafficCoefficient),
 			Placement:          n.Placement,
 			OnlineUsers:        online[n.ID],
-			// The node's own REALITY identity (dest "" ⇒ inherits the panel's donor).
+			// The node's own REALITY identity (dest "" ⇒ inherits the panel's).
 			RealityDest:      n.RealityDest,
 			RealityPublicKey: n.RealityPublicKey,
 			RealityShortID:   n.RealityShortID,
@@ -569,6 +586,10 @@ func (m *Manager) NodeViews() ([]NodeView, error) {
 			v.Online = n.Enabled
 			v.XrayRunning = n.Enabled
 			v.VersionSkew = false
+			v.NodeStatus = "healthy"
+			if !n.Enabled {
+				v.NodeStatus = "disabled"
+			}
 			if n.Enabled && (n.LastSeen == 0 || (now-n.LastSeen > 30)) {
 				go m.SyncRentedNode(n.ID)
 			}
@@ -1750,8 +1771,12 @@ func (m *Manager) IngestNodeSync(n *model.Node, req nodeapi.SyncRequest) (*nodea
 	if m.nodeAWGErr == nil {
 		m.nodeAWGErr = map[int64]string{}
 	}
+	if m.nodeComponents == nil {
+		m.nodeComponents = map[int64][]nodeapi.ComponentStatus{}
+	}
 	m.nodeAWGRunning[n.ID] = req.AWGRunning
 	m.nodeAWGErr[n.ID] = req.AWGError
+	m.nodeComponents[n.ID] = req.NormalizedComponents(n.AWGEnabled != nil && *n.AWGEnabled)
 	m.nodeGeoMu.Unlock()
 	// The node's own TLS state, for the fleet-wide "TLS certificate" alert. Recorded
 	// here, raised by the node sweep — see manager_nodes_notify.go.
@@ -1924,4 +1949,131 @@ func (m *Manager) NodeAWGStatus(nodeID int64) (running bool, lastErr string) {
 	m.nodeGeoMu.Lock()
 	defer m.nodeGeoMu.Unlock()
 	return m.nodeAWGRunning[nodeID], m.nodeAWGErr[nodeID]
+}
+
+// NodeComponents returns the components and their statuses for a node.
+// For LocalNodeID (master), it reflects the local Xray supervisor and AWG tunnel.
+func (m *Manager) NodeComponents(nodeID int64) []nodeapi.ComponentStatus {
+	if nodeID == model.LocalNodeID {
+		set, _ := m.store.GetSettings()
+		comps := make([]nodeapi.ComponentStatus, 0, 2)
+		xraySt := nodeapi.StatusHealthy
+		if !m.sup.Serving() {
+			xraySt = nodeapi.StatusUnhealthy
+		}
+		comps = append(comps, nodeapi.ComponentStatus{
+			Name:    nodeapi.ComponentXray,
+			Running: m.sup.Serving(),
+			Status:  xraySt,
+			Version: m.sup.Version(),
+			Details: map[string]any{"uptime": m.sup.UptimeSeconds()},
+		})
+
+		awgConfigured := set != nil && set.AWGEnabled
+		awgRunning := false
+		awgErr := ""
+		if m.awg != nil {
+			awgRunning = m.awg.Running()
+			awgErr = m.awg.LastError()
+		}
+		awgSt := nodeapi.StatusDisabled
+		if awgConfigured || awgRunning || awgErr != "" {
+			if awgErr != "" {
+				awgSt = nodeapi.StatusUnhealthy
+			} else if awgRunning {
+				awgSt = nodeapi.StatusHealthy
+			} else {
+				awgSt = nodeapi.StatusUnhealthy
+			}
+		}
+		comps = append(comps, nodeapi.ComponentStatus{
+			Name:    nodeapi.ComponentAWG,
+			Running: awgRunning,
+			Status:  awgSt,
+			Error:   awgErr,
+		})
+		return comps
+	}
+
+	m.nodeGeoMu.Lock()
+	defer m.nodeGeoMu.Unlock()
+	if list, ok := m.nodeComponents[nodeID]; ok && len(list) > 0 {
+		out := make([]nodeapi.ComponentStatus, len(list))
+		copy(out, list)
+		return out
+	}
+	// Fallback if node has not synced components yet
+	n, _ := m.store.GetNode(nodeID)
+	if n == nil {
+		return nil
+	}
+	req := nodeapi.SyncRequest{
+		XrayRunning: n.XrayRunning,
+		XrayVersion: n.XrayVersion,
+		AWGRunning:  m.nodeAWGRunning[nodeID],
+		AWGError:    m.nodeAWGErr[nodeID],
+	}
+	return req.NormalizedComponents(n.AWGEnabled != nil && *n.AWGEnabled)
+}
+
+// NodeAggregatedStatus computes the aggregated health status of a node:
+// - "disabled": node is administratively disabled
+// - "unjoined": node has never connected to panel
+// - "offline": node has not communicated within NodeOnlineWindow
+// - "healthy": node is online and all enabled services are healthy
+// - "degraded": node is online, but some enabled services are healthy while others are unhealthy/degraded
+// - "unhealthy": node is online, but all enabled services are down
+func (m *Manager) NodeAggregatedStatus(n *model.Node) string {
+	if n == nil {
+		return "unknown"
+	}
+	if !n.Enabled {
+		return "disabled"
+	}
+	if !n.Joined() {
+		return "unjoined"
+	}
+	now := time.Now().Unix()
+	if !n.Online(now) {
+		return "offline"
+	}
+	comps := m.NodeComponents(n.ID)
+	return AggregateComponentStatus(comps)
+}
+
+// AggregateComponentStatus evaluates a slice of component statuses:
+// - If no components or all disabled: "healthy"
+// - If all enabled components are healthy: "healthy"
+// - If all enabled components are unhealthy: "unhealthy"
+// - If mixed (some healthy, some unhealthy/degraded/unknown): "degraded"
+func AggregateComponentStatus(comps []nodeapi.ComponentStatus) string {
+	var enabledCount, healthyCount, unhealthyCount int
+	for _, c := range comps {
+		if c.Status == nodeapi.StatusDisabled {
+			continue
+		}
+		enabledCount++
+		switch c.Status {
+		case nodeapi.StatusHealthy:
+			healthyCount++
+		case nodeapi.StatusUnhealthy:
+			unhealthyCount++
+		default:
+			if c.Running && c.Error == "" {
+				healthyCount++
+			} else {
+				unhealthyCount++
+			}
+		}
+	}
+	if enabledCount == 0 {
+		return "healthy"
+	}
+	if healthyCount == enabledCount {
+		return "healthy"
+	}
+	if unhealthyCount == enabledCount {
+		return "unhealthy"
+	}
+	return "degraded"
 }

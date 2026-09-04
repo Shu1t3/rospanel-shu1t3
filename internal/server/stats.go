@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/core"
-	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
 )
 
@@ -84,10 +83,7 @@ func (rt *Router) statsSeries(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if pts == nil {
-		pts = []model.DailyPoint{}
-	}
-	writeJSON(w, http.StatusOK, pts)
+	writeJSON(w, http.StatusOK, toDailyPointDTOs(pts))
 }
 
 // statsNodes splits the period's traffic by the server that carried it. user_id
@@ -129,10 +125,7 @@ func (rt *Router) statsByUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if totals == nil {
-		totals = []model.UserTotal{}
-	}
-	writeJSON(w, http.StatusOK, totals)
+	writeJSON(w, http.StatusOK, toUserTotalDTOs(totals))
 }
 
 // statsCountries returns the geo breakdown of recent client connections — distinct
@@ -144,10 +137,7 @@ func (rt *Router) statsCountries(w http.ResponseWriter, _ *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if countries == nil {
-		countries = []model.CountryStat{}
-	}
-	writeJSON(w, http.StatusOK, countries)
+	writeJSON(w, http.StatusOK, toCountryStatDTOs(countries))
 }
 
 // statsASNs returns the breakdown of recent client connections by network operator
@@ -158,10 +148,7 @@ func (rt *Router) statsASNs(w http.ResponseWriter, _ *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if asns == nil {
-		asns = []model.ASNStat{}
-	}
-	writeJSON(w, http.StatusOK, asns)
+	writeJSON(w, http.StatusOK, toASNStatDTOs(asns))
 }
 
 // sitesLimit reads ?limit=, clamped to a sane range. The view is a top-N by

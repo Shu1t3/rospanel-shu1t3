@@ -9,7 +9,6 @@ import (
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/core"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/i18n"
-	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/telegram"
 )
 
@@ -190,10 +189,7 @@ func (rt *Router) listSupportGroups(w http.ResponseWriter, _ *http.Request) {
 		writeManagerErr(w, err)
 		return
 	}
-	if groups == nil {
-		groups = []model.SupportGroup{}
-	}
-	writeJSON(w, http.StatusOK, groups)
+	writeJSON(w, http.StatusOK, toSupportGroupDTOs(groups))
 }
 
 // checkTelegramSupport verifies the support group end to end before the operator

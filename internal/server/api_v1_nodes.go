@@ -49,11 +49,11 @@ type (
 // /v1/nodes/{id} for one reason: the master has no row in `nodes` to patch, and this
 // listener is exactly as much the master's as a node's.
 func (rt *Router) apiSetServerProxy(w http.ResponseWriter, r *http.Request, id int64) {
-	var req model.SystemProxy
+	var req systemProxyDTO
 	if !apiDecode(w, r, &req) {
 		return
 	}
-	if err := rt.mgr.SetSystemProxy(id, req); err != nil {
+	if err := rt.mgr.SetSystemProxy(id, fromSystemProxyDTO(req)); err != nil {
 		writeAPIManagerErr(w, err)
 		return
 	}
@@ -66,7 +66,7 @@ func (rt *Router) apiSetServerProxy(w http.ResponseWriter, r *http.Request, id i
 	}
 	for _, v := range views {
 		if v.ID == id {
-			writeAPIData(w, http.StatusOK, v.Proxy)
+			writeAPIData(w, http.StatusOK, toSystemProxyDTO(&v.Proxy))
 			return
 		}
 	}

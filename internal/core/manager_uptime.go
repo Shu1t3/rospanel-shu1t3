@@ -19,7 +19,9 @@ import (
 // customer would notice and the operator would be asked about.
 func (m *Manager) SampleUptime() {
 	day := time.Now().In(m.loc()).Format("2006-01-02")
-	if err := m.store.RecordUptimeSample(model.LocalNodeID, day, m.sup.Running()); err != nil {
+	masterComps := m.NodeComponents(model.LocalNodeID)
+	masterUp := AggregateComponentStatus(masterComps) != "unhealthy"
+	if err := m.store.RecordUptimeSample(model.LocalNodeID, day, masterUp); err != nil {
 		logErr("uptime: sample failed", "node", model.LocalNodeID, "err", err)
 		return // a failing write will fail for every node too; don't repeat it N times
 	}
@@ -35,7 +37,8 @@ func (m *Manager) SampleUptime() {
 		if !n.Enabled || !n.Joined() {
 			continue
 		}
-		up := n.Online(now) && n.XrayRunning
+		status := m.NodeAggregatedStatus(n)
+		up := n.Online(now) && status != "unhealthy" && status != "offline"
 		if err := m.store.RecordUptimeSample(n.ID, day, up); err != nil {
 			logErr("uptime: sample failed", "node", n.ID, "err", err)
 		}
@@ -138,20 +141,21 @@ func (m *Manager) StatusPageData(days int) (*StatusReport, error) {
 		rep.Servers = append(rep.Servers, s)
 	}
 
-	// The master's own label when the operator set one (multi-node installs name
-	// their servers), else the generic local-node name.
 	masterName := set.MasterLabel
 	if masterName == "" {
 		masterName = model.LocalNodeName
 	}
-	add(model.LocalNodeID, masterName, m.sup.Running())
+	masterComps := m.NodeComponents(model.LocalNodeID)
+	masterUp := AggregateComponentStatus(masterComps) != "unhealthy"
+	add(model.LocalNodeID, masterName, masterUp)
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
 	for i := range nodes {
 		n := &nodes[i]
 		if !n.Enabled || !n.Joined() {
 			continue
 		}
-		add(n.ID, n.Name, n.Online(unix) && n.XrayRunning)
+		status := m.NodeAggregatedStatus(n)
+		add(n.ID, n.Name, n.Online(unix) && status != "unhealthy" && status != "offline")
 	}
 	return rep, nil
 }

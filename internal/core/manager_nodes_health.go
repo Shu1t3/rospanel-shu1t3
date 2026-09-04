@@ -48,8 +48,9 @@ func (m *Manager) NodeHealth(id int64) (*HealthReport, error) {
 	// Everything below describes the node's last report. When it has never
 	// connected there is nothing to describe, so the link check stands alone.
 	if n.Joined() {
+		comps := m.NodeComponents(n.ID)
+		checks = append(checks, m.nodeComponentsHealth(n, comps)...)
 		checks = append(checks,
-			nodeXrayHealth(n),
 			m.nodeConfigHealth(n, online),
 			nodeCertHealth(n),
 		)
@@ -92,23 +93,90 @@ func (m *Manager) nodeLinkHealth(n *model.Node, now int64, online bool) HealthCh
 	}
 }
 
-func nodeXrayHealth(n *model.Node) HealthCheck {
+func (m *Manager) nodeComponentsHealth(n *model.Node, comps []nodeapi.ComponentStatus) []HealthCheck {
+	out := make([]HealthCheck, 0, len(comps))
+	for _, c := range comps {
+		switch c.Name {
+		case nodeapi.ComponentXray:
+			out = append(out, nodeXrayHealth(n, c))
+		case nodeapi.ComponentAWG:
+			if c.Status == nodeapi.StatusDisabled {
+				continue
+			}
+			out = append(out, nodeAWGHealth(c))
+		default:
+			if c.Status == nodeapi.StatusDisabled {
+				continue
+			}
+			label := "health." + c.Name
+			if c.Status == nodeapi.StatusHealthy || (c.Running && c.Error == "") {
+				out = append(out, HealthCheck{
+					Key:       c.Name,
+					LabelKey:  label,
+					Status:    healthOK,
+					DetailKey: "health.componentOK",
+					Args:      map[string]any{"name": c.Name},
+				})
+			} else {
+				out = append(out, HealthCheck{
+					Key:       c.Name,
+					LabelKey:  label,
+					Status:    healthError,
+					DetailKey: "health.componentDown",
+					Detail:    c.Error,
+					HintKey:   "health.componentDownHint",
+					Args:      map[string]any{"name": c.Name},
+				})
+			}
+		}
+	}
+	return out
+}
+
+func nodeXrayHealth(n *model.Node, c nodeapi.ComponentStatus) HealthCheck {
 	const label = "health.xray"
-	if !n.XrayRunning {
+	if !c.Running || c.Status == nodeapi.StatusUnhealthy {
 		return HealthCheck{Key: "xray", LabelKey: label, Status: healthError,
 			DetailKey: "health.nodeXrayDown", HintKey: "health.nodeXrayDownHint"}
 	}
-	ver := n.XrayVersion
+	ver := c.Version
+	if ver == "" {
+		ver = n.XrayVersion
+	}
 	if ver == "" {
 		ver = "?"
 	}
-	if n.XrayVersion != "" && !xray.VersionMatchesPinned(n.XrayVersion) {
+	if ver != "?" && !xray.VersionMatchesPinned(ver) {
 		return HealthCheck{Key: "xray", LabelKey: label, Status: healthWarn,
 			DetailKey: "health.nodeXrayStale", HintKey: "health.nodeUpdateHint",
 			Args: map[string]any{"version": ver, "want": xray.PinnedVersion}}
 	}
 	return HealthCheck{Key: "xray", LabelKey: label, Status: healthOK,
 		DetailKey: "health.nodeXrayOK", Args: map[string]any{"version": ver}}
+}
+
+func nodeAWGHealth(c nodeapi.ComponentStatus) HealthCheck {
+	const label = "health.awg"
+	if c.Status == nodeapi.StatusUnhealthy || !c.Running || c.Error != "" {
+		detail := c.Error
+		if detail == "" {
+			detail = "tunnel inactive"
+		}
+		return HealthCheck{
+			Key:       "awg",
+			LabelKey:  label,
+			Status:    healthError,
+			DetailKey: "health.awgDown",
+			Detail:    detail,
+			HintKey:   "health.awgHint",
+		}
+	}
+	return HealthCheck{
+		Key:       "awg",
+		LabelKey:  label,
+		Status:    healthOK,
+		DetailKey: "health.awgOK",
+	}
 }
 
 // nodeConfigHealth compares what the node last applied against what the panel

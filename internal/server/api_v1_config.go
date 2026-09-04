@@ -427,7 +427,7 @@ func (rt *Router) apiConfigSnapshots(w http.ResponseWriter, r *http.Request) {
 		writeAPIManagerErr(w, err)
 		return
 	}
-	writeAPIPage(w, r, snaps)
+	writeAPIPage(w, r, toConfigSnapshotDTOs(snaps))
 }
 
 // apiSnapshotReq is the body of a create-snapshot call: a label the operator will
@@ -458,7 +458,7 @@ func (rt *Router) apiCreateConfigSnapshot(w http.ResponseWriter, r *http.Request
 	}
 	for _, sn := range snaps {
 		if sn.ID == id {
-			writeAPIData(w, http.StatusCreated, sn)
+			writeAPIData(w, http.StatusCreated, toConfigSnapshotDTO(&sn))
 			return
 		}
 	}
@@ -521,7 +521,7 @@ func (rt *Router) apiStatsCountries(w http.ResponseWriter, r *http.Request) {
 		writeAPIManagerErr(w, err)
 		return
 	}
-	writeAPIPage(w, r, rows)
+	writeAPIPage(w, r, toCountryStatDTOs(rows))
 }
 
 // apiStatsASNs is the same breakdown by network operator.
@@ -531,7 +531,7 @@ func (rt *Router) apiStatsASNs(w http.ResponseWriter, r *http.Request) {
 		writeAPIManagerErr(w, err)
 		return
 	}
-	writeAPIPage(w, r, rows)
+	writeAPIPage(w, r, toASNStatDTOs(rows))
 }
 
 // apiXrayRestart asks a server to restart its Xray. Every live connection on it drops,

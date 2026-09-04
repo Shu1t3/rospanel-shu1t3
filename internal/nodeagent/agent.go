@@ -937,17 +937,60 @@ func (a *Agent) buildSyncRequest() nodeapi.SyncRequest {
 	}
 	awgRunning, awgErr := a.awgStatus()
 
+	a.stateMu.Lock()
+	awgConfigured := a.state.LastConfig != nil && a.state.LastConfig.Meta.AWG != nil
+	a.stateMu.Unlock()
+
+	xrayServing := a.sup.Serving()
+	xrayStartedAt := a.sup.StartedAt()
+	xrayVersion := a.sup.Version()
+
+	components := make([]nodeapi.ComponentStatus, 0, 2)
+	xraySt := nodeapi.StatusHealthy
+	if !xrayServing {
+		xraySt = nodeapi.StatusUnhealthy
+	}
+	var xrayDetails map[string]any
+	if xrayStartedAt > 0 {
+		xrayDetails = map[string]any{"started_at": xrayStartedAt}
+	}
+	components = append(components, nodeapi.ComponentStatus{
+		Name:    nodeapi.ComponentXray,
+		Running: xrayServing,
+		Status:  xraySt,
+		Version: xrayVersion,
+		Details: xrayDetails,
+	})
+
+	awgSt := nodeapi.StatusDisabled
+	if awgConfigured || awgRunning || awgErr != "" {
+		if awgErr != "" {
+			awgSt = nodeapi.StatusUnhealthy
+		} else if awgRunning {
+			awgSt = nodeapi.StatusHealthy
+		} else {
+			awgSt = nodeapi.StatusUnhealthy
+		}
+	}
+	components = append(components, nodeapi.ComponentStatus{
+		Name:    nodeapi.ComponentAWG,
+		Running: awgRunning,
+		Status:  awgSt,
+		Error:   awgErr,
+	})
+
 	req := nodeapi.SyncRequest{
 		ConfigHash:  hash,
 		NodeVersion: version.Version,
-		XrayVersion: a.sup.Version(),
+		XrayVersion: xrayVersion,
 		// Serving, not Running: a sync that happens to land during a deliberate
 		// restart (cert renewal, config push, operator bounce) must not report the
 		// node as down for a whole poll cycle over a one-second gap.
-		XrayRunning:    a.sup.Serving(),
-		XrayStartedAt:  a.sup.StartedAt(),
+		XrayRunning:    xrayServing,
+		XrayStartedAt:  xrayStartedAt,
 		AWGRunning:     awgRunning,
 		AWGError:       awgErr,
+		Components:     components,
 		Revoked:        a.revoked.Load(),
 		CertSHA256:     sha,
 		CertSelfSigned: selfSigned,

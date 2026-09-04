@@ -101,11 +101,11 @@ func (rt *Router) setLocalBackup(w http.ResponseWriter, r *http.Request) {
 // setServerProxy configures one server's system proxy listeners — {id} 0 is the
 // panel's own machine, anything else a node.
 func (rt *Router) setServerProxy(w http.ResponseWriter, r *http.Request, id int64) {
-	var req model.SystemProxy
+	var req systemProxyDTO
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if err := rt.mgr.SetSystemProxy(id, req); err != nil {
+	if err := rt.mgr.SetSystemProxy(id, fromSystemProxyDTO(req)); err != nil {
 		writeManagerErr(w, err)
 		return
 	}
@@ -330,11 +330,8 @@ func (rt *Router) listProbes(w http.ResponseWriter, _ *http.Request) {
 		writeManagerErr(w, err)
 		return
 	}
-	if probes == nil {
-		probes = []model.ProbeHit{}
-	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"probes": probes,
+		"probes": toProbeHitDTOs(probes),
 		// How far back the list can reach: a row survives this long after the address
 		// was last seen. The panel says so next to the list rather than hardcoding a
 		// number that would drift from model.ProbeRetentionDays.
@@ -349,21 +346,18 @@ func (rt *Router) getSubRules(w http.ResponseWriter, _ *http.Request) {
 		writeManagerErr(w, err)
 		return
 	}
-	if rules == nil {
-		rules = []model.SubRule{}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"rules": rules})
+	writeJSON(w, http.StatusOK, map[string]any{"rules": toSubRuleDTOs(rules)})
 }
 
 // saveSubRules replaces the whole rule list (the editor sends the full set).
 func (rt *Router) saveSubRules(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Rules []model.SubRule `json:"rules"`
+		Rules []subRuleDTO `json:"rules"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if err := rt.mgr.SaveSubRules(req.Rules); err != nil {
+	if err := rt.mgr.SaveSubRules(fromSubRuleDTOs(req.Rules)); err != nil {
 		writeManagerErr(w, err)
 		return
 	}

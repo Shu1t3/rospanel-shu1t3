@@ -26,7 +26,7 @@ func (rt *Router) listSessions(w http.ResponseWriter, r *http.Request) {
 	for i := range list {
 		list[i].Current = list[i].ID == a.SessionID
 	}
-	writeJSON(w, http.StatusOK, list)
+	writeJSON(w, http.StatusOK, toAdminSessionDTOs(list))
 }
 
 // revokeSession ends one of the caller's other sessions. The current one is

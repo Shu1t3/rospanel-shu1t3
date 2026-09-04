@@ -2,8 +2,6 @@ package server
 
 import (
 	"net/http"
-
-	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 )
 
 // The admin roster. Every route here is owner-only (see panelMux), and every
@@ -19,12 +17,9 @@ func (rt *Router) listAdmins(w http.ResponseWriter, r *http.Request) {
 		writeManagerErr(w, err)
 		return
 	}
-	if admins == nil {
-		admins = []model.Admin{}
-	}
 	me, _ := rt.adminID(r)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"admins": admins,
+		"admins": toAdminDTOs(admins),
 		"me":     me,
 	})
 }
@@ -53,7 +48,7 @@ func (rt *Router) createAdmin(w http.ResponseWriter, r *http.Request) {
 	// Name the new account in the audit row. The password is never recorded.
 	auditTarget(r, admin.Username)
 	auditDetails(r, map[string]any{"role": admin.Role})
-	writeJSON(w, http.StatusCreated, admin)
+	writeJSON(w, http.StatusCreated, toAdminDTO(admin))
 }
 
 // setAdminRole moves an account between roles.

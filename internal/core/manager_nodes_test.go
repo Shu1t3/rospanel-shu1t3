@@ -33,6 +33,7 @@ func nodeTestManager(t *testing.T) *Manager {
 		nodeSyncFails:  map[int64]int{},
 		nodeAWGRunning: map[int64]bool{},
 		nodeAWGErr:     map[int64]string{},
+		nodeComponents: map[int64][]nodeapi.ComponentStatus{},
 	}
 }
 

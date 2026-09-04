@@ -45,6 +45,31 @@ type JoinResponse struct {
 	NodeAPI  string `json:"node_api"` // node-API path segment (in case the URL is bare)
 }
 
+// ComponentName constants for supported node services.
+const (
+	ComponentXray = "xray"
+	ComponentAWG  = "awg"
+)
+
+// ComponentHealth status constants.
+const (
+	StatusHealthy   = "healthy"
+	StatusDegraded  = "degraded"
+	StatusUnhealthy = "unhealthy"
+	StatusDisabled  = "disabled"
+	StatusUnknown   = "unknown"
+)
+
+// ComponentStatus represents the health and runtime state of a single service on a node.
+type ComponentStatus struct {
+	Name    string         `json:"name"`              // "xray", "awg"
+	Running bool           `json:"running"`           // whether the service is actively running
+	Status  string         `json:"status"`            // healthy | degraded | unhealthy | disabled | unknown
+	Error   string         `json:"error,omitempty"`   // last error or crash reason
+	Version string         `json:"version,omitempty"` // component version if applicable
+	Details map[string]any `json:"details,omitempty"` // component-specific extra info
+}
+
 // SyncRequest is the body of every long-poll. The node states what it currently
 // has applied (config_hash) and reports its health + accumulated traffic deltas.
 type SyncRequest struct {
@@ -56,6 +81,8 @@ type SyncRequest struct {
 	AWGRunning bool `json:"awg_running,omitempty"`
 	// AWGError is the last error encountered when applying the AmneziaWG configuration on the node.
 	AWGError string `json:"awg_error,omitempty"`
+	// Components contains the unified status of all services on the node.
+	Components []ComponentStatus `json:"components,omitempty"`
 	// Revoked ⇒ this node already knows the panel switched it off and has stopped
 	// serving. It changes how the panel answers: a node that has yet to hear the bad
 	// news is told at once, but one that already knows has its request HELD like any
@@ -142,6 +169,54 @@ type SyncRequest struct {
 	// flag a node that is limping (transport degraded) before it decays into a hard
 	// "not responding" outage. An older agent omits it (reads as 0 = healthy).
 	SyncFails int `json:"sync_fails,omitempty"`
+}
+
+// NormalizedComponents returns the unified slice of component statuses.
+// If the agent populated Components, it is returned. Otherwise, NormalizedComponents
+// synthesizes the component statuses from the legacy top-level fields (XrayRunning,
+// XrayVersion, AWGRunning, AWGError), ensuring backwards compatibility with older agents.
+func (r *SyncRequest) NormalizedComponents(awgConfigured bool) []ComponentStatus {
+	if len(r.Components) > 0 {
+		return r.Components
+	}
+	out := make([]ComponentStatus, 0, 2)
+
+	// Xray component synthesis
+	xraySt := StatusHealthy
+	if !r.XrayRunning {
+		xraySt = StatusUnhealthy
+	}
+	var xrayDetails map[string]any
+	if r.XrayStartedAt > 0 {
+		xrayDetails = map[string]any{"started_at": r.XrayStartedAt}
+	}
+	out = append(out, ComponentStatus{
+		Name:    ComponentXray,
+		Running: r.XrayRunning,
+		Status:  xraySt,
+		Version: r.XrayVersion,
+		Details: xrayDetails,
+	})
+
+	// AWG component synthesis
+	awgSt := StatusDisabled
+	if awgConfigured || r.AWGRunning || r.AWGError != "" {
+		if r.AWGError != "" {
+			awgSt = StatusUnhealthy
+		} else if r.AWGRunning {
+			awgSt = StatusHealthy
+		} else {
+			awgSt = StatusUnhealthy
+		}
+	}
+	out = append(out, ComponentStatus{
+		Name:    ComponentAWG,
+		Running: r.AWGRunning,
+		Status:  awgSt,
+		Error:   r.AWGError,
+	})
+
+	return out
 }
 
 // ConfigCheckResult is the node's verdict on a candidate config. ID echoes the

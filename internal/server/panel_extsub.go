@@ -2,8 +2,6 @@ package server
 
 import (
 	"net/http"
-
-	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 )
 
 // External subscriptions: the sources and the servers read from them, for the
@@ -23,13 +21,10 @@ func (rt *Router) listExternal(w http.ResponseWriter, _ *http.Request) {
 		writeManagerErr(w, err)
 		return
 	}
-	if subs == nil {
-		subs = []model.ExtSubscription{}
-	}
-	if servers == nil {
-		servers = []model.ExtServer{}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"subscriptions": subs, "servers": servers})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"subscriptions": toExtSubscriptionDTOs(subs),
+		"servers":       toExtServerDTOs(servers),
+	})
 }
 
 // createExternal stores a source and reads it once; the answer carries the source
@@ -48,7 +43,7 @@ func (rt *Router) createExternal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auditDetails(r, map[string]any{"id": sub.ID, "name": sub.Name, "servers": report.Total})
-	writeJSON(w, http.StatusOK, map[string]any{"subscription": sub, "report": report})
+	writeJSON(w, http.StatusOK, map[string]any{"subscription": toExtSubscriptionDTO(sub), "report": report})
 }
 
 func (rt *Router) deleteExternal(w http.ResponseWriter, r *http.Request, id int64) {

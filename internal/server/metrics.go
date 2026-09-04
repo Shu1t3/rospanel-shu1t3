@@ -175,6 +175,8 @@ func (rt *Router) metricsNodes(m *metricsWriter) {
 			n.Enabled, lbl...)
 		m.bool("rospanel_node_xray_running", "1 when the node's Xray process is up.",
 			n.XrayRunning, lbl...)
+		m.bool("rospanel_node_awg_running", "1 when the node's AmneziaWG tunnel is up.",
+			n.AWGRunning, lbl...)
 		m.gauge("rospanel_node_last_seen_seconds", "Seconds since the node last reported (0 = never).",
 			nodeSilence(n.LastSeen), lbl...)
 

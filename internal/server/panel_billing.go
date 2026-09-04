@@ -5,7 +5,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/payments"
 )
 
@@ -16,10 +15,7 @@ func (rt *Router) paymentStats(w http.ResponseWriter, _ *http.Request) {
 		writeManagerErr(w, err)
 		return
 	}
-	if stats.ByProvider == nil {
-		stats.ByProvider = []model.ProviderStat{}
-	}
-	writeJSON(w, http.StatusOK, stats)
+	writeJSON(w, http.StatusOK, toPaymentStatsDTO(stats))
 }
 
 func (rt *Router) getBilling(w http.ResponseWriter, r *http.Request) {
@@ -32,9 +28,6 @@ func (rt *Router) getBilling(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeManagerErr(w, err)
 		return
-	}
-	if plans == nil {
-		plans = []model.TariffPlan{}
 	}
 	// Per-plan user counts so the UI can show how many users are on each plan and
 	// offer to migrate them before a plan is disabled/deleted.
@@ -49,7 +42,7 @@ func (rt *Router) getBilling(w http.ResponseWriter, r *http.Request) {
 		"free_plan_id":  set.BillingFreePlanID,
 		"trial_plan_id": set.BillingTrialPlanID,
 		"payment_note":  set.BillingPaymentNote,
-		"plans":         plans,
+		"plans":         toTariffPlanDTOs(plans),
 		"plan_users":    planUsers,
 	})
 }
@@ -174,15 +167,16 @@ func (rt *Router) savePayments(w http.ResponseWriter, r *http.Request) {
 }
 
 func (rt *Router) saveTariffPlan(w http.ResponseWriter, r *http.Request) {
-	var p model.TariffPlan
-	if !decodeJSON(w, r, &p) {
+	var req tariffPlanDTO
+	if !decodeJSON(w, r, &req) {
 		return
 	}
+	p := fromTariffPlanDTO(req)
 	if err := rt.mgr.SaveTariffPlan(&p); err != nil {
 		writeManagerErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, p)
+	writeJSON(w, http.StatusOK, toTariffPlanDTO(&p))
 }
 
 func (rt *Router) deleteTariffPlan(w http.ResponseWriter, _ *http.Request, id int64) {
@@ -217,10 +211,7 @@ func (rt *Router) listPaymentOrders(w http.ResponseWriter, r *http.Request) {
 		writeManagerErr(w, err)
 		return
 	}
-	if orders == nil {
-		orders = []model.PaymentOrder{}
-	}
-	writeJSON(w, http.StatusOK, orders)
+	writeJSON(w, http.StatusOK, toPaymentOrderDTOs(orders))
 }
 
 func (rt *Router) confirmPaymentOrder(w http.ResponseWriter, r *http.Request, id int64) {

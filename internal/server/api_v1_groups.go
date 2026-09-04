@@ -11,7 +11,7 @@ func (rt *Router) apiListGroups(w http.ResponseWriter, _ *http.Request) {
 		writeAPIManagerErr(w, err)
 		return
 	}
-	writeAPIData(w, http.StatusOK, groups)
+	writeAPIData(w, http.StatusOK, toGroupDTOs(groups))
 }
 
 func (rt *Router) apiCreateGroup(w http.ResponseWriter, r *http.Request) {
@@ -24,7 +24,7 @@ func (rt *Router) apiCreateGroup(w http.ResponseWriter, r *http.Request) {
 		writeAPIManagerErr(w, err)
 		return
 	}
-	writeAPIData(w, http.StatusCreated, g)
+	writeAPIData(w, http.StatusCreated, toGroupDTO(g))
 }
 
 func (rt *Router) apiUpdateGroup(w http.ResponseWriter, r *http.Request, id int64) {

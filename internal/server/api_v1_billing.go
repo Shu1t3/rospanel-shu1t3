@@ -5,8 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-
-	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 )
 
 // The half of billing that was panel-only: which plan is the free/trial one, the
@@ -105,7 +103,7 @@ func (rt *Router) apiGetOrder(w http.ResponseWriter, _ *http.Request, id int64) 
 		writeAPIManagerErr(w, err)
 		return
 	}
-	writeAPIData(w, http.StatusOK, order)
+	writeAPIData(w, http.StatusOK, toPaymentOrderDTO(order))
 }
 
 // apiPaymentStats is the revenue dashboard: all-time and per-provider paid totals,
@@ -117,10 +115,7 @@ func (rt *Router) apiPaymentStats(w http.ResponseWriter, _ *http.Request) {
 		writeAPIManagerErr(w, err)
 		return
 	}
-	if stats.ByProvider == nil {
-		stats.ByProvider = []model.ProviderStat{}
-	}
-	writeAPIData(w, http.StatusOK, stats)
+	writeAPIData(w, http.StatusOK, toPaymentStatsDTO(stats))
 }
 
 // apiPaymentProviders describes every provider in the registry: its settings form,

@@ -250,6 +250,7 @@ type Manager struct {
 	nodeHostStats  map[int64]nodeapi.HostStats
 	nodeAWGRunning map[int64]bool
 	nodeAWGErr     map[int64]string
+	nodeComponents map[int64][]nodeapi.ComponentStatus
 	// online is who is connected to which server right now (see manager_online.go).
 	online onlineGauge
 
@@ -326,6 +327,7 @@ func New(st *store.Store, sup *xray.Supervisor, opts xray.Options, tls TLSPaths,
 		nodeHostStats:  map[int64]nodeapi.HostStats{},
 		nodeAWGRunning: map[int64]bool{},
 		nodeAWGErr:     map[int64]string{},
+		nodeComponents: map[int64][]nodeapi.ComponentStatus{},
 		awg:            awg.New(),
 		probeBlock:     ipblock.New(ipblock.TableProbes),
 		policyBlock:    ipblock.New(ipblock.TablePolicy),

@@ -182,10 +182,7 @@ func (rt *Router) userConnections(w http.ResponseWriter, _ *http.Request, id int
 		writeManagerErr(w, err)
 		return
 	}
-	if conns == nil {
-		conns = []model.Connection{}
-	}
-	writeJSON(w, http.StatusOK, conns)
+	writeJSON(w, http.StatusOK, toConnectionDTOs(conns))
 }
 
 // renameUser updates a user's display name.

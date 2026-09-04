@@ -14,7 +14,7 @@ func (rt *Router) listGroups(w http.ResponseWriter, _ *http.Request) {
 		writeManagerErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, groups)
+	writeJSON(w, http.StatusOK, toGroupDTOs(groups))
 }
 
 // groupTargets returns the grantable connections (built-in lanes + custom inbounds)
@@ -45,7 +45,7 @@ func (rt *Router) createGroup(w http.ResponseWriter, r *http.Request) {
 		writeManagerErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, g)
+	writeJSON(w, http.StatusCreated, toGroupDTO(g))
 }
 
 // updateGroup edits a group (rename + grants).

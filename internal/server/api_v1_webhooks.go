@@ -57,10 +57,7 @@ func (rt *Router) apiListWebhooks(w http.ResponseWriter, _ *http.Request) {
 		writeAPIManagerErr(w, err)
 		return
 	}
-	if hooks == nil {
-		hooks = []model.Webhook{}
-	}
-	writeAPIData(w, http.StatusOK, hooks)
+	writeAPIData(w, http.StatusOK, toWebhookDTOs(hooks))
 }
 
 // apiWebhookEvents lists the keys a webhook can subscribe to. Its own endpoint rather
@@ -91,7 +88,7 @@ func (rt *Router) apiCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		writeAPIManagerErr(w, err)
 		return
 	}
-	writeAPIData(w, http.StatusCreated, h)
+	writeAPIData(w, http.StatusCreated, toWebhookDTO(h))
 }
 
 func (rt *Router) apiUpdateWebhook(w http.ResponseWriter, r *http.Request, id int64) {
