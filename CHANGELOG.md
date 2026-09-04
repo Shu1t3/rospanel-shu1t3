@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.23.2](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.23.1...v2.23.2) (2026-09-04)
+
+
+### Bug Fixes
+
+* update AmneziaWG subscription URL patterns, enhance firewall/port management logic, and improve web form accessibility with IDs ([48ac327](https://github.com/Shu1t3/rospanel-shu1t3/commit/48ac327920885850fb51542a33464d8e5ee30f91))
+
 ## [2.23.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.23.0...v2.23.1) (2026-09-04)
 
 
