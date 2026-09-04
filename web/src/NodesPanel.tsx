@@ -1279,6 +1279,8 @@ function NodeRentalTab({
                 </span>
                 <div className="flex items-center gap-2">
                   <input
+                    id="node_share_link"
+                    name="node_share_link"
                     readOnly
                     value={data.share_link}
                     className="flex-1 truncate rounded-lg border border-gray-200 bg-white px-3 py-1.5 font-mono text-xs text-ink select-all dark:border-gray-700 dark:bg-gray-800"

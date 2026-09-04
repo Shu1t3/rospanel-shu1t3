@@ -136,9 +136,12 @@ func DeepLinks(subURL string, lang i18n.Lang) []DeepLink {
 }
 
 // AWGConfURL is where a user downloads their AmneziaWG config for one server
-// (0 = the master): <sub>/awg/<id>.conf; the QR of the same text is <id>.png.
+// (0 = the master): <sub>/awg/<id>; the QR of the same text is <id>.png.
+// We omit the .conf extension from the URL to prevent reverse proxies (e.g. Nginx
+// with common exploit block rules) from 403-rejecting requests to *.conf files.
+// The downloaded file name is still given .conf via Content-Disposition.
 func AWGConfURL(set *model.Settings, token string, serverID int64) string {
-	return fmt.Sprintf("%s/awg/%d.conf", URL(set, token), serverID)
+	return fmt.Sprintf("%s/awg/%d", URL(set, token), serverID)
 }
 
 // AWGFileName is the config's file name — the Amnezia apps show it as the

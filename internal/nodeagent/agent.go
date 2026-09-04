@@ -1102,6 +1102,9 @@ func (a *Agent) applyState(st *nodeapi.NodeState) error {
 	if m.HysteriaEnabled && m.HysteriaPort > 0 {
 		nodeFWRules = append(nodeFWRules, firewall.UDPRule(m.HysteriaPort, "hysteria"))
 	}
+	if m.AWG != nil && m.AWG.Port > 0 {
+		nodeFWRules = append(nodeFWRules, firewall.UDPRule(m.AWG.Port, "awg"))
+	}
 	for _, r := range hopRanges(m) {
 		start := r.Start
 		if start <= r.Target {

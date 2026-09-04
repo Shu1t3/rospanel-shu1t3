@@ -258,6 +258,8 @@ export function BroadcastPanel() {
                 reads as a rendering fault next to styled controls.
                 Hidden, driven by a button that says what it does. */}
             <input
+              id="bc_attachment_file"
+              name="bc_attachment_file"
               ref={fileRef}
               type="file"
               className="hidden"

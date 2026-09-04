@@ -99,6 +99,8 @@ export function ImportUsersModal({
         {!preview && (
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <input
+              id="import_users_file"
+              name="import_users_file"
               ref={fileRef}
               type="file"
               accept=".db,.sqlite,.sqlite3,.json,application/json,application/x-sqlite3,application/octet-stream"
@@ -161,6 +163,8 @@ export function ImportUsersModal({
                     <TR key={i} selected={picked.has(i)}>
                       <TD>
                         <input
+                          id={`import_user_pick_${i}`}
+                          name={`import_user_pick_${i}`}
                           type="checkbox"
                           disabled={u.exists}
                           checked={picked.has(i)}

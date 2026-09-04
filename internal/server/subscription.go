@@ -803,7 +803,11 @@ func (rt *Router) subUnavailable(w http.ResponseWriter, userID int64, err error)
 // URL space confirms nothing about the fleet.
 func (rt *Router) serveAWG(w http.ResponseWriter, r *http.Request, u *model.User, set *model.Settings, rest string) {
 	name, ext, ok := strings.Cut(rest, ".")
-	if !ok || (ext != "conf" && ext != "png") {
+	if !ok {
+		name = strings.TrimSuffix(rest, "/config")
+		name = strings.Trim(name, "/")
+		ext = "conf"
+	} else if ext != "conf" && ext != "png" {
 		rt.currentDecoy().ServeHTTP(w, r)
 		return
 	}

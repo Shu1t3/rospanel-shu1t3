@@ -33,6 +33,8 @@ function RestoreFlow({ onBack }: { onBack: () => void }) {
     <div className="flex flex-col gap-4">
       <p className="text-sm text-ink-muted">{t('wizard.restoreIntro')}</p>
       <input
+        id="wizard_backup_file"
+        name="wizard_backup_file"
         ref={fileRef}
         type="file"
         accept={BACKUP_ACCEPT}
@@ -345,6 +347,7 @@ export function Wizard({ onDone }: { onDone: () => void }) {
                       </p>
                       <label className="flex items-center gap-2 text-sm">
                         <input
+                          id="wizard_mode_keep"
                           type="radio"
                           name="mode"
                           checked={wizMode === 'keep'}
@@ -355,6 +358,7 @@ export function Wizard({ onDone }: { onDone: () => void }) {
                       </label>
                       <label className="flex items-center gap-2 text-sm">
                         <input
+                          id="wizard_mode_change_domain"
                           type="radio"
                           name="mode"
                           checked={wizMode === 'domain'}
@@ -371,6 +375,7 @@ export function Wizard({ onDone }: { onDone: () => void }) {
                       </p>
                       <label className="flex items-center gap-2 text-sm">
                         <input
+                          id="wizard_mode_issue_cert"
                           type="radio"
                           name="mode"
                           checked={wizMode === 'domain'}
@@ -381,6 +386,7 @@ export function Wizard({ onDone }: { onDone: () => void }) {
                       </label>
                       <label className="flex items-center gap-2 text-sm">
                         <input
+                          id="wizard_mode_keep_temp"
                           type="radio"
                           name="mode"
                           checked={wizMode === 'keep'}
@@ -397,6 +403,7 @@ export function Wizard({ onDone }: { onDone: () => void }) {
                       </p>
                       <label className="flex items-center gap-2 text-sm">
                         <input
+                          id="wizard_mode_stay_on_ip"
                           type="radio"
                           name="mode"
                           checked={wizMode === 'ip'}
@@ -407,6 +414,7 @@ export function Wizard({ onDone }: { onDone: () => void }) {
                       </label>
                       <label className="flex items-center gap-2 text-sm">
                         <input
+                          id="wizard_mode_move_to_domain"
                           type="radio"
                           name="mode"
                           checked={wizMode === 'domain'}
@@ -470,6 +478,7 @@ export function Wizard({ onDone }: { onDone: () => void }) {
                   <p className="text-sm text-ink-muted">{t('wizard.pathIntro')}</p>
                   <label className="flex items-start gap-2 text-sm">
                     <input
+                      id="wizard_pathmode_generate"
                       type="radio"
                       name="pathmode"
                       checked={pathMode === 'generate'}
@@ -485,6 +494,7 @@ export function Wizard({ onDone }: { onDone: () => void }) {
                   </label>
                   <label className="flex items-start gap-2 text-sm">
                     <input
+                      id="wizard_pathmode_keep"
                       type="radio"
                       name="pathmode"
                       checked={pathMode === 'keep'}

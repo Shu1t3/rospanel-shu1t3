@@ -214,6 +214,8 @@ export function ManagementCard() {
               desc={t("manage.importDesc")}
             >
               <input
+                id="manage_backup_file"
+                name="manage_backup_file"
                 ref={fileRef}
                 type="file"
                 accept={BACKUP_ACCEPT}

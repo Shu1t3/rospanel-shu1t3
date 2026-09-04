@@ -126,6 +126,8 @@ export function DnsEditor({
           {t("dns.customHint")}
         </p>
         <textarea
+          id="dns_custom_servers"
+          name="dns_custom_servers"
           value={st.custom}
           onChange={(e) => emit(st.sel, e.currentTarget.value)}
           rows={3}

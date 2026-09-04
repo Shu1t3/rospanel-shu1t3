@@ -3,6 +3,7 @@ import {
   createContext,
   useContext,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -714,13 +715,23 @@ export function SaveBar({
 }
 
 /* ------------------------------------------------------------------- inputs */
-function Field({ label, children }: { label?: string; children: ReactNode }) {
+function Field({
+  label,
+  htmlFor,
+  children,
+}: {
+  label?: string;
+  htmlFor?: string;
+  children: ReactNode;
+}) {
   if (!label) return <>{children}</>;
   return (
-    <label className="block">
-      <span className="mb-1 block text-sm font-medium text-ink">{label}</span>
+    <div className="block">
+      <label htmlFor={htmlFor} className="mb-1 block text-sm font-medium text-ink">
+        {label}
+      </label>
       {children}
-    </label>
+    </div>
   );
 }
 
@@ -742,6 +753,8 @@ export function TextInput({
   mono,
   disabled,
   className,
+  id,
+  name,
 }: {
   label?: string;
   value: string;
@@ -756,10 +769,17 @@ export function TextInput({
   mono?: boolean;
   disabled?: boolean;
   className?: string;
+  id?: string;
+  name?: string;
 }) {
+  const autoId = useId();
+  const inputId = id || autoId;
+  const inputName = name || id || inputId;
   return (
-    <Field label={label}>
+    <Field label={label} htmlFor={inputId}>
       <input
+        id={inputId}
+        name={inputName}
         className={cn(
           inputCls,
           mono && "font-mono",
@@ -789,6 +809,8 @@ export function Textarea({
   rows = 3,
   hint,
   inputRef,
+  id,
+  name,
 }: {
   label?: string;
   value: string;
@@ -799,10 +821,17 @@ export function Textarea({
   // inputRef exposes the element so a caller can act on the selection — wrapping
   // the highlighted text in a tag, for instance.
   inputRef?: React.Ref<HTMLTextAreaElement>;
+  id?: string;
+  name?: string;
 }) {
+  const autoId = useId();
+  const inputId = id || autoId;
+  const inputName = name || id || inputId;
   return (
-    <Field label={label}>
+    <Field label={label} htmlFor={inputId}>
       <textarea
+        id={inputId}
+        name={inputName}
         ref={inputRef}
         className={cn(inputCls, "resize-y")}
         value={value}
@@ -819,10 +848,15 @@ export function PasswordInput(
   props: Omit<Parameters<typeof TextInput>[0], "type" | "mono">,
 ) {
   const [show, setShow] = useState(false);
+  const autoId = useId();
+  const inputId = props.id || autoId;
+  const inputName = props.name || props.id || inputId;
   return (
-    <Field label={props.label}>
+    <Field label={props.label} htmlFor={inputId}>
       <div className="relative">
         <input
+          id={inputId}
+          name={inputName}
           className={cn(inputCls, "pr-10", props.className)}
           value={props.value}
           type={show ? "text" : "password"}
@@ -923,6 +957,8 @@ export function Select({
     setQ('')
   }
 
+  const searchInputId = useId()
+
   return (
     <Field label={label}>
       <button
@@ -946,6 +982,8 @@ export function Select({
               {searchable && (
                 <div className="border-b border-gray-100 p-2">
                   <input
+                    id={`select_search_${searchInputId}`}
+                    name={`select_search_${searchInputId}`}
                     autoFocus
                     value={q}
                     onChange={(e) => setQ(e.currentTarget.value)}
@@ -1008,6 +1046,8 @@ export function TagsInput({
   const boxRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
+  const tagsInputId = useId()
+
   const add = (v: string) => {
     v = v.trim()
     if (v && !value.includes(v)) onChange([...value, v])
@@ -1066,6 +1106,8 @@ export function TagsInput({
           </span>
         ))}
         <input
+          id={`tags_input_${tagsInputId}`}
+          name={`tags_input_${tagsInputId}`}
           ref={inputRef}
           value={draft}
           onChange={(e) => setDraft(e.currentTarget.value)}
@@ -1103,6 +1145,8 @@ export function TagsInput({
             >
               <div className="border-b border-gray-100 p-2">
                 <input
+                  id={`tags_search_${tagsInputId}`}
+                  name={`tags_search_${tagsInputId}`}
                   autoFocus
                   value={q}
                   onChange={(e) => setQ(e.currentTarget.value)}
@@ -1462,14 +1506,22 @@ export function Checkbox({
   onChange,
   label,
   hint,
+  id,
+  name,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
   label: ReactNode;
   hint?: ReactNode;
+  id?: string;
+  name?: string;
 }) {
+  const autoId = useId();
+  const inputId = id || autoId;
+  const inputName = name || id || inputId;
   return (
     <label
+      htmlFor={inputId}
       className={cn(
         "relative flex cursor-pointer select-none items-center gap-3 rounded-xl border px-3 py-2.5 text-sm transition",
         checked
@@ -1478,6 +1530,8 @@ export function Checkbox({
       )}
     >
       <input
+        id={inputId}
+        name={inputName}
         type="checkbox"
         className="sr-only"
         checked={checked}

@@ -183,6 +183,8 @@ function EditableName({ user, onChanged }: { user: User; onChanged: () => void }
   return (
     <span className="flex h-8 min-w-0 items-center gap-1.5">
       <input
+        id="user_rename_input"
+        name="user_rename_input"
         autoFocus
         value={draft}
         onChange={(e) => setDraft(e.currentTarget.value)}
@@ -1021,6 +1023,8 @@ export function UserDetail({
         </p>
         <div className="mt-3">
           <input
+            id="user_msg_media"
+            name="user_msg_media"
             ref={msgFileRef}
             type="file"
             className="hidden"

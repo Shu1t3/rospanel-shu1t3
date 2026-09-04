@@ -16,7 +16,7 @@
 
 [Русский](README.md) · **English**
 
-[What it is](#what-it-is) · [Where to get a server](#️-where-to-get-a-server) · [Quick start](#-quick-start) · [Migration from upstream](#-migration-from-upstream-appsganinrospanel) · [Features](#-features) · [CLI](#️-cli) · [Architecture](#-architecture) · [Disclaimer](#️-disclaimer) · [Development](#-development) · [Support](#-support-the-project)
+[What it is](#what-it-is) · [Quick start](#-quick-start) · [Migration from upstream](#-migration-from-upstream-appsganinrospanel) · [Features](#-features) · [CLI](#️-cli) · [Architecture](#-architecture) · [Disclaimer](#️-disclaimer) · [Development](#-development) · [Acknowledgments](#-acknowledgments) · [License](#-license)
 
 </div>
 

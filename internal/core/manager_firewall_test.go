@@ -35,6 +35,12 @@ func TestHostFirewallRules(t *testing.T) {
 	if err := st.SetProtocolEnabled("hysteria2", true); err != nil {
 		t.Fatalf("set hysteria enabled: %v", err)
 	}
+	if err := st.SetProtocolEnabled("awg", true); err != nil {
+		t.Fatalf("set awg enabled: %v", err)
+	}
+	if err := st.SetAWGConfig(40123, "", ""); err != nil {
+		t.Fatalf("set awg config: %v", err)
+	}
 
 	// Add custom inbounds
 	_, err = st.CreateInbound(model.Inbound{
@@ -79,6 +85,7 @@ func TestHostFirewallRules(t *testing.T) {
 		"11443/udp",
 		"20000:25000/udp",
 		"30000:35000/udp",
+		"40123/udp",
 		"443/tcp",
 		"80/tcp",
 		"8443/tcp",

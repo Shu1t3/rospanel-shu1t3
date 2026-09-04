@@ -66,18 +66,24 @@ export function Login({
             <BrandLogo size={32} />
           </div>
           <TextInput
+            id="username"
+            name="username"
             label={t('login.username')}
             value={username}
             onChange={setUsername}
             autoFocus
           />
           <PasswordInput
+            id="password"
+            name="password"
             label={t('login.password')}
             value={password}
             onChange={setPassword}
           />
           {needCode && (
             <TextInput
+              id="code"
+              name="code"
               label={t('login.code')}
               value={code}
               onChange={(v) => setCode(v.replace(/\D/g, '').slice(0, 6))}

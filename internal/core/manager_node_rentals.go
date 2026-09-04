@@ -807,19 +807,39 @@ func (m *Manager) GetNodeReservedPorts(nodeID int64) ([]model.PortInfo, error) {
 
 	var ports []model.PortInfo
 	if nodeID == model.LocalNodeID {
-		if set.VLESSEnabled || set.RealityEnabled {
+		if set.VLESSEnabled {
+			vlessPort := set.VLESSPort
+			if vlessPort == 0 {
+				vlessPort = 443
+			}
 			ports = append(ports, model.PortInfo{
-				Port:     set.RealityPort,
+				Port:     vlessPort,
 				Protocol: "tcp",
-				Service:  "VLESS / REALITY",
+				Service:  "VLESS",
 				IsOwner:  true,
 			})
 		}
-		if set.HysteriaEnabled {
+		if set.RealityEnabled && set.RealityPort > 0 {
+			ports = append(ports, model.PortInfo{
+				Port:     set.RealityPort,
+				Protocol: "tcp",
+				Service:  "REALITY",
+				IsOwner:  true,
+			})
+		}
+		if set.HysteriaEnabled && set.HysteriaPort > 0 {
 			ports = append(ports, model.PortInfo{
 				Port:     set.HysteriaPort,
 				Protocol: "udp",
 				Service:  "Hysteria 2",
+				IsOwner:  true,
+			})
+		}
+		if set.AWGEnabled && set.AWGPort > 0 {
+			ports = append(ports, model.PortInfo{
+				Port:     set.AWGPort,
+				Protocol: "udp",
+				Service:  "AmneziaWG",
 				IsOwner:  true,
 			})
 		}
@@ -848,19 +868,39 @@ func (m *Manager) GetNodeReservedPorts(nodeID int64) ([]model.PortInfo, error) {
 			return nil, invalidCode("err.nodeNotFound", "нода не найдена")
 		}
 		eff := nodeSettings(set, node)
-		if derefBool(node.VLESSEnabled) || derefBool(node.RealityEnabled) {
+		if derefBool(node.VLESSEnabled) {
+			vlessPort := eff.VLESSPort
+			if vlessPort == 0 {
+				vlessPort = 443
+			}
 			ports = append(ports, model.PortInfo{
-				Port:     eff.RealityPort,
+				Port:     vlessPort,
 				Protocol: "tcp",
-				Service:  "VLESS / REALITY",
+				Service:  "VLESS",
 				IsOwner:  !node.IsRented,
 			})
 		}
-		if derefBool(node.HysteriaEnabled) {
+		if derefBool(node.RealityEnabled) && eff.RealityPort > 0 {
+			ports = append(ports, model.PortInfo{
+				Port:     eff.RealityPort,
+				Protocol: "tcp",
+				Service:  "REALITY",
+				IsOwner:  !node.IsRented,
+			})
+		}
+		if derefBool(node.HysteriaEnabled) && eff.HysteriaPort > 0 {
 			ports = append(ports, model.PortInfo{
 				Port:     eff.HysteriaPort,
 				Protocol: "udp",
 				Service:  "Hysteria 2",
+				IsOwner:  !node.IsRented,
+			})
+		}
+		if eff.AWGEnabled && eff.AWGPort > 0 {
+			ports = append(ports, model.PortInfo{
+				Port:     eff.AWGPort,
+				Protocol: "udp",
+				Service:  "AmneziaWG",
 				IsOwner:  !node.IsRented,
 			})
 		}

@@ -1,5 +1,5 @@
 import { QRCodeSVG } from "qrcode.react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   type BulkAction,
@@ -686,14 +686,23 @@ function SelectCheck({
   checked,
   onChange,
   label,
+  id,
+  name,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
   label: string;
+  id?: string;
+  name?: string;
 }) {
+  const autoId = useId();
+  const inputId = id || autoId;
+  const inputName = name || inputId;
   return (
-    <label className="flex shrink-0 cursor-pointer items-center" title={i18n.t("usersPanel.select")}>
+    <label htmlFor={inputId} className="flex shrink-0 cursor-pointer items-center" title={i18n.t("usersPanel.select")}>
       <input
+        id={inputId}
+        name={inputName}
         type="checkbox"
         className="sr-only"
         checked={checked}

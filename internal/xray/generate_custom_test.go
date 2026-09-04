@@ -744,3 +744,67 @@ func TestSniffingRouteOnlyAndDirectFreedomDomainStrategy(t *testing.T) {
 		}
 	}
 }
+
+func TestRemoteNodeWithoutVLESSDoesNotBindVLESSPort(t *testing.T) {
+	// Remote node with VLESS disabled
+	nodeSet := baseSettings()
+	nodeSet.ServerID = 42
+	nodeSet.VLESSEnabled = false
+
+	customInbound := model.Inbound{
+		ID:       1,
+		ServerID: 42,
+		Name:     "custom-trojan",
+		Protocol: model.InbTrojan,
+		Port:     443,
+		Enabled:  true,
+		Opts: model.InboundOpts{
+			Transport: "tcp",
+			Security:  "none",
+		},
+	}
+	customInbound.Normalize()
+
+	cfg, err := Generate(nodeSet, nil, Options{
+		PanelDest: "127.0.0.1:8080",
+		ServerID:  42,
+		Custom:    []model.Inbound{customInbound},
+	}, nil)
+	if err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	// vless-in should NOT be present on remote node when VLESSEnabled=false
+	if in := findInbound(cfg, TagVLESS); in != nil {
+		t.Errorf("expected vless-in to be omitted on remote node when VLESSEnabled=false, found: %+v", in)
+	}
+
+	// Custom inbound should be present on port 443
+	var foundCustom bool
+	for _, in := range cfg.Inbounds {
+		if in.Port == 443 {
+			foundCustom = true
+			if in.Tag != "custom-1" {
+				t.Errorf("expected port 443 inbound tag to be 'custom-1', got %q", in.Tag)
+			}
+		}
+	}
+	if !foundCustom {
+		t.Errorf("custom inbound on port 443 was not found in generated config")
+	}
+
+	// Conversely, on the master node (ServerID == 0), vless-in must still be generated for panel fallback
+	masterSet := baseSettings()
+	masterSet.ServerID = model.LocalNodeID
+	masterSet.VLESSEnabled = false
+	masterCfg, err := Generate(masterSet, nil, Options{
+		PanelDest: "127.0.0.1:8080",
+		ServerID:  model.LocalNodeID,
+	}, nil)
+	if err != nil {
+		t.Fatalf("Generate for master failed: %v", err)
+	}
+	if in := findInbound(masterCfg, TagVLESS); in == nil {
+		t.Errorf("expected vless-in to be preserved on master node for panel fallback, but was nil")
+	}
+}

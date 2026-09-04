@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   deleteBrandingLogo,
@@ -37,18 +37,27 @@ function ColorField({
   value,
   def,
   onChange,
+  id,
+  name,
 }: {
   label: string;
   hint: string;
   value: string;
   def: string;
   onChange: (v: string) => void;
+  id?: string;
+  name?: string;
 }) {
   const { t } = useTranslation();
   const isDefault = value.toLowerCase() === def.toLowerCase();
+  const autoId = useId();
+  const rowId = id || autoId;
+  const rowName = name || rowId;
   return (
     <div className="flex items-center gap-3">
       <input
+        id={`${rowId}_picker`}
+        name={`${rowName}_picker`}
         type="color"
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -60,6 +69,8 @@ function ColorField({
         <p className="truncate text-xs text-ink-muted">{hint}</p>
       </div>
       <input
+        id={`${rowId}_hex`}
+        name={`${rowName}_hex`}
         value={value}
         onChange={(e) => {
           const h = normHex(e.target.value);
@@ -250,6 +261,8 @@ export function BrandingSettings() {
               </Button>
             )}
             <input
+              id="brand_logo_file"
+              name="brand_logo_file"
               ref={fileRef}
               type="file"
               accept="image/png,image/jpeg"

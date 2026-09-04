@@ -130,7 +130,9 @@ func (m *Manager) effectiveSettings(serverID int64) (*model.Settings, error) {
 // exists to prevent.
 func reservedPorts(set *model.Settings) model.ReservedPorts {
 	r := model.NewReservedPorts()
-	r.HoldTCP(set.VLESSPort, "VLESS-Vision")
+	if set.VLESSEnabled || set.ServerID == model.LocalNodeID {
+		r.HoldTCP(set.VLESSPort, "VLESS-Vision")
+	}
 	if set.RealityEnabled {
 		r.HoldTCP(set.RealityPort, "VLESS-XHTTP-REALITY")
 	}
@@ -758,6 +760,9 @@ func HostFirewallRules(st *store.Store) ([]firewall.Rule, error) {
 				rules = append(rules, firewall.UDPRangeRule(start, set.HopEnd, "hysteria-hop"))
 			}
 		}
+	}
+	if set.AWGEnabled && set.AWGPort > 0 {
+		rules = append(rules, firewall.UDPRule(set.AWGPort, "awg"))
 	}
 	list, err := st.EnabledInbounds(model.LocalNodeID)
 	if err != nil {

@@ -168,7 +168,10 @@ func (m *Manager) NodeDesiredState(n *model.Node) (*nodeapi.NodeState, error) {
 	if err != nil {
 		return nil, err
 	}
-	connGuardPorts := []int{ns.VLESSPort}
+	connGuardPorts := make([]int, 0, len(opts.Custom)+2)
+	if ns.VLESSEnabled {
+		connGuardPorts = append(connGuardPorts, ns.VLESSPort)
+	}
 	if ns.RealityEnabled {
 		connGuardPorts = append(connGuardPorts, ns.RealityPort)
 	}
