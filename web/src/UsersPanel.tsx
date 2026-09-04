@@ -14,6 +14,7 @@ import {
 import { useAction, useViewMode } from "./hooks";
 import i18n, { currentLang } from "./i18n";
 import {
+  dateToUnixEndOfDay,
   fmtExpire,
   fmtQuota,
   gbToBytes,
@@ -211,7 +212,7 @@ export function UsersPanel({ userBotEnabled }: { userBotEnabled: boolean }) {
   // Reset to the first page whenever the result set changes shape.
   useEffect(() => {
     setPage(1);
-  }, [query, statusFilter, sort]);
+  }, [query, statusFilter, sort, tagFilter]);
 
   const filteredIds = useMemo(() => filtered.map((u) => u.id), [filtered]);
   const allFilteredSelected =
@@ -806,7 +807,7 @@ function AddUser({
     if (!name.trim()) return;
     run(async () => {
       const dl = gbToBytes(Number(limitGb) || 0);
-      const ea = expDate ? Math.floor(new Date(expDate).getTime() / 1000) : 0;
+      const ea = expDate ? dateToUnixEndOfDay(expDate) : 0;
       const u = await createUser(name.trim(), dl, ea);
       if (resetPeriod !== "none") await setResetPeriod(u.id, resetPeriod);
       setCreated(u);
@@ -829,7 +830,13 @@ function AddUser({
       title={t(created ? "usersPanel.userCreated" : "usersPanel.newUser")}
     >
       {!created ? (
-        <div className="flex flex-col gap-3">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            submit();
+          }}
+          className="flex flex-col gap-3"
+        >
           <TextInput
             label={t("usersPanel.name")}
             placeholder={t("usersPanel.namePlaceholder")}
@@ -857,10 +864,10 @@ function AddUser({
             value={resetPeriod}
             onChange={setResetPeriodState}
           />
-          <Button loading={busy} onClick={submit}>
+          <Button type="submit" loading={busy}>
             {t("usersPanel.createAndShowLink")}
           </Button>
-        </div>
+        </form>
       ) : (
         <div className="flex flex-col items-center gap-3">
           <p className="text-sm text-ink-muted">

@@ -6,7 +6,7 @@ import { fmtBytes, fmtDuration } from "./format";
 import { formatSpeedLimit, serverName, statusDot } from "./NodesPanel";
 import { useIsAdmin } from "./role";
 import { navigate } from "./router";
-import { Badge, Card, Skeleton } from "./ui";
+import { Badge, Button, Card, Skeleton } from "./ui";
 import { ManagementCard } from "./Management";
 
 function Gauge({
@@ -276,21 +276,68 @@ export function OverviewPanel() {
   const isAdmin = useIsAdmin();
   const [s, setS] = useState<SystemStatus | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [reconnecting, setReconnecting] = useState(false);
   const [nodes, setNodes] = useState<NodeView[]>([]);
+
   useEffect(() => {
-    // Live push via Server-Sent Events — the server streams updates every 2s and
-    // EventSource auto-reconnects if the stream drops.
-    const es = new EventSource("api/system/stream", { withCredentials: true });
-    es.onmessage = (e) => {
+    let es: EventSource | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let attempt = 0;
+    let unmounted = false;
+
+    const connect = () => {
+      if (unmounted) return;
       try {
-        setS(JSON.parse(e.data));
-        setLoaded(true);
+        es = new EventSource("api/system/stream", { withCredentials: true });
       } catch {
-        /* ignore malformed frame */
+        handleError();
+        return;
       }
+
+      es.onopen = () => {
+        attempt = 0;
+        setError(null);
+        setReconnecting(false);
+      };
+
+      es.onmessage = (e) => {
+        try {
+          setS(JSON.parse(e.data));
+          setLoaded(true);
+          setError(null);
+          setReconnecting(false);
+        } catch {
+          /* ignore malformed frame */
+        }
+      };
+
+      es.onerror = () => {
+        handleError();
+      };
     };
-    return () => es.close();
-  }, []);
+
+    const handleError = () => {
+      if (unmounted) return;
+      if (es) {
+        es.close();
+        es = null;
+      }
+      attempt++;
+      const delay = Math.min(2000 * Math.pow(1.5, attempt - 1), 15000);
+      setReconnecting(true);
+      setError(t("common.reconnecting", "Потеряно соединение с сервером. Переподключение..."));
+      timer = setTimeout(connect, delay);
+    };
+
+    connect();
+
+    return () => {
+      unmounted = true;
+      if (es) es.close();
+      if (timer) clearTimeout(timer);
+    };
+  }, [t]);
 
   // The node list is an admin-only route, so an operator never asks for it (and never
   // sees a strip that would answer 403). It polls on a slow timer of its own rather
@@ -307,6 +354,14 @@ export function OverviewPanel() {
     return () => clearInterval(id);
   }, [isAdmin]);
 
+  if (!loaded && error && !s) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-red-200 bg-red-50 p-8 text-center">
+        <p className="text-sm font-medium text-danger">{error}</p>
+        <Button onClick={() => window.location.reload()}>{t("common.retry", "Повторить")}</Button>
+      </div>
+    );
+  }
   if (!loaded) return <OverviewSkeleton />;
   if (!s) return null;
 
@@ -315,6 +370,12 @@ export function OverviewPanel() {
 
   return (
     <div className="flex flex-col gap-4">
+      {reconnecting && (
+        <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <span className="h-2 w-2 animate-pulse rounded-full bg-amber-500" />
+          <span>{t("common.reconnecting", "Соединение с сервером прервано. Переподключение...")}</span>
+        </div>
+      )}
 
       {/* The numbers the panel exists to report, above the machine it runs on. */}
       <Card className="p-4">

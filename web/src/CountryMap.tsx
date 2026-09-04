@@ -102,10 +102,10 @@ export function ConnectionCountries() {
                 <span className="w-6 shrink-0 text-center text-base leading-none">
                   {r.glyph}
                 </span>
-                <span className="w-56 shrink-0 truncate" title={r.label}>
+                <span className="w-28 sm:w-52 shrink-0 truncate text-xs sm:text-sm" title={r.label}>
                   {r.label}
                 </span>
-                <div className="relative h-4 flex-1 overflow-hidden rounded bg-gray-100">
+                <div className="relative h-3.5 sm:h-4 min-w-6 flex-1 overflow-hidden rounded bg-gray-100">
                   <div
                     className="h-full rounded"
                     style={{
@@ -115,7 +115,7 @@ export function ConnectionCountries() {
                     }}
                   />
                 </div>
-                <span className="w-24 shrink-0 text-right tabular-nums text-ink-muted">
+                <span className="shrink-0 text-right text-xs tabular-nums text-ink-muted sm:w-24 sm:text-sm">
                   {t('stats.countryIps', { n: r.ips })}
                 </span>
               </div>

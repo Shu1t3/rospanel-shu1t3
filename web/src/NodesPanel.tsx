@@ -1496,8 +1496,16 @@ function NodeSettingsDialog({
       : []),
   ];
 
+  const isDirty = genDirty || dnsDirty || r.dirty;
+  const handleClose = () => {
+    if (isDirty && !window.confirm(t("common.unsavedChangesPrompt", "У вас есть несохраненные изменения. Закрыть окно?"))) {
+      return;
+    }
+    onClose();
+  };
+
   return (
-    <Modal open onClose={onClose} title={t("nodes.settingsOf", { name: node.name })} size="xl">
+    <Modal open onClose={handleClose} title={t("nodes.settingsOf", { name: node.name })} size="xl">
       {node.is_rented && (
         <div className="mb-4 rounded-xl border border-indigo-500/20 bg-indigo-50/5 p-3 text-xs text-indigo-950 dark:text-indigo-200">
           <div className="flex items-center gap-2 font-medium">
@@ -1859,8 +1867,16 @@ function MasterSettingsDialog({
       onRefresh();
     });
 
+  const isDirty = genDirty || dnsDirty;
+  const handleClose = () => {
+    if (isDirty && !window.confirm(t("common.unsavedChangesPrompt", "У вас есть несохраненные изменения. Закрыть окно?"))) {
+      return;
+    }
+    onClose();
+  };
+
   return (
-    <Modal open onClose={onClose} title={t("nodes.masterSettings")} size="xl">
+    <Modal open onClose={handleClose} title={t("nodes.masterSettings")} size="xl">
       {!loaded ? (
         <CenterLoader />
       ) : (

@@ -183,3 +183,27 @@ export function countryName(code: string, lang: string, unknown: string): string
     return code.toUpperCase()
   }
 }
+
+// dateToUnixEndOfDay parses a YYYY-MM-DD date string and returns a Unix timestamp
+// set to the very end of that local day (23:59:59). This prevents premature account
+// expiration at 00:00:00 UTC.
+export function dateToUnixEndOfDay(dateStr: string): number {
+  if (!dateStr) return 0
+  const parts = dateStr.split('-').map(Number)
+  if (parts.length !== 3 || parts.some(isNaN)) return 0
+  const [year, month, day] = parts
+  const d = new Date(year, month - 1, day, 23, 59, 59, 999)
+  return Math.floor(d.getTime() / 1000)
+}
+
+// unixToLocalDate formats a Unix timestamp (seconds) into local YYYY-MM-DD.
+// Unlike toISOString().slice(0, 10), this preserves the operator's local calendar day.
+export function unixToLocalDate(unix: number): string {
+  if (!unix) return ''
+  const d = new Date(unix * 1000)
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+

@@ -61,7 +61,7 @@ export function StatsPanel() {
     })
   }
 
-  const chartData = series.map((p) => ({ day: p.day.slice(5), up: p.up, down: p.down }))
+  const chartData = series.map((p) => ({ day: p.day, up: p.up, down: p.down }))
   const sumUp = totals.reduce((a, t) => a + t.up, 0)
   const sumDown = totals.reduce((a, t) => a + t.down, 0)
 

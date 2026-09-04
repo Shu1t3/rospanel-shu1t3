@@ -65,7 +65,13 @@ export function TrafficArea({
           </linearGradient>
         </defs>
         <CartesianGrid strokeDasharray="3 3" stroke={grid} vertical={false} />
-        <XAxis dataKey="day" tick={{ fontSize: 12, fill: axis }} tickLine={false} axisLine={false} />
+        <XAxis
+          dataKey="day"
+          tickFormatter={(d: string) => (d && d.length > 5 ? d.slice(5) : d)}
+          tick={{ fontSize: 12, fill: axis }}
+          tickLine={false}
+          axisLine={false}
+        />
         <YAxis tickFormatter={fmt} tick={{ fontSize: 11, fill: axis }} tickLine={false} axisLine={false} width={56} />
         <Tooltip
           formatter={(v, n) => [fmt(num(v)), seriesLabel(n)]}

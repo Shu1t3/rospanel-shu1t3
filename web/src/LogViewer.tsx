@@ -24,18 +24,62 @@ export function LogViewer({
   const [lines, setLines] = useState<string[]>([]);
   const [level, setLevel] = useState("all");
   const [atBottom, setAtBottom] = useState(true);
+  const [reconnecting, setReconnecting] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
 
   useEffect(() => {
-    const es = new EventSource(streamUrl, { withCredentials: true });
-    es.onmessage = (e) => {
-      setLines((prev) => {
-        const next = [...prev, e.data];
-        return next.length > 2000 ? next.slice(-2000) : next;
-      });
+    let es: EventSource | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let attempt = 0;
+    let unmounted = false;
+
+    const connect = () => {
+      if (unmounted) return;
+      try {
+        es = new EventSource(streamUrl, { withCredentials: true });
+      } catch {
+        handleError();
+        return;
+      }
+
+      es.onopen = () => {
+        attempt = 0;
+        setReconnecting(false);
+      };
+
+      es.onmessage = (e) => {
+        setReconnecting(false);
+        setLines((prev) => {
+          const next = [...prev, e.data];
+          return next.length > 2000 ? next.slice(-2000) : next;
+        });
+      };
+
+      es.onerror = () => {
+        handleError();
+      };
     };
-    return () => es.close();
+
+    const handleError = () => {
+      if (unmounted) return;
+      if (es) {
+        es.close();
+        es = null;
+      }
+      attempt++;
+      setReconnecting(true);
+      const delay = Math.min(2000 * Math.pow(1.5, attempt - 1), 10000);
+      timer = setTimeout(connect, delay);
+    };
+
+    connect();
+
+    return () => {
+      unmounted = true;
+      if (es) es.close();
+      if (timer) clearTimeout(timer);
+    };
   }, [streamUrl]);
 
   const shown =
@@ -72,6 +116,12 @@ export function LogViewer({
         <SegmentedControl data={filters} value={level} onChange={setLevel} />
       }
     >
+      {reconnecting && (
+        <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-800">
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />
+          <span>{t("logs.reconnecting", "Соединение прервано. Переподключение...")}</span>
+        </div>
+      )}
       <div
         ref={boxRef}
         onScroll={onScroll}

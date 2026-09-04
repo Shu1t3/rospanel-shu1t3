@@ -24,6 +24,7 @@ import {
   Badge,
   Button,
   CenterLoader,
+  Drawer,
   IconChevron,
   Modal,
   Select,
@@ -278,11 +279,11 @@ export function InboundsEditor({
         </div>
       )}
 
-      <Modal
+      <Drawer
         open={!!editing}
         onClose={() => setEditing(null)}
+        side="right"
         title={t(editing?.id ? "inb.connection" : "inb.newConnection")}
-        size="lg"
       >
         {editing && (
           <InboundForm
@@ -294,7 +295,7 @@ export function InboundsEditor({
             busy={busy || applying}
           />
         )}
-      </Modal>
+      </Drawer>
 
       <Modal
         open={!!confirmDel}

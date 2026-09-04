@@ -23,7 +23,7 @@ function LongField({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex flex-col gap-1">
       <span className="text-sm text-ink-muted">{label}</span>
-      <code className="block break-all rounded border border-gray-200 bg-white/60 px-2 py-1 font-mono text-xs text-ink dark:border-neutral-800 dark:bg-neutral-900/60 dark:text-neutral-200">
+      <code className="block break-all rounded border border-gray-200 bg-gray-50/60 px-2 py-1 font-mono text-xs text-ink">
         {value}
       </code>
     </div>

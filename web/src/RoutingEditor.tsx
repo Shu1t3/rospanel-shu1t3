@@ -740,17 +740,19 @@ export function RoutingEditor({
                 </span>
                 <button
                   type="button"
+                  aria-label={t("route.moveUp", "Переместить выше")}
                   disabled={i === 0}
                   onClick={() => moveLane(i, -1)}
-                  className="rounded p-1 text-gray-500 hover:bg-gray-200 disabled:opacity-30"
+                  className="rounded p-1 text-gray-500 hover:bg-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:opacity-30"
                 >
                   <IconChevron className="rotate-180" />
                 </button>
                 <button
                   type="button"
+                  aria-label={t("route.moveDown", "Переместить ниже")}
                   disabled={last}
                   onClick={() => moveLane(i, 1)}
-                  className="rounded p-1 text-gray-500 hover:bg-gray-200 disabled:opacity-30"
+                  className="rounded p-1 text-gray-500 hover:bg-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:opacity-30"
                 >
                   <IconChevron />
                 </button>

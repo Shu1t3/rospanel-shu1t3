@@ -359,6 +359,7 @@ export function Button({
   const cls = cn(
     "inline-flex items-center justify-center gap-2 rounded-lg font-semibold select-none",
     "transition duration-150 active:scale-[0.97] disabled:opacity-60 disabled:cursor-not-allowed disabled:active:scale-100",
+    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2",
     BTN[variant][color],
     SIZE[size],
     fullWidth && "w-full",
@@ -437,6 +438,7 @@ export function IconButton({
 }) {
   const cls = cn(
     "inline-flex h-8 w-8 items-center justify-center rounded-lg transition active:scale-90",
+    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2",
     BTN.subtle[color],
     "disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100",
     className,
@@ -683,7 +685,9 @@ export function SaveBar({
   const { t } = useTranslation();
   if (!dirty) return null;
   return (
-    <div className="fixed inset-x-0 bottom-0 z-50 border-t border-gray-200 bg-white/95 backdrop-blur">
+    <>
+      <div className="h-24 w-full shrink-0" aria-hidden="true" />
+      <div className="fixed inset-x-0 bottom-0 z-50 border-t border-gray-200 bg-white/95 backdrop-blur">
       <div className="mx-auto flex max-w-6xl flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
         <div className="min-w-0">
           <p className="text-sm font-medium text-ink">
@@ -711,6 +715,7 @@ export function SaveBar({
         </div>
       </div>
     </div>
+    </>
   );
 }
 
@@ -887,7 +892,7 @@ function AnchoredPopover({
 }: {
   anchor: HTMLElement | null
   onClose: () => void
-  children: (rect: DOMRect) => ReactNode
+  children: (rect: DOMRect, flipUp: boolean) => ReactNode
 }) {
   const [rect, setRect] = useState<DOMRect | null>(anchor ? anchor.getBoundingClientRect() : null)
   const panelRef = useRef<HTMLDivElement>(null)
@@ -912,10 +917,12 @@ function AnchoredPopover({
     }
   }, [anchor, onClose])
   if (!rect) return null
+  const spaceBelow = window.innerHeight - rect.bottom
+  const flipUp = spaceBelow < 280 && rect.top > 280
   return createPortal(
     <div className="fixed inset-0 z-260" onMouseDown={onClose}>
       <div ref={panelRef} onMouseDown={(e) => e.stopPropagation()}>
-        {children(rect)}
+        {children(rect, flipUp)}
       </div>
     </div>,
     document.body,
@@ -974,10 +981,19 @@ export function Select({
       </button>
       {open && (
         <AnchoredPopover anchor={ref.current} onClose={() => setOpen(false)}>
-          {(rect) => (
+          {(rect, flipUp) => (
             <div
-              className="animate-scale-in origin-top overflow-clip rounded-xl border border-gray-200 bg-white shadow-lg"
-              style={{ position: 'fixed', left: rect.left, top: rect.bottom + 4, width: rect.width }}
+              className={cn(
+                "animate-scale-in overflow-clip rounded-xl border border-gray-200 bg-white shadow-lg",
+                flipUp ? "origin-bottom" : "origin-top",
+              )}
+              style={{
+                position: 'fixed',
+                left: rect.left,
+                top: flipUp ? undefined : rect.bottom + 4,
+                bottom: flipUp ? window.innerHeight - rect.top + 4 : undefined,
+                width: rect.width,
+              }}
             >
               {searchable && (
                 <div className="border-b border-gray-100 p-2">
@@ -1138,10 +1154,19 @@ export function TagsInput({
       {hint && <p className="mt-1 text-xs text-ink-muted">{hint}</p>}
       {open && avail.length > 0 && (
         <AnchoredPopover anchor={boxRef.current} onClose={closePopover}>
-          {(rect) => (
+          {(rect, flipUp) => (
             <div
-              className="animate-scale-in origin-top overflow-clip rounded-xl border border-gray-200 bg-white shadow-lg"
-              style={{ position: 'fixed', left: rect.left, top: rect.bottom + 4, width: rect.width }}
+              className={cn(
+                "animate-scale-in overflow-clip rounded-xl border border-gray-200 bg-white shadow-lg",
+                flipUp ? "origin-bottom" : "origin-top",
+              )}
+              style={{
+                position: 'fixed',
+                left: rect.left,
+                top: flipUp ? undefined : rect.bottom + 4,
+                bottom: flipUp ? window.innerHeight - rect.top + 4 : undefined,
+                width: rect.width,
+              }}
             >
               <div className="border-b border-gray-100 p-2">
                 <input
@@ -1271,10 +1296,19 @@ export function DatePicker({
       </button>
       {open && (
         <AnchoredPopover anchor={ref.current} onClose={() => setOpen(false)}>
-          {(rect) => (
+          {(rect, flipUp) => (
             <div
-              className="animate-scale-in origin-top rounded-xl border border-gray-200 bg-white p-3 shadow-lg"
-              style={{ position: 'fixed', left: rect.left, top: rect.bottom + 4, width: 260 }}
+              className={cn(
+                "animate-scale-in rounded-xl border border-gray-200 bg-white p-3 shadow-lg",
+                flipUp ? "origin-bottom" : "origin-top",
+              )}
+              style={{
+                position: 'fixed',
+                left: rect.left,
+                top: flipUp ? undefined : rect.bottom + 4,
+                bottom: flipUp ? window.innerHeight - rect.top + 4 : undefined,
+                width: 260,
+              }}
             >
               <div className="mb-2 flex items-center justify-between">
                 <button
@@ -1461,6 +1495,7 @@ export function Switch({
       onClick={() => onChange(!checked)}
       className={cn(
         "relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition disabled:opacity-50",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2",
         checked ? "bg-brand-600" : "bg-gray-300",
       )}
     >
@@ -1743,7 +1778,11 @@ export function Modal({
   const maxW =
     size === "xl" ? "max-w-3xl" : size === "lg" ? "max-w-2xl" : "max-w-lg";
   return createPortal(
-    <div className="fixed inset-0 z-200 flex items-center justify-center p-4">
+    <div
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-200 flex items-center justify-center p-4"
+    >
       <div
         className="absolute inset-0 animate-fade-in bg-black/40"
         onClick={dismissible ? onClose : undefined}
@@ -1759,8 +1798,10 @@ export function Modal({
             <div className="min-w-0 flex-1 text-lg font-bold text-ink">{title}</div>
             {dismissible && (
               <button
+                type="button"
                 onClick={onClose}
-                className="shrink-0 text-gray-400 hover:text-gray-600"
+                aria-label="Закрыть"
+                className="shrink-0 rounded-lg p-1 text-gray-400 hover:text-gray-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
               >
                 <IconClose />
               </button>
@@ -1838,7 +1879,11 @@ export function Drawer({
   useEscape(onClose, open);
   if (!open) return null;
   return createPortal(
-    <div className="fixed inset-0 z-200">
+    <div
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-200"
+    >
       <div
         className="absolute inset-0 animate-fade-in bg-black/40"
         onClick={onClose}
@@ -1857,8 +1902,10 @@ export function Drawer({
         <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
           <div className="min-w-0 font-bold text-ink">{title}</div>
           <button
+            type="button"
             onClick={onClose}
-            className="text-gray-400 hover:text-gray-600"
+            aria-label="Закрыть"
+            className="rounded-lg p-1 text-gray-400 hover:text-gray-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
           >
             <IconClose />
           </button>

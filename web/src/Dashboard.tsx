@@ -242,6 +242,15 @@ export function Dashboard({
         <button
           onClick={() => {
             setMenuOpen(false);
+            setCredsOpen(true);
+          }}
+          className="py-2 text-left text-lg font-medium text-accent"
+        >
+          {t("nav.credentials")}
+        </button>
+        <button
+          onClick={() => {
+            setMenuOpen(false);
             setChangelogOpen(true);
           }}
           className="py-2 text-left text-lg font-medium text-accent"

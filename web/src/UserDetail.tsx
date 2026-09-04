@@ -33,6 +33,7 @@ import {
   type User,
 } from './api'
 import {
+  dateToUnixEndOfDay,
   fmtBytes,
   fmtExpire,
   fmtLastSeen,
@@ -47,6 +48,7 @@ import {
   ranges,
   resetPeriods,
   statusInfo,
+  unixToLocalDate,
 } from './format'
 import { useAction, useShowMore } from './hooks'
 import { HtmlEditor } from './HtmlEditor'
@@ -102,10 +104,6 @@ function planSelectData(plans: TariffPlan[], user: User) {
   return data
 }
 
-function unixToDate(unix: number): string {
-  return unix ? new Date(unix * 1000).toISOString().slice(0, 10) : ''
-}
-
 // optLabel resolves a select value to its human label, for the confirmation text.
 function optLabel(data: { value: string; label: string }[], value: string): string {
   return data.find((o) => o.value === value)?.label ?? value
@@ -134,6 +132,12 @@ function resetLabel(v: string): string {
 // confirmation text.
 function dateLabel(v: number | string): string {
   if (!v) return i18n.t('common.never')
+  if (typeof v === 'string') {
+    const parts = v.split('-').map(Number)
+    if (parts.length === 3 && parts.every((n) => !isNaN(n))) {
+      return new Date(parts[0], parts[1] - 1, parts[2]).toLocaleDateString(currentLang())
+    }
+  }
   const d = typeof v === 'number' ? new Date(v * 1000) : new Date(v)
   return d.toLocaleDateString(currentLang())
 }
@@ -341,7 +345,7 @@ export function UserDetail({
     }
   }, [user])
 
-  const chart = series.map((p) => ({ day: p.day.slice(5), up: p.up, down: p.down }))
+  const chart = series.map((p) => ({ day: p.day, up: p.up, down: p.down }))
   const fail = (e: unknown) => notifyError(errMessage(e))
 
   // A cap set through the API may not be one of the presets; keep it in the list so
@@ -608,9 +612,9 @@ export function UserDetail({
 
           <DatePicker
             label={t('usersPanel.validUntil')}
-            value={unixToDate(user.expire_at)}
+            value={unixToLocalDate(user.expire_at)}
             onChange={(v) => {
-              const ea = v ? Math.floor(new Date(v).getTime() / 1000) : 0
+              const ea = v ? dateToUnixEndOfDay(v) : 0
               confirmChange(t('usersPanel.validUntil'), dateLabel(user.expire_at), dateLabel(v), () =>
                 saveLimits(user.data_limit, ea, user.device_limit),
               )
