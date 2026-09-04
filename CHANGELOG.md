@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.23.3](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.23.2...v2.23.3) (2026-09-04)
+
+
+### Bug Fixes
+
+* **web:** комплексное устранение дефектов аудита фронтенда, UX/UI и доступности ([560eaa2](https://github.com/Shu1t3/rospanel-shu1t3/commit/560eaa2d3db4358dfe5d4a2b74eb1d12f73e4e79))
+
 ## [2.23.2](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.23.1...v2.23.2) (2026-09-04)
 
 
