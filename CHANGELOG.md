@@ -1,5 +1,22 @@
 # Changelog
 
+## [2.23.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.22.0...v2.23.0) (2026-09-04)
+
+
+### Features
+
+* разделение Control/Data Plane, изоляция внешних серверов и унификация генератора подписок ([4982bbe](https://github.com/Shu1t3/rospanel-shu1t3/commit/4982bbe11a154aabeb9aab9f9410399922d9c69a))
+
+
+### Bug Fixes
+
+* implement graceful shutdown for manager background routines using a done channel to prevent test race conditions ([ac659c3](https://github.com/Shu1t3/rospanel-shu1t3/commit/ac659c33789f6a2d5e87a516be69d352a45d94b9))
+
+
+### Refactoring
+
+* разделение DTO/домена и внедрение унифицированной модели статусов компонентов ([84bcdbf](https://github.com/Shu1t3/rospanel-shu1t3/commit/84bcdbf4e8673c0f647377af636b3644770f008f))
+
 ## [2.22.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.21.0...v2.22.0) (2026-09-04)
 
 
