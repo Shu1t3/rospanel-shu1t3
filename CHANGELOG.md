@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.22.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.21.0...v2.22.0) (2026-09-04)
+
+
+### Features
+
+* обновление AmneziaWG до протокола 3.1, поддержка сигнатур пакетов I1–I5 и перенос в доп. подключения ([9052229](https://github.com/Shu1t3/rospanel-shu1t3/commit/9052229c064a57b107e6dee91d40553523c617d1))
+
+
+### Bug Fixes
+
+* устранение уязвимостей и дефектов аудита кодовой базы (REVIEW.md) ([3b43c24](https://github.com/Shu1t3/rospanel-shu1t3/commit/3b43c24977bede5b5d5f8de8b7570d64f52cee17))
+
 ## [2.21.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.20.2...v2.21.0) (2026-09-03)
 
 
