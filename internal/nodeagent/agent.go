@@ -223,6 +223,7 @@ type Agent struct {
 	awgMu     sync.Mutex
 	awgEmails map[string]string
 	awgLast   map[string]awg.PeerStat
+	awgErr    string
 }
 
 // Run loads the node identity and runs the agent until the context is cancelled
@@ -934,6 +935,7 @@ func (a *Agent) buildSyncRequest() nodeapi.SyncRequest {
 			Name: f.Name, Present: f.Present, Size: f.Size, ModifiedAt: f.ModifiedAt,
 		})
 	}
+	awgRunning, awgErr := a.awgStatus()
 
 	req := nodeapi.SyncRequest{
 		ConfigHash:  hash,
@@ -944,6 +946,8 @@ func (a *Agent) buildSyncRequest() nodeapi.SyncRequest {
 		// node as down for a whole poll cycle over a one-second gap.
 		XrayRunning:    a.sup.Serving(),
 		XrayStartedAt:  a.sup.StartedAt(),
+		AWGRunning:     awgRunning,
+		AWGError:       awgErr,
 		Revoked:        a.revoked.Load(),
 		CertSHA256:     sha,
 		CertSelfSigned: selfSigned,

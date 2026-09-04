@@ -130,9 +130,7 @@ func (m *Manager) effectiveSettings(serverID int64) (*model.Settings, error) {
 // exists to prevent.
 func reservedPorts(set *model.Settings) model.ReservedPorts {
 	r := model.NewReservedPorts()
-	if set.VLESSEnabled {
-		r.HoldTCP(set.VLESSPort, "VLESS-Vision")
-	}
+	r.HoldTCP(set.VLESSPort, "VLESS-Vision")
 	if set.RealityEnabled {
 		r.HoldTCP(set.RealityPort, "VLESS-XHTTP-REALITY")
 	}

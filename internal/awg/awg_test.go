@@ -41,11 +41,14 @@ func TestRandomParamsAreValidAndDistinct(t *testing.T) {
 	bad := []Params{
 		{Jc: 129, Jmin: 50, Jmax: 1000, S1: 15, S2: 20, H1: "5", H2: "6", H3: "7", H4: "8"},
 		{Jc: 3, Jmin: 1001, Jmax: 1000, S1: 15, S2: 20, H1: "5", H2: "6", H3: "7", H4: "8"},
-		{Jc: 3, Jmin: 50, Jmax: 1000, S1: 15, S2: 71, H1: "5", H2: "6", H3: "7", H4: "8"},                                                                     // s1+56 == s2
-		{Jc: 3, Jmin: 50, Jmax: 1000, S1: 15, S2: 20, H1: "5", H2: "5", H3: "7", H4: "8"},                                                                     // overlap
-		{Jc: 3, Jmin: 50, Jmax: 1000, S1: 15, S2: 20, H1: "1", H2: "6", H3: "7", H4: "8"},                                                                     // h1 < 5
-		{Jc: 3, Jmin: 50, Jmax: 1000, S1: 10, S2: 20, H1: "5-10", H2: "8-15", H3: "20", H4: "30"},                                                             // range overlap
-		{Jc: 3, Jmin: 50, Jmax: 1000, S1: 5, S2: 20, H1: "5", H2: "6", H3: "7", H4: "8", HeaderProtectionKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}, // s1 < 12 with key
+		{Jc: 3, Jmin: 50, Jmax: 1000, S1: 15, S2: 71, H1: "5", H2: "6", H3: "7", H4: "8"},                                                                                      // s1+56 == s2
+		{Jc: 3, Jmin: 50, Jmax: 1000, S1: 15, S2: 20, H1: "5", H2: "5", H3: "7", H4: "8"},                                                                                      // overlap
+		{Jc: 3, Jmin: 50, Jmax: 1000, S1: 15, S2: 20, H1: "1", H2: "6", H3: "7", H4: "8"},                                                                                      // h1 < 5
+		{Jc: 3, Jmin: 50, Jmax: 1000, S1: 10, S2: 20, H1: "5-10", H2: "8-15", H3: "20", H4: "30"},                                                                              // range overlap
+		{Jc: 3, Jmin: 50, Jmax: 1000, S1: 5, S2: 20, H1: "5", H2: "6", H3: "7", H4: "8", HeaderProtectionKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},                  // s1 < 12 with key
+		{Jc: 3, Jmin: 50, Jmax: 1000, S1: 15, S2: 20, S3: 0, S4: 0, H1: "5", H2: "6", H3: "7", H4: "8", HeaderProtectionKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},   // s3/s4 == 0 with key
+		{Jc: 3, Jmin: 50, Jmax: 1000, S1: 15, S2: 20, S3: 11, S4: 20, H1: "5", H2: "6", H3: "7", H4: "8", HeaderProtectionKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}, // s3 < 12 with key
+		{Jc: 3, Jmin: 50, Jmax: 1000, S1: 15, S2: 20, S3: 20, S4: 11, H1: "5", H2: "6", H3: "7", H4: "8", HeaderProtectionKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}, // s4 < 12 with key
 	}
 	for i, p := range bad {
 		if err := p.Validate(); err == nil {
@@ -150,13 +153,38 @@ func TestUAPIAndClientConfig(t *testing.T) {
 		"I1 = <b 0x0102><r 10><t>",
 		"[Peer]",
 		"PublicKey = " + sPub,
-		"AllowedIPs = 0.0.0.0/0, ::/0",
+		"AllowedIPs = 0.0.0.0/0",
 		"Endpoint = vpn.example.com:51820",
 		"PersistentKeepalive = 25",
 	} {
 		if !strings.Contains(conf, want) {
 			t.Errorf("client config lacks %q:\n%s", want, conf)
 		}
+	}
+}
+
+func TestUAPIFalseBooleans(t *testing.T) {
+	sPriv, _, _ := GenerateKey()
+	params := Params{
+		Jc: 4, Jmin: 50, Jmax: 1000, S1: 30, S2: 40, S3: 50, S4: 20,
+		H1: "11", H2: "12", H3: "13", H4: "14",
+		RandomTrailers: false,
+		DisableCookies: false,
+	}
+	cfg := Config{
+		PrivateKey: sPriv,
+		ListenPort: 51820,
+		Params:     params,
+	}
+	uapi, err := cfg.UAPI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(uapi, "random_trailers=false") {
+		t.Errorf("uapi lacks random_trailers=false:\n%s", uapi)
+	}
+	if !strings.Contains(uapi, "disable_cookies=false") {
+		t.Errorf("uapi lacks disable_cookies=false:\n%s", uapi)
 	}
 }
 

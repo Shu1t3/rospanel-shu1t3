@@ -34,10 +34,10 @@ func Ensure(set *model.Settings, certPath, keyPath, acmeDir string, force bool) 
 	if !tlsutil.Usable(certPath) {
 		cert, key, gerr := tlsutil.GenerateSelfSigned(set.Host)
 		if gerr != nil {
-			return fmt.Errorf("acme failed (%w); self-signed fallback failed: %v", err, gerr)
+			return fmt.Errorf("acme failed (%w); self-signed fallback failed: %w", err, gerr)
 		}
 		if werr := tlsutil.WriteKeyPair(certPath, keyPath, cert, key); werr != nil {
-			return fmt.Errorf("acme failed (%w); writing self-signed failed: %v", err, werr)
+			return fmt.Errorf("acme failed (%w); writing self-signed failed: %w", err, werr)
 		}
 		return fmt.Errorf("acme unavailable, serving a self-signed cert for now: %w", err)
 	}

@@ -1744,6 +1744,14 @@ func (m *Manager) IngestNodeSync(n *model.Node, req nodeapi.SyncRequest) (*nodea
 	// Always refreshed (a healthy node reports 0), so the "limping" badge clears the
 	// moment the transport recovers rather than sticking on a stale count.
 	m.nodeSyncFails[n.ID] = req.SyncFails
+	if m.nodeAWGRunning == nil {
+		m.nodeAWGRunning = map[int64]bool{}
+	}
+	if m.nodeAWGErr == nil {
+		m.nodeAWGErr = map[int64]string{}
+	}
+	m.nodeAWGRunning[n.ID] = req.AWGRunning
+	m.nodeAWGErr[n.ID] = req.AWGError
 	m.nodeGeoMu.Unlock()
 	// The node's own TLS state, for the fleet-wide "TLS certificate" alert. Recorded
 	// here, raised by the node sweep — see manager_nodes_notify.go.
@@ -1909,4 +1917,11 @@ func validateDNSList(dns *string) error {
 		}
 	}
 	return nil
+}
+
+// NodeAWGStatus reports the AmneziaWG running state and last error for a node.
+func (m *Manager) NodeAWGStatus(nodeID int64) (running bool, lastErr string) {
+	m.nodeGeoMu.Lock()
+	defer m.nodeGeoMu.Unlock()
+	return m.nodeAWGRunning[nodeID], m.nodeAWGErr[nodeID]
 }

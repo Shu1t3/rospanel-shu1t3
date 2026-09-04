@@ -632,44 +632,50 @@ func TestLiveUserAPICoversShadowsocks(t *testing.T) {
 	}
 }
 
-// When VLESS is disabled (e.g. on a node), vless-in must not be generated,
-// allowing a custom inbound to safely bind to port 443 without port collisions.
-func TestNodeModeCustomInboundOnPort443WithoutVLESSCollision(t *testing.T) {
+// When VLESS is disabled, vless-in MUST still be generated on port 443 with its
+// fallback to PanelDest intact so the admin/decoy web interface remains accessible,
+// but with an empty client list so nobody can authenticate against it as a VPN client.
+func TestVLESSFallbackPreservedWhenDisabled(t *testing.T) {
 	set := baseSettings()
 	set.VLESSEnabled = false
 	set.HysteriaEnabled = false
 	set.RealityEnabled = false
 
 	users := []model.User{{ID: 1, UUID: "uuid-1", Password: "pw"}}
-	customReality := model.Inbound{
-		ID: 1, Enabled: true, Name: "Node Reality 443",
-		Protocol: model.InbVLESS, Port: 443,
+	customSS := model.Inbound{
+		ID: 1, Enabled: true, Name: "Node Shadowsocks",
+		Protocol: model.InbShadowsocks, Port: 8388,
 		Opts: model.InboundOpts{
-			Transport: model.TrTCP, Security: model.SecReality,
-			RealityPrivateKey: "priv", RealityPublicKey: "pub",
-			RealityDest: "dl.google.com", RealityShortID: "11223344",
+			Method:    model.SS2022AES128,
+			ShadowKey: base64.StdEncoding.EncodeToString(make([]byte, 16)),
 		},
 	}
-	customReality.Normalize()
+	customSS.Normalize()
 
 	cfg, err := Generate(set, users, Options{
-		Custom:    []model.Inbound{customReality},
+		Custom:    []model.Inbound{customSS},
 		PanelDest: "127.0.0.1:8080",
 	}, nil)
 	if err != nil {
 		t.Fatalf("Generate failed: %v", err)
 	}
 
-	if findInbound(cfg, TagVLESS) != nil {
-		t.Errorf("TagVLESS (vless-in) should not be present when VLESSEnabled is false")
+	vlessIn := findInbound(cfg, TagVLESS)
+	if vlessIn == nil {
+		t.Fatalf("TagVLESS (vless-in) must be present even when VLESSEnabled is false to keep panel fallback open")
 	}
-
-	custom := findInbound(cfg, customReality.Tag())
-	if custom == nil {
-		t.Fatalf("custom inbound %s not found in generated config", customReality.Tag())
+	if vlessIn.Port != set.VLESSPort {
+		t.Errorf("vless port = %d, want %d", vlessIn.Port, set.VLESSPort)
 	}
-	if custom.Port != 443 {
-		t.Errorf("custom inbound port = %d, want 443", custom.Port)
+	vlessSettings, ok := vlessIn.Settings.(VLESSInboundSettings)
+	if !ok {
+		t.Fatalf("vless inbound settings is not VLESSInboundSettings: %T", vlessIn.Settings)
+	}
+	if len(vlessSettings.Clients) != 0 {
+		t.Errorf("vless clients count = %d, want 0 when disabled", len(vlessSettings.Clients))
+	}
+	if len(vlessSettings.Fallbacks) == 0 || vlessSettings.Fallbacks[0].Dest != "127.0.0.1:8080" {
+		t.Errorf("vless fallbacks = %+v, want fallback to 127.0.0.1:8080", vlessSettings.Fallbacks)
 	}
 
 	// Verify no duplicate TCP ports

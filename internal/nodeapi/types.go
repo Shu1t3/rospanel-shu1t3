@@ -52,6 +52,10 @@ type SyncRequest struct {
 	NodeVersion string `json:"node_version"`
 	XrayVersion string `json:"xray_version"`
 	XrayRunning bool   `json:"xray_running"`
+	// AWGRunning reports whether the AmneziaWG tunnel interface is active on the node.
+	AWGRunning bool `json:"awg_running,omitempty"`
+	// AWGError is the last error encountered when applying the AmneziaWG configuration on the node.
+	AWGError string `json:"awg_error,omitempty"`
 	// Revoked ⇒ this node already knows the panel switched it off and has stopped
 	// serving. It changes how the panel answers: a node that has yet to hear the bad
 	// news is told at once, but one that already knows has its request HELD like any

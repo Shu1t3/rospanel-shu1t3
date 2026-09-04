@@ -35,7 +35,7 @@ func (s Server) allowsExt(id int64) bool     { return s.Access.AllowsExt(id) }
 // externalEndpoints is the external servers the user may have, in the shape the
 // format converters read.
 func (s Server) externalEndpoints() []extsub.Endpoint {
-	var out []extsub.Endpoint
+	out := make([]extsub.Endpoint, 0, len(s.External))
 	for _, e := range s.External {
 		if e.Enabled && s.allowsExt(e.ID) {
 			out = append(out, extsub.Endpoint{Protocol: e.Protocol, Host: e.Host, Port: e.Port, Name: e.Name, Link: e.Link})

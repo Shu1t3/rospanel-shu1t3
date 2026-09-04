@@ -167,14 +167,22 @@ func (rt *Router) subServers(local *model.Settings, userID int64, clientIP strin
 	ordered := sub.Order(servers, local.SubOrderMode, rt.mgr.CountryOfIP(clientIP), rt.mgr.OnlineByServer())
 	// External servers ride on the master's entry (the one every subscription has;
 	// the ordering may hide a node, never the master's own list of extras).
+	// If the master server is hidden (e.g. full capacity with HideWhenFull), attach
+	// the external servers to the first available server so clients do not lose them.
 	if ext := rt.mgr.EnabledExtServers(); len(ext) > 0 {
+		attached := false
 		for i := range ordered {
 			if ordered[i].Set.ServerID == model.LocalNodeID {
 				ordered[i].External = ext
+				attached = true
 				break
 			}
 		}
+		if !attached && len(ordered) > 0 {
+			ordered[0].External = ext
+		}
 	}
+
 	return ordered, nil
 }
 

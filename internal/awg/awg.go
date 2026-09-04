@@ -205,10 +205,13 @@ func (p Params) Validate() error {
 
 	if p.HeaderProtectionKey != "" {
 		raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(p.HeaderProtectionKey))
-		if err != nil || len(raw) != 32 {
+		if err != nil {
+			return fmt.Errorf("awg: header protection key: %w", err)
+		}
+		if len(raw) != 32 {
 			return errors.New("awg: header protection key must be a valid 32-byte Base64 key")
 		}
-		if p.S1 < 12 || p.S2 < 12 || (p.S3 > 0 && p.S3 < 12) || (p.S4 > 0 && p.S4 < 12) {
+		if p.S1 < 12 || p.S2 < 12 || p.S3 < 12 || p.S4 < 12 {
 			return errors.New("awg: when header protection is enabled, S1-S4 must be at least 12 bytes")
 		}
 	}
@@ -377,12 +380,8 @@ func (c Config) UAPI() (string, error) {
 	if p.ContentPaddingAddition != "" {
 		fmt.Fprintf(&b, "content_padding_addition=%s\n", p.ContentPaddingAddition)
 	}
-	if p.RandomTrailers {
-		b.WriteString("random_trailers=true\n")
-	}
-	if p.DisableCookies {
-		b.WriteString("disable_cookies=true\n")
-	}
+	fmt.Fprintf(&b, "random_trailers=%t\n", p.RandomTrailers)
+	fmt.Fprintf(&b, "disable_cookies=%t\n", p.DisableCookies)
 	if p.RekeyAfterTime != "" {
 		fmt.Fprintf(&b, "rekey_after_time=%s\n", p.RekeyAfterTime)
 	}
@@ -509,7 +508,7 @@ func (c ClientConfig) Render() string {
 		fmt.Fprintf(&b, "I5 = %s\n", p.I5)
 	}
 
-	fmt.Fprintf(&b, "\n[Peer]\nPublicKey = %s\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = %s\nPersistentKeepalive = %d\n",
+	fmt.Fprintf(&b, "\n[Peer]\nPublicKey = %s\nAllowedIPs = 0.0.0.0/0\nEndpoint = %s\nPersistentKeepalive = %d\n",
 		c.ServerPublicKey, c.Endpoint, Keepalive)
 	return b.String()
 }

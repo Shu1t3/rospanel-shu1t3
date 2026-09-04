@@ -247,7 +247,9 @@ type Manager struct {
 	// nodeHostStats is each node's last-reported machine state (disk/RAM/guards) for
 	// its diagnostics page, under nodeGeoMu with the other "last reported" caches.
 	// Bounded by the node count; a deleted node's entry is dead weight of one struct.
-	nodeHostStats map[int64]nodeapi.HostStats
+	nodeHostStats  map[int64]nodeapi.HostStats
+	nodeAWGRunning map[int64]bool
+	nodeAWGErr     map[int64]string
 	// online is who is connected to which server right now (see manager_online.go).
 	online onlineGauge
 
@@ -322,6 +324,8 @@ func New(st *store.Store, sup *xray.Supervisor, opts xray.Options, tls TLSPaths,
 		nodeLogs:       map[int64]nodeLogEntry{},
 		nodeGeoFiles:   map[int64][]nodeapi.GeoFile{},
 		nodeHostStats:  map[int64]nodeapi.HostStats{},
+		nodeAWGRunning: map[int64]bool{},
+		nodeAWGErr:     map[int64]string{},
 		awg:            awg.New(),
 		probeBlock:     ipblock.New(ipblock.TableProbes),
 		policyBlock:    ipblock.New(ipblock.TablePolicy),

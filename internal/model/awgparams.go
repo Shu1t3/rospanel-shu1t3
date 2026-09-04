@@ -1,7 +1,10 @@
 package model
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -149,4 +152,21 @@ func parseBoolField(v any) bool {
 	default:
 		return false
 	}
+}
+
+// Validate checks for structural validity of parameters according to AWG 3.1 specifications.
+func (p AWGParams) Validate() error {
+	if p.HeaderProtectionKey != "" {
+		raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(p.HeaderProtectionKey))
+		if err != nil {
+			return fmt.Errorf("awg: header protection key: %w", err)
+		}
+		if len(raw) != 32 {
+			return errors.New("awg: header protection key must be a valid 32-byte Base64 key")
+		}
+		if p.S1 < 12 || p.S2 < 12 || p.S3 < 12 || p.S4 < 12 {
+			return errors.New("awg: when header protection is enabled, S1-S4 must be at least 12 bytes")
+		}
+	}
+	return nil
 }

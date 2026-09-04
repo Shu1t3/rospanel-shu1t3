@@ -29,6 +29,7 @@ func (a *Agent) syncAWG(st *nodeapi.AWGState) {
 		}
 		a.awgMu.Lock()
 		a.awgEmails = nil
+		a.awgErr = ""
 		a.awgMu.Unlock()
 		return
 	}
@@ -47,7 +48,23 @@ func (a *Agent) syncAWG(st *nodeapi.AWGState) {
 	a.awgMu.Unlock()
 	if err := a.awg.Apply(cfg); err != nil && err != awg.ErrUnsupported {
 		slog.Warn("node: amneziawg apply failed", "err", err)
+		a.awgMu.Lock()
+		a.awgErr = err.Error()
+		a.awgMu.Unlock()
+	} else {
+		a.awgMu.Lock()
+		a.awgErr = ""
+		a.awgMu.Unlock()
 	}
+}
+
+func (a *Agent) awgStatus() (running bool, lastErr string) {
+	if a.awg == nil {
+		return false, ""
+	}
+	a.awgMu.Lock()
+	defer a.awgMu.Unlock()
+	return a.awg.Running(), a.awgErr
 }
 
 // sampleAWG folds the tunnel's counters into the pending traffic deltas and its

@@ -50,7 +50,7 @@ func clashProxies(u model.User, srv Server) []clashProxy {
 	if set.TLSInsecure {
 		sv = "true"
 	}
-	var out []clashProxy
+	out := make([]clashProxy, 0, 2+len(srv.Custom)+len(srv.External))
 	if set.VLESSEnabled && srv.allowsBuiltin(model.LaneVLESS) {
 		n := link.Label(model.ProtoVLESS, set)
 		out = append(out, clashProxy{n, fmt.Sprintf(
@@ -195,7 +195,7 @@ func firstShortID(o model.InboundOpts) string {
 // clashProxiesAll concatenates a user's proxy entries across every server (local +
 // each node). Names are unique because Settings.ProtoLabel appends the node label.
 func clashProxiesAll(u model.User, servers []Server) []clashProxy {
-	var out []clashProxy
+	out := make([]clashProxy, 0, len(servers)*2)
 	for _, srv := range servers {
 		out = append(out, clashProxies(u, srv)...)
 	}

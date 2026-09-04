@@ -174,7 +174,7 @@ func corruptOr(stage string, err error) error {
 		"file is encrypted",
 	} {
 		if strings.Contains(msg, sig) {
-			return fmt.Errorf("%w: %s: %v", ErrCorrupt, stage, err)
+			return fmt.Errorf("%w: %s: %w", ErrCorrupt, stage, err)
 		}
 	}
 	return fmt.Errorf("%s: %w", stage, err)

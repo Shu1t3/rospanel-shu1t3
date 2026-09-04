@@ -232,29 +232,35 @@ func runServer(dataDir string) {
 	// reconcile so a config already referencing a group picks it up now rather than
 	// routing without those rules until the next refresh tick. Backgrounded: Xray is
 	// already serving and does not depend on these.
-	go func() {
+	runBG(func() {
 		missing := false
 		for _, f := range geo.StatusLists(geoDir) {
 			missing = missing || !f.Present
 		}
-		if !missing {
+		if !missing || srvCtx.Err() != nil {
 			return
 		}
 		if err := geo.EnsureLists(geoDir); err != nil {
 			log.Printf("iplist: %v", err)
 			return
 		}
+		if srvCtx.Err() != nil {
+			return
+		}
 		mgr.TriggerReconcile()
-	}()
+	})
 
 	// Fetch the IP→ASN table if missing (panel-only, for the connection map's provider
 	// breakdown). Backgrounded and best-effort — the map degrades to country-only until
 	// it lands, and nothing else depends on it.
-	go func() {
+	runBG(func() {
+		if srvCtx.Err() != nil {
+			return
+		}
 		if err := geo.EnsureASN(geoDir); err != nil {
 			log.Printf("asn: %v", err)
 		}
-	}()
+	})
 
 	// Daily TLS check: renews ACME certs near expiry and reloads Xray on change.
 	runBG(func() { tlsLoop(srvCtx, mgr) })
