@@ -99,24 +99,34 @@ func handleSub(rt *Router, w http.ResponseWriter, r *http.Request, rest string) 
 		if !rt.admitDevice(w, r, *u, set) {
 			return
 		}
-		// allServers spans the local server plus each enabled, connected node, so the
-		// payload carries one entry per protocol × server (single-server = local only).
-		allServers, err := rt.subServers(set, u.ID, clientIP(r))
+		// physicalServers spans the local server plus each enabled, connected node.
+		// extServers spans external subscriptions. Both are combined independently
+		// at the subscription generator level.
+		physicalServers, access, err := rt.subPhysicalServers(set, u.ID, clientIP(r))
 		if err != nil {
 			rt.subUnavailable(w, u.ID, err)
 			return
 		}
+		extServers := rt.subExternalServers()
 		supportURL := rt.telegramSupportURL(r.Context(), set, *u)
 		setSubHeaders(w, *u, set, supportURL)
 		rt.setRoutingHeaders(w, r, set)
+		subReq := sub.Request{
+			User:     *u,
+			Settings: set,
+			Servers:  physicalServers,
+			External: extServers,
+			Access:   access,
+			DPI:      set.SubDPI,
+		}
 		switch format {
 		case "clash":
 			// Mihomo/Clash ignores the routing header — inject the routing rules
 			// straight into the YAML by merging proxies into the template.
-			body := sub.ClashYAMLMulti(*u, allServers)
+			body := sub.GenerateClash(subReq)
 			if set.SubRouting && strings.TrimSpace(set.SubRoutingMihomo) != "" {
 				if tpl, err := rt.mgr.FetchRoutingTemplate(set.SubRoutingMihomo); err == nil {
-					body = sub.ClashWithTemplateMulti(*u, allServers, tpl)
+					body = sub.GenerateClashWithTemplate(subReq, tpl)
 				}
 			}
 			w.Header().Set("Content-Type", "text/yaml; charset=utf-8")
@@ -128,13 +138,13 @@ func handleSub(rt *Router, w http.ResponseWriter, r *http.Request, rest string) 
 			_, _ = w.Write([]byte(body))
 		case "singbox", "sing-box":
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-			_, _ = w.Write([]byte(sub.SingBoxJSONMulti(*u, allServers)))
+			_, _ = w.Write([]byte(sub.GenerateSingBox(subReq)))
 		case model.SubActionXrayJSON, "xray", "json":
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-			_, _ = w.Write([]byte(sub.XrayJSONMulti(*u, allServers, set.SubDPI)))
+			_, _ = w.Write([]byte(sub.GenerateXrayJSON(subReq)))
 		default:
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			links := sub.ShareLinksAll(*u, allServers)
+			links := sub.GenerateShareLinks(subReq)
 			var body string
 			if set.SubBase64 {
 				body = sub.Base64Payload(links)
@@ -483,11 +493,19 @@ func (rt *Router) servePage(w http.ResponseWriter, u model.User, set *model.Sett
 	// A required HWID means the browser cannot fetch the machine payload — so the
 	// page must not offer a download button that answers 403 to its own owner.
 	showDownload := !(set.HWIDEnabled && set.HWIDRequire)
-	servers, err := rt.subServers(set, u.ID, clientIP)
+	servers, access, err := rt.subPhysicalServers(set, u.ID, clientIP)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errSubUnavailable, err)
 	}
-	html, err := sub.Page(u, servers, rt.buildBilling(u, set, lang),
+	ext := rt.subExternalServers()
+	subReq := sub.Request{
+		User:     u,
+		Settings: set,
+		Servers:  servers,
+		External: ext,
+		Access:   access,
+	}
+	html, err := sub.GeneratePage(subReq, rt.buildBilling(u, set, lang),
 		rt.buildDevices(u, set, lang), showDownload, lang)
 	if err != nil {
 		return err

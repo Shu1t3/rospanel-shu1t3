@@ -1,10 +1,9 @@
 package sub
 
 import (
-	"encoding/json"
-	"github.com/Shu1t3/rospanel-shu1t3/internal/extsub"
 	"net/url"
 
+	"github.com/Shu1t3/rospanel-shu1t3/internal/extsub"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 )
 
@@ -19,19 +18,14 @@ import (
 // link is parsed back into an outbound rather than assembled a second time.
 
 // XrayJSONMulti renders the user's lanes across every server as an array of Xray
-// configs. dpi decides whether a fragment/noise outbound is chained in.
+// configs (legacy helper).
 func XrayJSONMulti(u model.User, servers []Server, dpi model.SubDPI) string {
-	configs := make([]map[string]any, 0, 8)
-	for _, l := range ShareLinksAll(u, servers) {
-		if cfg, ok := xrayConfigFromLink(l, dpi); ok {
-			configs = append(configs, cfg)
-		}
-	}
-	b, err := json.MarshalIndent(configs, "", "  ")
-	if err != nil {
-		return "[]"
-	}
-	return string(b)
+	return GenerateXrayJSON(Request{
+		User:    u,
+		Servers: servers,
+		Access:  model.UnrestrictedAccess(),
+		DPI:     dpi,
+	})
 }
 
 // xrayConfigFromLink turns one share link into a complete client config: local

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/Shu1t3/rospanel-shu1t3/internal/extsub"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/i18n"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/link"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
@@ -41,19 +42,44 @@ func ShareLinks(u model.User, srv Server) []string {
 			links = append(links, l)
 		}
 	}
-	// External servers go last and as received: the link is theirs, the label is
-	// theirs, only the choice of who gets it is ours.
-	for _, e := range srv.externalEndpoints() {
+	return links
+}
+
+// ExternalEndpoints filters enabled external servers by the user's access grants
+// and returns them in the endpoint shape format converters consume.
+func ExternalEndpoints(ext []model.ExtServer, access model.Access) []extsub.Endpoint {
+	out := make([]extsub.Endpoint, 0, len(ext))
+	for _, e := range ext {
+		if e.Enabled && access.AllowsExt(e.ID) {
+			out = append(out, extsub.Endpoint{
+				Protocol: e.Protocol,
+				Host:     e.Host,
+				Port:     e.Port,
+				Name:     e.Name,
+				Link:     e.Link,
+			})
+		}
+	}
+	return out
+}
+
+// ExternalShareLinks returns the share links for external servers allowed by access.
+func ExternalShareLinks(ext []model.ExtServer, access model.Access) []string {
+	endpoints := ExternalEndpoints(ext, access)
+	links := make([]string, 0, len(endpoints))
+	for _, e := range endpoints {
 		links = append(links, e.Link)
 	}
 	return links
 }
 
-// ShareLinksAll concatenates the links for a user across every server — the local
-// one plus each enabled node — so a subscription carries one entry per lane × server.
-// Each settings clone carries its own host/ports/keys and a NodeLabel that
-// disambiguates the links.
+// ShareLinksAll concatenates the links for a user across physical servers (legacy helper).
 func ShareLinksAll(u model.User, servers []Server) []string {
+	return ShareLinksPhysical(u, servers)
+}
+
+// ShareLinksPhysical concatenates links for physical servers only.
+func ShareLinksPhysical(u model.User, servers []Server) []string {
 	var links []string
 	for _, srv := range servers {
 		links = append(links, ShareLinks(u, srv)...)

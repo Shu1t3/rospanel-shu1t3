@@ -7,11 +7,11 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 )
 
-// A subscription built from a server with no lanes of its own and two external
-// servers: what reaches the user is exactly the external servers their access
-// allows, in every format, and nothing when the server entry is not the master's.
+// A subscription built with external servers: what reaches the user is exactly
+// the external servers their access allows, in every format, operating independently
+// of physical nodes.
 func TestExternalServersFollowAccess(t *testing.T) {
-	set := &model.Settings{Host: "1.2.3.4", SNI: "1.2.3.4", ServerID: model.LocalNodeID}
+	set := &model.Settings{Host: "1.2.3.4", SNI: "1.2.3.4", ServerID: model.LocalNodeID, SubShowConfigs: true}
 	ext := []model.ExtServer{
 		{ID: 11, Name: "Partner NL", Protocol: "vless", Host: "9.9.9.9", Port: 443, Enabled: true,
 			Link: "vless://uuid@9.9.9.9:443?type=tcp&security=tls&sni=nl.example&fp=chrome#Partner%20NL"},
@@ -22,30 +22,45 @@ func TestExternalServersFollowAccess(t *testing.T) {
 	}
 	u := model.User{ID: 1, UUID: "u", Password: "p"}
 
-	all := Server{Set: set, Access: model.UnrestrictedAccess(), External: ext}
-	links := ShareLinks(u, all)
+	unrestricted := model.UnrestrictedAccess()
+	req := Request{
+		User:     u,
+		Settings: set,
+		External: ext,
+		Access:   unrestricted,
+	}
+	links := GenerateShareLinks(req)
 	if len(links) != 2 || links[0] != ext[0].Link || links[1] != ext[1].Link {
 		t.Fatalf("unrestricted links: %v", links)
 	}
-	if yaml := ClashYAMLMulti(u, []Server{all}); !strings.Contains(yaml, `"Partner NL"`) || !strings.Contains(yaml, `"Partner DE"`) || strings.Contains(yaml, `"Off"`) {
+	if yaml := GenerateClash(req); !strings.Contains(yaml, `"Partner NL"`) || !strings.Contains(yaml, `"Partner DE"`) || strings.Contains(yaml, `"Off"`) {
 		t.Fatalf("clash: %s", yaml)
 	}
-	if sb := SingBoxJSONMulti(u, []Server{all}); !strings.Contains(sb, `"Partner NL"`) || !strings.Contains(sb, `"hysteria2"`) {
+	if sb := GenerateSingBox(req); !strings.Contains(sb, `"Partner NL"`) || !strings.Contains(sb, `"hysteria2"`) {
 		t.Fatalf("sing-box: %s", sb)
 	}
-	if xj := XrayJSONMulti(u, []Server{all}, model.SubDPI{}); !strings.Contains(xj, `"remarks": "Partner NL"`) || !strings.Contains(xj, `"protocol": "hysteria"`) {
+	if xj := GenerateXrayJSON(req); !strings.Contains(xj, `"remarks": "Partner NL"`) || !strings.Contains(xj, `"protocol": "hysteria"`) {
 		t.Fatalf("xray json: %s", xj)
 	}
 
+	// HTML page renders external links even when no physical servers exist
+	html, err := GeneratePage(req, Billing{}, Devices{}, true, "en")
+	if err != nil {
+		t.Fatalf("page without physical servers failed: %v", err)
+	}
+	if !strings.Contains(string(html), "Partner NL") {
+		t.Fatalf("page missing external server link: %s", string(html))
+	}
+
 	// A group that grants one of them.
-	one := all
-	one.Access = model.Access{Tokens: map[string]bool{model.ExtToken(12): true}}
-	if links = ShareLinks(u, one); len(links) != 1 || links[0] != ext[1].Link {
+	one := model.Access{Tokens: map[string]bool{model.ExtToken(12): true}}
+	reqOne := Request{User: u, Settings: set, External: ext, Access: one}
+	if links = GenerateShareLinks(reqOne); len(links) != 1 || links[0] != ext[1].Link {
 		t.Fatalf("restricted links: %v", links)
 	}
-	none := all
-	none.Access = model.Access{Tokens: map[string]bool{}}
-	if links = ShareLinks(u, none); len(links) != 0 {
+	none := model.Access{Tokens: map[string]bool{}}
+	reqNone := Request{User: u, Settings: set, External: ext, Access: none}
+	if links = GenerateShareLinks(reqNone); len(links) != 0 {
 		t.Fatalf("no grants: %v", links)
 	}
 }

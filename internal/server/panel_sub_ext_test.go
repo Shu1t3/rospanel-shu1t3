@@ -2,12 +2,14 @@ package server
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/core"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/sub"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/xray"
 )
 
@@ -83,9 +85,9 @@ func TestSubServersExternalAttachedWhenMasterFull(t *testing.T) {
 	// Simulate online connection on master so online count = 1 >= capacity 1
 	mgr.RecordAccessOn(model.LocalNodeID, model.UserEmail(u.ID), "198.51.100.1", "")
 
-	servers, err := rt.subServers(set, u.ID, "198.51.100.1")
+	servers, access, err := rt.subPhysicalServers(set, u.ID, "198.51.100.1")
 	if err != nil {
-		t.Fatalf("subServers: %v", err)
+		t.Fatalf("subPhysicalServers: %v", err)
 	}
 
 	// Master should be hidden due to full capacity
@@ -99,15 +101,38 @@ func TestSubServersExternalAttachedWhenMasterFull(t *testing.T) {
 		t.Errorf("master server should be hidden when full, but was found in servers")
 	}
 
-	// But external servers MUST still be attached to the remaining servers
-	hasExt := false
-	for _, s := range servers {
-		if len(s.External) > 0 {
-			hasExt = true
+	// External servers are independently retrieved and preserved in subscription
+	extServers := rt.subExternalServers()
+	if len(extServers) == 0 {
+		t.Fatalf("external servers must be present independently of master")
+	}
+
+	links := sub.GenerateShareLinks(sub.Request{
+		User:     *u,
+		Servers:  servers,
+		External: extServers,
+		Access:   access,
+	})
+	hasExtLink := false
+	for _, l := range links {
+		if strings.Contains(l, "ext.example.com") {
+			hasExtLink = true
 			break
 		}
 	}
-	if !hasExt {
-		t.Fatalf("external servers were lost when master was hidden!")
+	if !hasExtLink {
+		t.Fatalf("external servers were lost in generated links when master was hidden!")
+	}
+
+	// Even if all physical servers are hidden/removed, external servers must still produce valid subscription
+	emptyPhysical := []sub.Server{}
+	linksAllHidden := sub.GenerateShareLinks(sub.Request{
+		User:     *u,
+		Servers:  emptyPhysical,
+		External: extServers,
+		Access:   access,
+	})
+	if len(linksAllHidden) != 1 || !strings.Contains(linksAllHidden[0], "ext.example.com") {
+		t.Fatalf("external servers failed when all physical servers are hidden: %v", linksAllHidden)
 	}
 }

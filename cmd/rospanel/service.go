@@ -45,6 +45,9 @@ func runServer(dataDir string) {
 	adminAddr := env("ROSPANEL_ADMIN_ADDR", "127.0.0.1:8080")
 	startupStage("resolving Xray binary")
 	xrayBin := resolveXrayBin(env("XRAY_BIN", "xray"), filepath.Join(dataDir, "bin"))
+	if xrayBin == "" {
+		log.Print("xray: running in standalone control plane mode (Xray data plane unmanaged)")
+	}
 
 	dbPath := filepath.Join(dataDir, "rospanel.db")
 	certPath := filepath.Join(dataDir, "certs", "cert.pem")
@@ -347,6 +350,36 @@ func runServer(dataDir string) {
 		}
 	}()
 
+	var unixSrv *http.Server
+	unixSockPath := env("ROSPANEL_UNIX_SOCKET", "")
+	if unixSockPath != "" {
+		_ = os.Remove(unixSockPath)
+		if err := os.MkdirAll(filepath.Dir(unixSockPath), 0o755); err != nil {
+			log.Printf("[WARN] unix socket dir: %v", err)
+		}
+		uln, err := net.Listen("unix", unixSockPath)
+		if err != nil {
+			log.Printf("[WARN] listen unix %s: %v", unixSockPath, err)
+		} else {
+			_ = os.Chmod(unixSockPath, 0o660)
+			unixProtocols := new(http.Protocols)
+			unixProtocols.SetHTTP1(true)
+			unixProtocols.SetUnencryptedHTTP2(true)
+			unixSrv = &http.Server{
+				Handler:           handler,
+				Protocols:         unixProtocols,
+				ReadHeaderTimeout: 10 * time.Second,
+				IdleTimeout:       120 * time.Second,
+			}
+			go func() {
+				log.Printf("admin API unix socket listening on %s", unixSockPath)
+				if err := unixSrv.Serve(uln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					log.Printf("unix socket server: %v", err)
+				}
+			}()
+		}
+	}
+
 	startupStage("ready — panel is up (see FIRST-RUN CREDENTIALS above on a fresh install)")
 
 	stop := make(chan os.Signal, 1)
@@ -375,6 +408,12 @@ func runServer(dataDir string) {
 	defer cancel()
 	if redirector != nil {
 		_ = redirector.Shutdown(ctx)
+	}
+	if unixSrv != nil {
+		_ = unixSrv.Shutdown(ctx)
+		if unixSockPath != "" {
+			_ = os.Remove(unixSockPath)
+		}
 	}
 	_ = httpSrv.Shutdown(ctx)
 
@@ -714,8 +753,8 @@ func panelDest(adminAddr string) string {
 
 // resolveXrayBin returns a usable Xray binary path. If bin isn't found on PATH or
 // as an existing file, it auto-downloads the pinned release into downloadDir so a
-// bare box works without a separate install step. Xray is required: if no binary
-// can be resolved or fetched, the process exits rather than running without it.
+// bare box works without a separate install step. If no binary can be resolved or fetched,
+// it logs a warning and returns "" so the control plane continues in standalone mode.
 func resolveXrayBin(bin, downloadDir string) string {
 	if p, err := exec.LookPath(bin); err == nil {
 		return p
@@ -729,9 +768,10 @@ func resolveXrayBin(bin, downloadDir string) string {
 	t0 := time.Now()
 	p, err := xray.EnsureBinary(downloadDir)
 	if err != nil {
-		log.Fatalf("xray: required binary not found and auto-install failed after %s: %v "+
-			"(check outbound access to github.com, install Xray manually, or point XRAY_BIN at an existing binary)",
+		log.Printf("[WARN] xray: binary not found and auto-install failed after %s: %v "+
+			"— control plane continuing in standalone/unmanaged mode",
 			time.Since(t0).Round(time.Second), err)
+		return ""
 	}
 	log.Printf("xray: ready — %s (downloaded in %s)", p, time.Since(t0).Round(time.Second))
 	return p

@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -269,6 +270,9 @@ func (g *streamGate) release(ip string) {
 }
 
 func clientIP(r *http.Request) string {
+	if r.RemoteAddr == "@" || strings.HasPrefix(r.RemoteAddr, "/") {
+		return "127.0.0.1"
+	}
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		return host
 	}

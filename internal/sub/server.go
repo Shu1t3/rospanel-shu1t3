@@ -1,7 +1,6 @@
 package sub
 
 import (
-	"github.com/Shu1t3/rospanel-shu1t3/internal/extsub"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 )
 
@@ -19,10 +18,6 @@ type Server struct {
 	Set    *model.Settings
 	Custom []model.Inbound
 	Access model.Access
-	// External are servers that are not ours, handed on beside this server's own
-	// lanes (model.ExtServer). Only the master's entry carries them: they are a
-	// panel-level list, and the master is the server every subscription has.
-	External []model.ExtServer
 }
 
 // allowsBuiltin / allowsInbound apply the user's access for THIS server.
@@ -30,19 +25,6 @@ func (s Server) allowsBuiltin(lane string) bool {
 	return s.Access.AllowsBuiltin(s.Set.ServerID, lane)
 }
 func (s Server) allowsInbound(id int64) bool { return s.Access.AllowsInbound(id) }
-func (s Server) allowsExt(id int64) bool     { return s.Access.AllowsExt(id) }
-
-// externalEndpoints is the external servers the user may have, in the shape the
-// format converters read.
-func (s Server) externalEndpoints() []extsub.Endpoint {
-	out := make([]extsub.Endpoint, 0, len(s.External))
-	for _, e := range s.External {
-		if e.Enabled && s.allowsExt(e.ID) {
-			out = append(out, extsub.Endpoint{Protocol: e.Protocol, Host: e.Host, Port: e.Port, Name: e.Name, Link: e.Link})
-		}
-	}
-	return out
-}
 
 // Servers pairs each settings value with its server's custom inbounds (looked up by
 // Settings.ServerID) and the requesting user's access, applied to every server.

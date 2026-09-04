@@ -309,18 +309,18 @@ func subStatus(s string, lang i18n.Lang) (label, class string) {
 	}
 }
 
-// Page renders the human-facing subscription page (usage stats, QR of the sub
+// PageWithSources renders the human-facing subscription page (usage stats, QR of the sub
 // URL, copy button, per-client import buttons, and the raw links).
-// Page renders the human-facing subscription page. sets spans every server the
-// user is on — the local one plus each enabled node — so the "individual configs"
-// list shows one labelled entry per protocol × server (with a single server it's
-// unchanged). sets[0] is the local server, used for the sub URL, branding and
-// billing.
-func Page(u model.User, servers []Server, billing Billing, devices Devices, showDownload bool, lang i18n.Lang) ([]byte, error) {
-	if len(servers) == 0 {
-		return nil, fmt.Errorf("no settings for subscription page")
+// servers spans physical servers, while ext spans external servers.
+// set is the panel's active settings (used for sub URL, branding, and billing).
+func PageWithSources(u model.User, set *model.Settings, servers []Server, ext []model.ExtServer, access model.Access, billing Billing, devices Devices, showDownload bool, lang i18n.Lang) ([]byte, error) {
+	if set == nil {
+		if len(servers) > 0 && servers[0].Set != nil {
+			set = servers[0].Set
+		} else {
+			return nil, fmt.Errorf("no settings for subscription page")
+		}
 	}
-	set := servers[0].Set
 	subURL := URL(set, u.SubToken)
 	used := u.UsedUp + u.UsedDown
 
@@ -356,6 +356,14 @@ func Page(u model.User, servers []Server, billing Billing, devices Devices, show
 				protoLinks = append(protoLinks, protoLink{link.CustomLabel(in, s), l})
 			}
 		}
+	}
+	// External servers allowed by user access are displayed beside physical links
+	for _, e := range ExternalEndpoints(ext, access) {
+		label := e.Name
+		if label == "" {
+			label = strings.ToUpper(e.Protocol)
+		}
+		protoLinks = append(protoLinks, protoLink{label, e.Link})
 	}
 
 	statusLabel, statusClass := subStatus(u.Status, lang)
@@ -427,6 +435,15 @@ func Page(u model.User, servers []Server, billing Billing, devices Devices, show
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// Page renders the subscription page across physical servers (legacy helper).
+func Page(u model.User, servers []Server, billing Billing, devices Devices, showDownload bool, lang i18n.Lang) ([]byte, error) {
+	var set *model.Settings
+	if len(servers) > 0 {
+		set = servers[0].Set
+	}
+	return PageWithSources(u, set, servers, nil, model.UnrestrictedAccess(), billing, devices, showDownload, lang)
 }
 
 // nextResetTime returns when the automatic traffic-quota reset next fires, given

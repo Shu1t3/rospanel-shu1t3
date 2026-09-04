@@ -153,7 +153,8 @@ func (rt *Router) subSettings(local *model.Settings) []*model.Settings {
 // failure as fatal (see genOptsFor), so the credential is withheld and the links cannot
 // work anyway. Failing the fetch locks nobody out: a client that cannot refresh keeps the
 // config it already has and tries again later.
-func (rt *Router) subServers(local *model.Settings, userID int64, clientIP string) ([]sub.Server, error) {
+// subPhysicalServers returns the ordered physical nodes and the user's access grants.
+func (rt *Router) subPhysicalServers(local *model.Settings, userID int64, clientIP string) ([]sub.Server, model.Access, error) {
 	sets := rt.subSettings(local)
 	custom, err := rt.mgr.Store().AllInbounds()
 	if err != nil {
@@ -161,29 +162,22 @@ func (rt *Router) subServers(local *model.Settings, userID int64, clientIP strin
 	}
 	access, err := rt.mgr.Store().UserAccess(userID)
 	if err != nil {
-		return nil, err
+		return nil, model.Access{}, err
 	}
 	servers := sub.Servers(sets, custom, access)
 	ordered := sub.Order(servers, local.SubOrderMode, rt.mgr.CountryOfIP(clientIP), rt.mgr.OnlineByServer())
-	// External servers ride on the master's entry (the one every subscription has;
-	// the ordering may hide a node, never the master's own list of extras).
-	// If the master server is hidden (e.g. full capacity with HideWhenFull), attach
-	// the external servers to the first available server so clients do not lose them.
-	if ext := rt.mgr.EnabledExtServers(); len(ext) > 0 {
-		attached := false
-		for i := range ordered {
-			if ordered[i].Set.ServerID == model.LocalNodeID {
-				ordered[i].External = ext
-				attached = true
-				break
-			}
-		}
-		if !attached && len(ordered) > 0 {
-			ordered[0].External = ext
-		}
-	}
+	return ordered, access, nil
+}
 
-	return ordered, nil
+// subExternalServers returns all enabled external subscription servers.
+func (rt *Router) subExternalServers() []model.ExtServer {
+	return rt.mgr.EnabledExtServers()
+}
+
+// subServers preserves backward compatibility for legacy callers.
+func (rt *Router) subServers(local *model.Settings, userID int64, clientIP string) ([]sub.Server, error) {
+	servers, _, err := rt.subPhysicalServers(local, userID, clientIP)
+	return servers, err
 }
 
 // localInbounds is the master's own custom inbounds, or none when they can't be
