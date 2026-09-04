@@ -19,7 +19,9 @@ func uptimeManager(t *testing.T) (*Manager, *store.Store) {
 	}
 	t.Cleanup(func() { st.Close() })
 	sup := xray.NewSupervisor("", filepath.Join(dir, "config.json"), dir)
-	return New(st, sup, xray.Options{}, TLSPaths{}, dir), st
+	m := New(st, sup, xray.Options{}, TLSPaths{}, dir)
+	t.Cleanup(func() { close(m.done) })
+	return m, st
 }
 
 // day returns the operator-local day n days back, formatted the way the rollup keys

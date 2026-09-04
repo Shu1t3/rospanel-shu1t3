@@ -15,10 +15,11 @@ func TestSaveSubSettingsCollisionValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	defer st.Close()
+	t.Cleanup(func() { st.Close() })
 
 	sup := xray.NewSupervisor("", filepath.Join(dir, "config.json"), dir)
 	mgr := New(st, sup, xray.Options{}, TLSPaths{}, dir)
+	t.Cleanup(func() { close(mgr.done) })
 
 	// Seed settings with distinct paths
 	cur, err := st.GetSettings()

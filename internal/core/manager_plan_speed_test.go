@@ -20,7 +20,9 @@ func planSpeedManager(t *testing.T) (*Manager, *store.Store) {
 	}
 	t.Cleanup(func() { st.Close() })
 	sup := xray.NewSupervisor("", filepath.Join(dir, "config.json"), dir)
-	return New(st, sup, xray.Options{}, TLSPaths{}, dir), st
+	m := New(st, sup, xray.Options{}, TLSPaths{}, dir)
+	t.Cleanup(func() { close(m.done) }) // stops background goroutines before the store is closed
+	return m, st
 }
 
 // Editing a tariff's speed cap has to reach the people already on it. The other plan

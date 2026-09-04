@@ -173,6 +173,10 @@ type Manager struct {
 
 	guard *bruteGuard
 
+	// done is closed to stop background goroutines (shaperLoop, etc.) so tests that
+	// build a Manager through New can drain them before the store is closed.
+	done chan struct{}
+
 	// shaper installs the per-user speed caps on this machine; wan is the interface
 	// it acts on, resolved once (see manager_shaper.go).
 	shaper *shaper.Applier
@@ -300,6 +304,7 @@ type nodeLogEntry struct {
 // is where the opera-proxy helper binary is downloaded/run from.
 func New(st *store.Store, sup *xray.Supervisor, opts xray.Options, tls TLSPaths, operaDir string) *Manager {
 	m := &Manager{
+		done:           make(chan struct{}),
 		store:          st,
 		sup:            sup,
 		opts:           opts,

@@ -21,7 +21,9 @@ func newTestManager(t *testing.T) *Manager {
 	t.Cleanup(func() { st.Close() })
 
 	sup := xray.NewSupervisor("", filepath.Join(dir, "config.json"), dir)
-	return New(st, sup, xray.Options{PanelDest: "127.0.0.1:8080"}, TLSPaths{}, dir)
+	m := New(st, sup, xray.Options{PanelDest: "127.0.0.1:8080"}, TLSPaths{}, dir)
+	t.Cleanup(func() { close(m.done) })
+	return m
 }
 
 func TestManagerNodeRentalFlow(t *testing.T) {

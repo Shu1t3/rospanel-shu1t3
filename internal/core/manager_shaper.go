@@ -31,7 +31,11 @@ func (m *Manager) shaperLoop() {
 	defer t.Stop()
 	for {
 		m.ApplyShaping()
-		<-t.C
+		select {
+		case <-m.done:
+			return
+		case <-t.C:
+		}
 	}
 }
 
