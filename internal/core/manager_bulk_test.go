@@ -26,7 +26,7 @@ func bulkTestManager(t *testing.T) *Manager {
 	// that uses one already treats its absence as "nothing to do".
 	return &Manager{
 		store:      st,
-		accLast:    map[string]int64{},
+		accLast:    map[accPendingKey]int64{},
 		accPending: map[accPendingKey]store.ConnectionHit{},
 	}
 }

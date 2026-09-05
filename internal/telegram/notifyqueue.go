@@ -38,6 +38,7 @@ type notifyQueue struct {
 	dropped  atomic.Int64
 	logMu    sync.Mutex
 	lastWarn time.Time
+	wg       sync.WaitGroup
 }
 
 func newNotifyQueue(name string) *notifyQueue {
@@ -67,7 +68,9 @@ func (q *notifyQueue) submit(task func(context.Context)) {
 // hold up the rest; the per-bot rate limiter still decides the actual pace.
 func (q *notifyQueue) run(ctx context.Context, workers int) {
 	for range workers {
+		q.wg.Add(1)
 		go func() {
+			defer q.wg.Done()
 			for {
 				select {
 				case <-ctx.Done():
@@ -78,4 +81,9 @@ func (q *notifyQueue) run(ctx context.Context, workers int) {
 			}
 		}()
 	}
+}
+
+// wait blocks until all workers have finished when ctx is cancelled.
+func (q *notifyQueue) wait() {
+	q.wg.Wait()
 }

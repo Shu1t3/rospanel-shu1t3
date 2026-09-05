@@ -60,6 +60,18 @@ func (p ConnPolicy) Active() bool {
 		len(p.ASNs) > 0
 }
 
+// Clone returns a deep copy of ConnPolicy.
+func (p ConnPolicy) Clone() ConnPolicy {
+	out := p
+	if len(p.Countries) > 0 {
+		out.Countries = append([]string(nil), p.Countries...)
+	}
+	if len(p.ASNs) > 0 {
+		out.ASNs = append([]uint32(nil), p.ASNs...)
+	}
+	return out
+}
+
 // Normalized returns the policy in canonical form: countries upper-cased, deduped
 // and sorted, ASNs deduped and sorted, an unknown mode read as off.
 func (p ConnPolicy) Normalized() ConnPolicy {

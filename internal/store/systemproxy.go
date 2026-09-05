@@ -52,6 +52,7 @@ func decodeProxyAccounts(raw string) []model.SystemProxyAccount {
 
 // SetSystemProxy persists the master's forward-proxy listeners.
 func (s *Store) SetSystemProxy(p model.SystemProxy) error {
+	defer s.invalidateSettingsCache()
 	accs, err := encodeProxyAccounts(p.Accounts)
 	if err != nil {
 		return err

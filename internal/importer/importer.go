@@ -18,8 +18,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"uuid"
 
-	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
 )
 
@@ -588,7 +588,7 @@ func (c *Candidate) setCredentials(id, password string) {
 	if parsed, err := uuid.Parse(id); err == nil {
 		c.UUID = parsed.String()
 	} else {
-		c.UUID = uuid.NewString()
+		c.UUID = uuid.New().String()
 		c.Issues = appendIssue(c.Issues, IssueUUIDGenerated)
 	}
 	if password != "" {
@@ -596,7 +596,7 @@ func (c *Candidate) setCredentials(id, password string) {
 	} else {
 		// 128 random bits as hex — the same entropy createUser's password carries,
 		// minted here to keep this package free of the panel's auth code.
-		c.Password = strings.ReplaceAll(uuid.NewString(), "-", "")
+		c.Password = strings.ReplaceAll(uuid.New().String(), "-", "")
 		c.Issues = appendIssue(c.Issues, IssuePasswordGenerated)
 	}
 	if c.Name == "" {

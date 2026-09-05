@@ -13,6 +13,7 @@ import (
 
 // SetConnPolicy persists the policy as one JSON blob. Callers validate first.
 func (s *Store) SetConnPolicy(p model.ConnPolicy) error {
+	defer s.invalidateSettingsCache()
 	b, err := json.Marshal(p.Normalized())
 	if err != nil {
 		return err

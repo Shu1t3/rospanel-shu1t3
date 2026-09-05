@@ -166,6 +166,7 @@ func (s *Service) Run(ctx context.Context) {
 	// its poll loops and webhooks, which must not wait on Telegram (see notifyqueue.go).
 	q := newNotifyQueue("admin bot")
 	q.run(ctx, 2)
+	defer q.wait()
 	// Broadcast admin events (payments, outages, blocklist hits) to the authorized
 	// admin chats.
 	s.panel.SetAdminNotifier(func(html string) {
@@ -374,7 +375,7 @@ func (s *Service) handleMessage(ctx context.Context, client *Client, m *Message)
 	}
 	// A pending prompt (e.g. "send the new user's name") consumes the next message.
 	if s.takePending(chatID) == "add" {
-		s.doAdd(ctx, client, chatID, set, text)
+		s.doAdd(ctx, client, chatID, text)
 		return
 	}
 	// Any other text just opens the menu — the whole UI is buttons.
@@ -433,7 +434,7 @@ func (s *Service) handleCallback(ctx context.Context, client *Client, cb *Callba
 	case data == "add":
 		s.promptAdd(ctx, client, chatID, msgID)
 	case data == "backup":
-		s.cmdBackup(ctx, client, chatID, set)
+		s.cmdBackup(ctx, client, chatID)
 	case strings.HasPrefix(data, "sess:"):
 		s.handleSessionKill(ctx, client, chatID, msgID, cb.From, strings.TrimPrefix(data, "sess:"))
 	}
@@ -513,7 +514,7 @@ func (s *Service) handleUserAction(ctx context.Context, client *Client, chatID, 
 		_ = s.panel.ResetTraffic(ctx, id)
 		s.showUserCard(ctx, client, chatID, msgID, set, id)
 	case "plans":
-		s.showUserPlans(ctx, client, chatID, msgID, set, id)
+		s.showUserPlans(ctx, client, chatID, msgID, id)
 	case "del": // ask for confirmation in place
 		u, ok := s.findUser(id)
 		if !ok {
@@ -624,7 +625,7 @@ func (s *Service) showUserCard(ctx context.Context, client *Client, chatID, msgI
 }
 
 // showUserPlans lets the admin assign a tariff (or switch back to manual limits).
-func (s *Service) showUserPlans(ctx context.Context, client *Client, chatID, msgID int64, set *model.Settings, userID int64) {
+func (s *Service) showUserPlans(ctx context.Context, client *Client, chatID, msgID int64, userID int64) {
 	lang := s.lang()
 	u, ok := s.findUser(userID)
 	if !ok {
@@ -664,7 +665,7 @@ func (s *Service) promptAdd(ctx context.Context, client *Client, chatID, msgID i
 }
 
 // doAdd creates a user, without a data limit or expiry, from the prompted name.
-func (s *Service) doAdd(ctx context.Context, client *Client, chatID int64, set *model.Settings, text string) {
+func (s *Service) doAdd(ctx context.Context, client *Client, chatID int64, text string) {
 	lang := s.lang()
 	name := strings.TrimSpace(text)
 	if name == "" {
@@ -700,7 +701,7 @@ func (s *Service) sendSubscription(ctx context.Context, client *Client, chatID i
 	}
 }
 
-func (s *Service) cmdBackup(ctx context.Context, client *Client, chatID int64, set *model.Settings) {
+func (s *Service) cmdBackup(ctx context.Context, client *Client, chatID int64) {
 	lang := s.lang()
 	s.send(ctx, client, chatID, i18n.T(lang, "admin.preparingBackup"))
 	if err := SendBackup(ctx, client, []int64{chatID}, s.dataDir,

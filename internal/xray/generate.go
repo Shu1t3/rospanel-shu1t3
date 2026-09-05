@@ -763,9 +763,27 @@ func protocolClients(set *model.Settings, users []model.User, allowBuiltin func(
 	if allowBuiltin == nil {
 		allowBuiltin = func(int64, string) bool { return true }
 	}
-	vc := make([]VLESSClient, 0, len(users))
-	hc := make([]HysteriaClient, 0, len(users))
-	rc := make([]VLESSClient, 0, len(users))
+	var vc []VLESSClient
+	if set.VLESSEnabled {
+		vc = make([]VLESSClient, 0, len(users))
+	} else {
+		vc = make([]VLESSClient, 0)
+	}
+	var hc []HysteriaClient
+	if set.HysteriaEnabled {
+		hc = make([]HysteriaClient, 0, len(users))
+	} else {
+		hc = make([]HysteriaClient, 0)
+	}
+	var rc []VLESSClient
+	if set.RealityEnabled {
+		rc = make([]VLESSClient, 0, len(users))
+	} else {
+		rc = make([]VLESSClient, 0)
+	}
+	if !set.VLESSEnabled && !set.HysteriaEnabled && !set.RealityEnabled {
+		return vc, hc, rc
+	}
 	for _, u := range users {
 		email := model.UserEmail(u.ID)
 		if set.VLESSEnabled && allowBuiltin(u.ID, model.LaneVLESS) {

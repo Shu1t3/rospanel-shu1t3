@@ -15,7 +15,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/actor"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/auth"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
-	"github.com/google/uuid"
+	"uuid"
 )
 
 // mutateUser runs a single-user store write, logging the outcome and triggering
@@ -67,7 +67,7 @@ func (m *Manager) createUser(name string, dataLimit, expireAt int64) (*model.Use
 	if err != nil {
 		return nil, err
 	}
-	u, err := m.store.CreateUser(name, uuid.NewString(), password, subToken, dataLimit, expireAt, 0)
+	u, err := m.store.CreateUser(name, uuid.New().String(), password, subToken, dataLimit, expireAt, 0)
 	if err != nil {
 		logErr("user create failed", "name", name, "err", err)
 		return nil, err

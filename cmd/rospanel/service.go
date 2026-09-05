@@ -421,6 +421,7 @@ func runServer(dataDir string) {
 	bgDone := make(chan struct{})
 	go func() {
 		bgWg.Wait()
+		mgr.Wait()
 		close(bgDone)
 	}()
 	select {

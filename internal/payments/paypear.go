@@ -7,8 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-
-	"github.com/google/uuid"
+	"uuid"
 )
 
 // PayPear (paypear.ru) is a RUB card/SBP gateway. Auth is HTTP Basic (shop id +
@@ -63,7 +62,7 @@ func (p *PayPear) endpoint() string {
 
 func (p *PayPear) headers() map[string]string {
 	auth := base64.StdEncoding.EncodeToString([]byte(p.shopID + ":" + p.secretKey))
-	return map[string]string{"Authorization": "Basic " + auth, "Idempotence-Key": uuid.NewString()}
+	return map[string]string{"Authorization": "Basic " + auth, "Idempotence-Key": uuid.New().String()}
 }
 
 // Create opens a payment and returns its id plus the hosted confirmation URL.

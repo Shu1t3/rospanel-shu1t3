@@ -12,7 +12,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/i18n"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
-	"github.com/google/uuid"
+	"uuid"
 )
 
 // maxPlanPeriodDays bounds a plan's duration. Generous (100 years) — it exists to keep
@@ -506,7 +506,7 @@ func (m *Manager) createBareUser(name string) (*model.User, error) {
 	if err != nil {
 		return nil, err
 	}
-	return m.store.CreateUser(name, uuid.NewString(), password, subToken, 0, 0, 0)
+	return m.store.CreateUser(name, uuid.New().String(), password, subToken, 0, 0, 0)
 }
 
 // planLimits computes the quota/expiry/reset columns a plan implies, without

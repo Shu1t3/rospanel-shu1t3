@@ -403,6 +403,72 @@ func (s *Store) AccessMap() (map[int64]model.Access, error) {
 	return out, rows.Err()
 }
 
+// GroupsForUserIDs returns group refs keyed by user id for the given slice of user IDs.
+func (s *Store) GroupsForUserIDs(userIDs []int64) (map[int64][]model.GroupRef, error) {
+	if len(userIDs) == 0 {
+		return map[int64][]model.GroupRef{}, nil
+	}
+	args := make([]any, len(userIDs))
+	for i, id := range userIDs {
+		args[i] = id
+	}
+	rows, err := s.db.Query(`
+		SELECT m.user_id, g.id, g.name FROM group_members m
+		JOIN groups g ON g.id = m.group_id
+		WHERE m.user_id IN (`+placeholders(len(userIDs))+`)
+		ORDER BY lower(g.name)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64][]model.GroupRef{}
+	for rows.Next() {
+		var uid int64
+		var g model.GroupRef
+		if err := rows.Scan(&uid, &g.ID, &g.Name); err != nil {
+			return nil, err
+		}
+		out[uid] = append(out[uid], g)
+	}
+	return out, rows.Err()
+}
+
+// AccessForUserIDs resolves access for the given slice of user IDs.
+func (s *Store) AccessForUserIDs(userIDs []int64) (map[int64]model.Access, error) {
+	if len(userIDs) == 0 {
+		return map[int64]model.Access{}, nil
+	}
+	args := make([]any, len(userIDs))
+	for i, id := range userIDs {
+		args[i] = id
+	}
+	rows, err := s.db.Query(`
+		SELECT m.user_id, gr.token FROM group_members m
+		LEFT JOIN group_grants gr ON gr.group_id = m.group_id
+		WHERE m.user_id IN (`+placeholders(len(userIDs))+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]model.Access{}
+	for rows.Next() {
+		var uid int64
+		var token sql.NullString
+		if err := rows.Scan(&uid, &token); err != nil {
+			return nil, err
+		}
+		a, ok := out[uid]
+		if !ok {
+			a = model.Access{Tokens: map[string]bool{}}
+		}
+		if token.Valid && token.String != "" {
+			a.Tokens[token.String] = true
+		}
+		out[uid] = a
+	}
+	return out, rows.Err()
+}
+
 // UserAccess resolves one user's access — the subscription path, which only needs the
 // requesting user. A user in no group is unrestricted.
 func (s *Store) UserAccess(userID int64) (model.Access, error) {

@@ -11,6 +11,9 @@ import (
 
 // GetSettings returns the singleton settings row.
 func (s *Store) GetSettings() (*model.Settings, error) {
+	if cached := s.settingsCache.Load(); cached != nil {
+		return cached.Clone(), nil
+	}
 	var st model.Settings
 	var updated int64
 	var vlessEn, hysteriaEn, setupDone int
@@ -208,6 +211,7 @@ func (s *Store) GetSettings() (*model.Settings, error) {
 	st.RealityPrivateKey = decField(st.RealityPrivateKey)
 	st.ProxyAccounts = decodeProxyAccounts(proxyAccounts)
 	st.ZeroSSLEABHMAC = decField(st.ZeroSSLEABHMAC)
+	s.settingsCache.Store(st.Clone())
 	return &st, nil
 }
 
@@ -215,6 +219,7 @@ func (s *Store) GetSettings() (*model.Settings, error) {
 // 5-field cron expression in the operator timezone; empty disables scheduling).
 // lang is the language the admin bot writes in; empty leaves the panel default.
 func (s *Store) SetTelegramBot(enabled bool, token, cron, lang string) error {
+	defer s.invalidateSettingsCache()
 	_, err := s.db.Exec(
 		`UPDATE settings SET tg_bot_enabled = ?, tg_bot_token = ?, tg_backup_cron = ?,
 		        tg_lang = ?, updated_at = unixepoch() WHERE id = 1`,
@@ -235,6 +240,7 @@ func (s *Store) SetTelegramBot(enabled bool, token, cron, lang string) error {
 // is one of four fixed words and encrypting it would only make the column
 // unreadable in a support session.
 func (s *Store) SetTelegramProxy(mode, raw string) error {
+	defer s.invalidateSettingsCache()
 	_, err := s.db.Exec(
 		`UPDATE settings SET tg_proxy_mode = ?, tg_proxy = ?, updated_at = unixepoch()
 		 WHERE id = 1`,
@@ -246,6 +252,7 @@ func (s *Store) SetTelegramProxy(mode, raw string) error {
 // SetLocalBackup persists the local backup schedule (a 5-field cron expression in
 // the operator timezone; empty disables it) and how many archives to retain.
 func (s *Store) SetLocalBackup(cron string, keep int) error {
+	defer s.invalidateSettingsCache()
 	_, err := s.db.Exec(
 		`UPDATE settings SET local_backup_cron = ?, local_backup_keep = ?,
 		        updated_at = unixepoch() WHERE id = 1`,
@@ -258,6 +265,7 @@ func (s *Store) SetLocalBackup(cron string, keep int) error {
 // self-registration mode + invite code. tg_user_reg_enabled is kept as a derived
 // mirror (mode != off) for any legacy reader.
 func (s *Store) SetTelegramUserBot(enabled bool, token, regMode, regCode string) error {
+	defer s.invalidateSettingsCache()
 	regOpen := regMode != model.RegOff
 	_, err := s.db.Exec(
 		`UPDATE settings SET tg_user_bot_enabled = ?, tg_user_bot_token = ?,
@@ -273,6 +281,7 @@ func (s *Store) SetTelegramUserBot(enabled bool, token, regMode, regCode string)
 // render a t.me link without a getMe on every menu draw), the forum supergroup id
 // admins answer in, and the greeting shown on /start.
 func (s *Store) SetTelegramSupport(enabled bool, token, username string, groupID int64, greeting string) error {
+	defer s.invalidateSettingsCache()
 	_, err := s.db.Exec(
 		`UPDATE settings SET tg_support_enabled = ?, tg_support_bot_token = ?,
 		        tg_support_bot_username = ?, tg_support_group_id = ?,
@@ -285,6 +294,7 @@ func (s *Store) SetTelegramSupport(enabled bool, token, username string, groupID
 // SetUserEvents persists the user-facing notification bitmask (model.UserEvent*
 // flags) and how many days ahead the expiry warning goes out.
 func (s *Store) SetUserEvents(mask int64, expiringDays int) error {
+	defer s.invalidateSettingsCache()
 	_, err := s.db.Exec(
 		`UPDATE settings SET tg_user_events = ?, tg_user_expiring_days = ?,
 		        updated_at = unixepoch() WHERE id = 1`,
@@ -296,6 +306,7 @@ func (s *Store) SetUserEvents(mask int64, expiringDays int) error {
 // category bitmask (model.AbuseCat* flags), the operator's custom list, and the
 // daily alert threshold.
 func (s *Store) SetAbuseConfig(enabled bool, categories int64, custom string, alertMin int) error {
+	defer s.invalidateSettingsCache()
 	_, err := s.db.Exec(
 		`UPDATE settings SET abuse_enabled = ?, abuse_categories = ?, abuse_custom = ?,
 		        abuse_alert_min = ?, updated_at = unixepoch() WHERE id = 1`,
@@ -306,6 +317,7 @@ func (s *Store) SetAbuseConfig(enabled bool, categories int64, custom string, al
 
 // SetAbuseMeasures persists the automatic-response ladder (model.AbuseMeasures).
 func (s *Store) SetAbuseMeasures(a model.AbuseMeasures) error {
+	defer s.invalidateSettingsCache()
 	_, err := s.db.Exec(
 		`UPDATE settings SET abuse_warn_min = ?, abuse_throttle_min = ?, abuse_throttle_kbps = ?,
 		        abuse_disable_min = ?, abuse_hours = ?, updated_at = unixepoch() WHERE id = 1`,
@@ -316,6 +328,7 @@ func (s *Store) SetAbuseMeasures(a model.AbuseMeasures) error {
 
 // SetAdminEvents persists the admin notification bitmask (model.AdminEvent* flags).
 func (s *Store) SetAdminEvents(mask int64) error {
+	defer s.invalidateSettingsCache()
 	_, err := s.db.Exec(
 		`UPDATE settings SET tg_admin_events = ?, updated_at = unixepoch() WHERE id = 1`,
 		mask,
@@ -337,6 +350,7 @@ func (s *Store) SetTelegramChats(csv string) error {
 // Connections): client-config shaping (TLS fragmentation, QUIC block) and the
 // server-inbound knobs (TLS 1.3 floor, REALITY anti-replay window + donor port).
 func (s *Store) SetAntiDPI(tlsFragment, tlsMin13, blockQUIC bool, realityMaxTimeDiff int) error {
+	defer s.invalidateSettingsCache()
 	_, err := s.db.Exec(
 		`UPDATE settings SET tls_fragment = ?, tls_min13 = ?, block_quic = ?,
 		        reality_max_time_diff = ?,
@@ -350,6 +364,7 @@ func (s *Store) SetAntiDPI(tlsFragment, tlsMin13, blockQUIC bool, realityMaxTime
 // Salamander obfuscation key — the whole client-visible shape of the lane, written
 // together because a link built from half of it does not connect.
 func (s *Store) SetHysteriaPorts(port, hopStart, hopEnd int, interval, obfs string) error {
+	defer s.invalidateSettingsCache()
 	_, err := s.db.Exec(
 		`UPDATE settings SET hysteria_port = ?, hop_start = ?, hop_end = ?,
 		        hop_interval = ?, hysteria_obfs = ?, updated_at = unixepoch() WHERE id = 1`,
@@ -360,6 +375,7 @@ func (s *Store) SetHysteriaPorts(port, hopStart, hopEnd int, interval, obfs stri
 
 // SetVLESSPort persists the VLESS listening port.
 func (s *Store) SetVLESSPort(port int) error {
+	defer s.invalidateSettingsCache()
 	_, err := s.db.Exec(
 		`UPDATE settings SET vless_port = ?, updated_at = unixepoch() WHERE id = 1`,
 		port,
@@ -369,6 +385,7 @@ func (s *Store) SetVLESSPort(port int) error {
 
 // SetFingerprints persists the per-connection uTLS fingerprints used in links.
 func (s *Store) SetFingerprints(vless, reality string) error {
+	defer s.invalidateSettingsCache()
 	_, err := s.db.Exec(
 		`UPDATE settings SET vless_fp = ?, reality_fp = ?,
 		        updated_at = unixepoch() WHERE id = 1`,
@@ -380,6 +397,7 @@ func (s *Store) SetFingerprints(vless, reality string) error {
 // SetProtocolNames persists the custom per-connection display names (empty ⇒ the
 // default protocol label is used at render time).
 func (s *Store) SetProtocolNames(vless, reality, hysteria string) error {
+	defer s.invalidateSettingsCache()
 	_, err := s.db.Exec(
 		`UPDATE settings SET vless_name = ?, reality_name = ?,
 		        hysteria_name = ?, updated_at = unixepoch() WHERE id = 1`,
@@ -390,6 +408,7 @@ func (s *Store) SetProtocolNames(vless, reality, hysteria string) error {
 
 // SetRoutingConfig persists the structured routing configuration as JSON.
 func (s *Store) SetRoutingConfig(cfg model.RoutingConfig) error {
+	defer s.invalidateSettingsCache()
 	b, err := json.Marshal(cfg)
 	if err != nil {
 		return err
@@ -403,6 +422,7 @@ func (s *Store) SetRoutingConfig(cfg model.RoutingConfig) error {
 
 // SetWarp persists the WARP enabled flag plus the provisioned account fields.
 func (s *Store) SetWarp(st *model.Settings) error {
+	defer s.invalidateSettingsCache()
 	_, err := s.db.Exec(`
 		UPDATE settings SET
 			warp_enabled = ?, warp_private_key = ?, warp_public_key = ?,
@@ -418,6 +438,7 @@ func (s *Store) SetWarp(st *model.Settings) error {
 // SetOpera persists the Opera VPN egress settings (enable flag, region, and the
 // local proxy port the opera-proxy helper listens on).
 func (s *Store) SetOpera(enabled bool, country string, port int) error {
+	defer s.invalidateSettingsCache()
 	_, err := s.db.Exec(
 		`UPDATE settings SET opera_enabled = ?, opera_country = ?, opera_port = ?,
 		        updated_at = unixepoch() WHERE id = 1`,
@@ -428,6 +449,7 @@ func (s *Store) SetOpera(enabled bool, country string, port int) error {
 
 // SetSubSettings persists the subscription delivery settings.
 func (s *Store) SetSubSettings(st *model.Settings) error {
+	defer s.invalidateSettingsCache()
 	_, err := s.db.Exec(`
 		UPDATE settings SET
 			sub_path = ?,
@@ -448,6 +470,7 @@ func (s *Store) SetSubSettings(st *model.Settings) error {
 
 // SetMasterPlacement persists the master's placement (see migration 0060).
 func (s *Store) SetMasterPlacement(p model.Placement) error {
+	defer s.invalidateSettingsCache()
 	p = p.Normalized()
 	_, err := s.db.Exec(`UPDATE settings SET master_country = ?, master_sort_weight = ?, master_capacity = ?,
 		master_hide_when_full = ?, master_traffic_limit = ?, master_traffic_period = ?,
@@ -461,6 +484,7 @@ func (s *Store) SetMasterPlacement(p model.Placement) error {
 // response rules: the template editor is its own surface, and saving a renamed
 // subscription title should not rewrite a document the operator is still working on.
 func (s *Store) SetSubTemplates(clash, singbox, xray string) error {
+	defer s.invalidateSettingsCache()
 	_, err := s.db.Exec(
 		`UPDATE settings SET sub_tpl_clash = ?, sub_tpl_singbox = ?, sub_tpl_xray = ?,
 		        updated_at = unixepoch() WHERE id = 1`,
@@ -472,6 +496,7 @@ func (s *Store) SetSubTemplates(clash, singbox, xray string) error {
 // (not folded into SetSubSettings) because the rule editor is its own surface and
 // saving a rename shouldn't rewrite the rules, nor the reverse.
 func (s *Store) SetSubRules(rules []model.SubRule) error {
+	defer s.invalidateSettingsCache()
 	blob := ""
 	if len(rules) > 0 {
 		b, err := json.Marshal(rules)
@@ -510,6 +535,7 @@ func (s *Store) SetDeviceCountMode(mode string) error {
 
 // SetHWIDSettings persists the device-binding settings (Settings → Subscriptions).
 func (s *Store) SetHWIDSettings(st *model.Settings) error {
+	defer s.invalidateSettingsCache()
 	_, err := s.db.Exec(`
 		UPDATE settings SET
 			hwid_enabled = ?, hwid_require = ?,
@@ -524,6 +550,7 @@ func (s *Store) SetHWIDSettings(st *model.Settings) error {
 
 // SetStatusPage persists the public status page's on/off flag and URL segment.
 func (s *Store) SetStatusPage(enabled bool, path string) error {
+	defer s.invalidateSettingsCache()
 	_, err := s.db.Exec(
 		`UPDATE settings SET status_enabled = ?, status_path = ?, updated_at = unixepoch()
 		 WHERE id = 1`,
@@ -570,6 +597,7 @@ func (s *Store) SetProtocolEnabled(name string, enabled bool) error {
 // setSetting writes one settings column and bumps updated_at. col is always a
 // hardcoded literal or allow-listed value, so the concatenation is injection-safe.
 func (s *Store) setSetting(col string, val any) error {
+	defer s.invalidateSettingsCache()
 	_, err := s.db.Exec(
 		`UPDATE settings SET `+col+` = ?, updated_at = unixepoch() WHERE id = 1`, val)
 	return err
@@ -577,6 +605,7 @@ func (s *Store) setSetting(col string, val any) error {
 
 // SetTLS persists host/SNI/cert configuration (used on first boot).
 func (s *Store) SetTLS(host, sni, mode, certPath, keyPath string) error {
+	defer s.invalidateSettingsCache()
 	_, err := s.db.Exec(`
 		UPDATE settings
 		SET host = ?, sni = ?, tls_mode = ?, cert_path = ?, key_path = ?,
@@ -610,6 +639,7 @@ func (s *Store) SetIPListRefresh(hours int) error {
 // SetACMEProvider persists the ACME CA selection and (for ZeroSSL) the External
 // Account Binding credentials. An empty provider defaults to "letsencrypt".
 func (s *Store) SetACMEProvider(provider, eabKID, eabHMAC string) error {
+	defer s.invalidateSettingsCache()
 	if provider == "" {
 		provider = "letsencrypt"
 	}
@@ -623,6 +653,7 @@ func (s *Store) SetACMEProvider(provider, eabKID, eabHMAC string) error {
 
 // SetTLSMode persists the TLS mode, domain (host), SNI and ACME e-mail.
 func (s *Store) SetTLSMode(mode, host, sni, acmeEmail string) error {
+	defer s.invalidateSettingsCache()
 	_, err := s.db.Exec(`
 		UPDATE settings
 		SET tls_mode = ?, host = ?, sni = ?, acme_email = ?, updated_at = unixepoch()
@@ -644,6 +675,7 @@ func (s *Store) SetPanelTheme(themeJSON string) error { return s.setSetting("pan
 
 // SetRealityPorts persists the REALITY port and destination (SNI/serverName).
 func (s *Store) SetRealityPorts(port int, dest string) error {
+	defer s.invalidateSettingsCache()
 	_, err := s.db.Exec(
 		`UPDATE settings SET reality_port = ?, reality_dest = ?,
 		        updated_at = unixepoch() WHERE id = 1`, port, dest,
@@ -654,6 +686,7 @@ func (s *Store) SetRealityPorts(port int, dest string) error {
 // SetRealityKeys persists a freshly generated REALITY keypair, shortId, and gRPC
 // service name.
 func (s *Store) SetRealityKeys(priv, pub, shortID, serviceName string) error {
+	defer s.invalidateSettingsCache()
 	_, err := s.db.Exec(
 		`UPDATE settings SET reality_private_key = ?, reality_public_key = ?,
 		        reality_short_id = ?, reality_path = ?,
@@ -665,6 +698,7 @@ func (s *Store) SetRealityKeys(priv, pub, shortID, serviceName string) error {
 
 // MarkConfigApplied bumps the config revision and clears any prior error.
 func (s *Store) MarkConfigApplied() error {
+	defer s.invalidateSettingsCache()
 	_, err := s.db.Exec(`
 		UPDATE settings
 		SET config_revision = config_revision + 1, last_config_error = '',
@@ -702,6 +736,7 @@ func PeekTimezone(dbPath string) string {
 // SetSubDPI persists the client-side DPI settings as one JSON blob (see
 // migration 0059). Callers validate first (model.SubDPI.Validate).
 func (s *Store) SetSubDPI(d model.SubDPI) error {
+	defer s.invalidateSettingsCache()
 	b, err := json.Marshal(d.Normalized())
 	if err != nil {
 		return err
@@ -713,6 +748,7 @@ func (s *Store) SetSubDPI(d model.SubDPI) error {
 // SetAWGConfig persists the master's AmneziaWG port, in-tunnel DNS and display
 // name (the toggle goes through SetProtocolEnabled("awg")).
 func (s *Store) SetAWGConfig(port int, dns, name string) error {
+	defer s.invalidateSettingsCache()
 	_, err := s.db.Exec(`UPDATE settings SET awg_port = ?, awg_dns = ?, awg_name = ?,
 		updated_at = unixepoch() WHERE id = 1`, port, dns, name)
 	return err
@@ -721,6 +757,7 @@ func (s *Store) SetAWGConfig(port int, dns, name string) error {
 // SaveAWGKeys stores the master's AmneziaWG keypair and obfuscation parameters
 // (the private key encrypted at rest).
 func (s *Store) SaveAWGKeys(priv, pub string, params model.AWGParams) error {
+	defer s.invalidateSettingsCache()
 	b, err := json.Marshal(params)
 	if err != nil {
 		return err

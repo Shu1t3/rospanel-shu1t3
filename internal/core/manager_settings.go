@@ -417,11 +417,11 @@ func (m *Manager) SetGeoRefresh(hours int) error {
 		return err
 	}
 	if d := time.Duration(hours) * time.Hour; d > 0 && m.geoStale(d) {
-		go func() {
+		m.runAsync(func() {
 			if _, err := m.RefreshGeo(); err != nil {
 				logWarn("geo: refresh on enable failed", "err", err)
 			}
-		}()
+		})
 	}
 	return nil
 }
@@ -436,11 +436,11 @@ func (m *Manager) SetIPListRefresh(hours int) error {
 		return err
 	}
 	if d := time.Duration(hours) * time.Hour; d > 0 && m.ipListStale(d) {
-		go func() {
+		m.runAsync(func() {
 			if _, err := m.RefreshIPLists(); err != nil {
 				logWarn("iplist: refresh on enable failed", "err", err)
 			}
-		}()
+		})
 	}
 	return nil
 }

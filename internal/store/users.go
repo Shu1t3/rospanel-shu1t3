@@ -135,6 +135,26 @@ func (s *Store) ListUsers() ([]model.User, error) {
 	return s.queryUsers(`SELECT ` + userCols + ` FROM users ORDER BY id DESC`)
 }
 
+// ListUsersPaged returns a paged slice of users and the total count of users.
+func (s *Store) ListUsersPaged(limit, offset int) ([]model.User, int, error) {
+	var total int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = total
+	}
+	query := `SELECT ` + userCols + ` FROM users ORDER BY id DESC LIMIT ? OFFSET ?`
+	users, err := s.queryUsers(query, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	return users, total, nil
+}
+
 // UserIDs returns the set of existing user ids.
 //
 // For callers that only need to know whether an id is real — validating what a node
@@ -263,7 +283,7 @@ func (s *Store) WorkingUsers(now int64) ([]model.User, error) {
 	// same rule model.Settings.CountsIPAsDevice states, kept in SQL so every caller of
 	// this query and the status derivation agree without threading a flag through six of
 	// them. See migration 0055 and issue #66.
-	return s.queryUsers(`WITH device_count AS (`+deviceCountCTE+`)
+	return s.queryUsersRaw(`WITH device_count AS (`+deviceCountCTE+`)
 		SELECT `+userCols+` FROM users
 		WHERE enabled = 1
 		  AND (expire_at = 0 OR expire_at > ?)
@@ -861,14 +881,22 @@ func deriveStatus(enabled bool, expireAt, used, limit, now int64, activeDevices,
 }
 
 func (s *Store) queryUsers(query string, args ...any) ([]model.User, error) {
+	users, err := s.queryUsersRaw(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	s.applyUserStatus(users, time.Now().Unix())
+	return users, nil
+}
+
+func (s *Store) queryUsersRaw(query string, args ...any) ([]model.User, error) {
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	now := time.Now().Unix()
-	var out []model.User
+	out := make([]model.User, 0, 64)
 	for rows.Next() {
 		var u model.User
 		var created int64
@@ -895,7 +923,6 @@ func (s *Store) queryUsers(query string, args ...any) ([]model.User, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	s.applyUserStatus(out, now)
 	return out, nil
 }
 

@@ -148,6 +148,24 @@ func (m *Manager) NodeDesiredState(n *model.Node) (*nodeapi.NodeState, error) {
 	if err != nil {
 		return nil, err
 	}
+	opts, err := m.genOptsFor(n.ID)
+	if err != nil {
+		return nil, err
+	}
+	speedLimits := m.SpeedLimits()
+	blocked, _ := m.store.BlockedIPList()
+	proxies := m.getNodeProxies(n.ID)
+
+	fp := computeNodeFingerprint(set, n, users, opts.Custom, speedLimits, blocked, proxies)
+	m.nodeDesiredMu.RLock()
+	if m.nodeDesiredCache != nil {
+		if cached, ok := m.nodeDesiredCache[n.ID]; ok && cached.fingerprint == fp {
+			m.nodeDesiredMu.RUnlock()
+			return cached.state, nil
+		}
+	}
+	m.nodeDesiredMu.RUnlock()
+
 	ns := nodeSettings(set, n)
 	// Cert paths are sentinels the agent rewrites to its own absolute paths (the
 	// panel doesn't know the node's data dir); keeping them symbolic makes the hash
@@ -156,11 +174,7 @@ func (m *Manager) NodeDesiredState(n *model.Node) (*nodeapi.NodeState, error) {
 	ns.KeyPath = nodeapi.KeyPathSentinel
 	// The node's own fallback points at its local decoy/panel loopback, same as the
 	// panel's own layout. Egress lanes resolve against the node's OWN proxy pool.
-	opts, err := m.genOptsFor(n.ID)
-	if err != nil {
-		return nil, err
-	}
-	cfg, err := xray.Generate(ns, users, opts, m.getNodeProxies(n.ID))
+	cfg, err := xray.Generate(ns, users, opts, proxies)
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +224,7 @@ func (m *Manager) NodeDesiredState(n *model.Node) (*nodeapi.NodeState, error) {
 		DecoyTemplate:     n.DecoyTemplate,
 		GeoRefreshHours:   n.GeoRefreshHours, // the node's OWN geo cadence
 		XrayPinnedVersion: xray.PinnedVersion,
-		SpeedLimits:       m.SpeedLimits(),
+		SpeedLimits:       speedLimits,
 	}
 	if access, err := m.store.AccessMap(); err == nil {
 		meta.AWG = m.nodeAWGState(n, ns, users, access)
@@ -218,7 +232,7 @@ func (m *Manager) NodeDesiredState(n *model.Node) (*nodeapi.NodeState, error) {
 	// What the source policy has refused, for this node's own firewall. Read here
 	// rather than pushed on each block so a node that was offline catches up on its
 	// next sync, and so the hash covers it (a lifted block reaches the node too).
-	if blocked, err := m.store.BlockedIPList(); err == nil && len(blocked) > 0 {
+	if len(blocked) > 0 {
 		meta.BlockedIPs = blocked
 		meta.BlockTTLHours = int(policyTTL(set.ConnPolicy) / time.Hour)
 	}
@@ -232,11 +246,145 @@ func (m *Manager) NodeDesiredState(n *model.Node) (*nodeapi.NodeState, error) {
 		return nil, err
 	}
 	h := sha256.Sum256(append(raw, metaRaw...))
-	return &nodeapi.NodeState{
+	state := &nodeapi.NodeState{
 		Hash:       hex.EncodeToString(h[:]),
 		XrayConfig: raw,
 		Meta:       meta,
-	}, nil
+	}
+
+	m.nodeDesiredMu.Lock()
+	if m.nodeDesiredCache == nil {
+		m.nodeDesiredCache = make(map[int64]cachedNodeState)
+	}
+	m.nodeDesiredCache[n.ID] = cachedNodeState{
+		fingerprint: fp,
+		state:       state,
+	}
+	m.nodeDesiredMu.Unlock()
+	return state, nil
+}
+
+const fnvPrime = 1099511628211
+const fnvOffset = 14695981039346656037
+
+func fnvInt64(h uint64, val int64) uint64 {
+	return (h ^ uint64(val)) * fnvPrime
+}
+
+func fnvInt(h uint64, val int) uint64 {
+	return (h ^ uint64(val)) * fnvPrime
+}
+
+func fnvBool(h uint64, val bool) uint64 {
+	var b uint64
+	if val {
+		b = 1
+	}
+	return (h ^ b) * fnvPrime
+}
+
+func fnvBoolPtr(h uint64, val *bool) uint64 {
+	if val == nil {
+		return (h ^ 2) * fnvPrime
+	}
+	return fnvBool(h, *val)
+}
+
+func fnvString(h uint64, s string) uint64 {
+	for i := 0; i < len(s); i++ {
+		h = (h ^ uint64(s[i])) * fnvPrime
+	}
+	return h
+}
+
+func computeNodeFingerprint(
+	set *model.Settings,
+	n *model.Node,
+	users []model.User,
+	customInbounds []model.Inbound,
+	speedLimits map[string]int,
+	blockedIPs []string,
+	proxies map[string][]model.ProxyEndpoint,
+) uint64 {
+	h := uint64(fnvOffset)
+	h = fnvInt64(h, set.ConfigRevision)
+	h = fnvString(h, set.ACMEEmail)
+	h = fnvString(h, set.ACMEProvider)
+	h = fnvString(h, set.ZeroSSLEABKID)
+	h = fnvString(h, set.ZeroSSLEABHMAC)
+	h = fnvBool(h, set.HysteriaEnabled)
+	h = fnvInt(h, set.HysteriaPort)
+	h = fnvInt(h, set.HopStart)
+	h = fnvInt(h, set.HopEnd)
+	h = fnvString(h, set.ConnPolicy.Mode)
+	for _, c := range set.ConnPolicy.Countries {
+		h = fnvString(h, c)
+	}
+
+	h = fnvInt64(h, n.ID)
+	h = fnvString(h, n.Host)
+	h = fnvBool(h, n.Enabled)
+	h = fnvString(h, n.DecoyTemplate)
+	h = fnvInt(h, n.GeoRefreshHours)
+	h = fnvBoolPtr(h, n.VLESSEnabled)
+	h = fnvBoolPtr(h, n.HysteriaEnabled)
+	h = fnvBoolPtr(h, n.RealityEnabled)
+	h = fnvBoolPtr(h, n.AWGEnabled)
+	h = fnvString(h, n.RealityDest)
+	h = fnvString(h, n.RealityPublicKey)
+	h = fnvString(h, n.RealityShortID)
+	h = fnvString(h, n.AWGPublicKey)
+	h = fnvBool(h, n.WarpEnabled)
+	h = fnvBool(h, n.OperaEnabled)
+	h = fnvString(h, n.ACMEEmail)
+	h = fnvString(h, n.ACMEProvider)
+	h = fnvString(h, n.ZeroSSLEABKID)
+	h = fnvString(h, n.ZeroSSLEABHMAC)
+	if n.Routing != nil {
+		h = fnvInt(h, len(n.Routing.Lanes))
+		for _, l := range n.Routing.Lanes {
+			h = fnvString(h, l.ID)
+			h = fnvBool(h, l.Enabled)
+		}
+	}
+
+	h = fnvInt(h, len(customInbounds))
+	for _, in := range customInbounds {
+		h = fnvInt64(h, in.ID)
+		h = fnvInt(h, in.Port)
+		h = fnvString(h, in.Protocol)
+		h = fnvBool(h, in.Enabled)
+	}
+
+	h = fnvInt(h, len(speedLimits))
+	for uid, lim := range speedLimits {
+		h = fnvString(h, uid)
+		h = fnvInt(h, lim)
+	}
+
+	h = fnvInt(h, len(blockedIPs))
+	for _, ip := range blockedIPs {
+		h = fnvString(h, ip)
+	}
+
+	h = fnvInt(h, len(proxies))
+	for laneID, eps := range proxies {
+		h = fnvString(h, laneID)
+		h = fnvInt(h, len(eps))
+		for _, ep := range eps {
+			h = fnvString(h, ep.Address)
+			h = fnvInt(h, ep.Port)
+		}
+	}
+
+	h = fnvInt(h, len(users))
+	for _, u := range users {
+		h = fnvInt64(h, u.ID)
+		h = fnvString(h, u.UUID)
+		h = fnvString(h, u.Password)
+		h = fnvBool(h, u.Enabled)
+	}
+	return h
 }
 
 // NodeXrayConfig returns one server's Xray config for the read-only viewer: the

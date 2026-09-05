@@ -6,8 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-
-	"github.com/google/uuid"
+	"uuid"
 )
 
 // SeverPay is a RUB card/SBP gateway. Every request is signed: mid + a per-request
@@ -55,7 +54,7 @@ func (s *SeverPay) endpoint() string {
 func (s *SeverPay) sign(body map[string]any) {
 	mid, _ := strconv.Atoi(s.mid)
 	body["mid"] = mid
-	body["salt"] = uuid.NewString()
+	body["salt"] = uuid.New().String()
 	delete(body, "sign")
 	body["sign"] = hmacSHA256Hex(s.token, string(canonicalJSON(body)))
 }

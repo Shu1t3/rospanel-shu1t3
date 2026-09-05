@@ -47,6 +47,11 @@ const (
 	accPendingMax = 8192
 )
 
+type cachedNodeState struct {
+	fingerprint uint64
+	state       *nodeapi.NodeState
+}
+
 // Manager is the application service layer.
 type Manager struct {
 	store       *store.Store
@@ -59,7 +64,7 @@ type Manager struct {
 	structuralPending atomic.Bool
 
 	accMu   sync.Mutex
-	accLast map[string]int64 // throttle key "uN|ip" → last recorded unix
+	accLast map[accPendingKey]int64 // throttle key {userID, ip} → last recorded unix
 	// accPending buffers sightings between flushes, so the access-log reader never
 	// touches the database on the hot path. Bounded by the throttle above: one entry
 	// per user+IP per flush interval, not per log line.
@@ -136,6 +141,11 @@ type Manager struct {
 	// concurrent confirmers — a webhook + the poll fallback, or two orders for the
 	// same user — which would otherwise lose or double a paid period.
 	applyPlanMu sync.Mutex
+
+	nodeDesiredMu    sync.RWMutex
+	nodeDesiredCache map[int64]cachedNodeState
+
+	bgWg sync.WaitGroup
 
 	vpnMu       sync.Mutex
 	vpnUp       int64 // current VPN throughput (bytes/sec), from Xray stats deltas
@@ -296,41 +306,42 @@ type nodeLogEntry struct {
 // is where the opera-proxy helper binary is downloaded/run from.
 func New(st *store.Store, sup *xray.Supervisor, opts xray.Options, tls TLSPaths, operaDir string) *Manager {
 	m := &Manager{
-		done:           make(chan struct{}),
-		store:          st,
-		sup:            sup,
-		opts:           opts,
-		tls:            tls,
-		reconcileCh:    make(chan struct{}, 1),
-		accLast:        make(map[string]int64),
-		accPending:     make(map[accPendingKey]store.ConnectionHit),
-		abusePending:   make(map[abusePendingKey]store.AbuseHit),
-		abuseAlerted:   make(map[abuseAlertKey]struct{}),
-		applied:        make(map[int64]struct{}),
-		tz:             time.Local,
-		guard:          newBruteGuard(),
-		shaper:         shaper.New(),
-		devNotice:      newDeviceNotice(),
-		payNotice:      newNotice(6 * time.Hour),
-		operaDir:       operaDir,
-		operaSup:       opera.New(filepath.Join(operaDir, "opera-proxy")),
-		webhookCh:      make(chan webhookJob, webhookQueueSize),
-		nodes:          newNodeRegistry(),
-		probes:         newProbeRegistry(),
-		checks:         newCheckRegistry(),
-		nodeRestart:    map[int64]*nodeRestartReq{},
-		nodeLogs:       map[int64]nodeLogEntry{},
-		nodeGeoFiles:   map[int64][]nodeapi.GeoFile{},
-		nodeHostStats:  map[int64]nodeapi.HostStats{},
-		nodeAWGRunning: map[int64]bool{},
-		nodeAWGErr:     map[int64]string{},
-		nodeComponents: map[int64][]nodeapi.ComponentStatus{},
-		awg:            awg.New(),
-		probeBlock:     ipblock.New(ipblock.TableProbes),
-		policyBlock:    ipblock.New(ipblock.TablePolicy),
-		nodeSyncFails:  map[int64]int{},
-		nodeLogsWanted: map[int64]int64{},
-		nodeAlerts:     map[int64]*nodeAlertState{},
+		done:             make(chan struct{}),
+		store:            st,
+		sup:              sup,
+		opts:             opts,
+		tls:              tls,
+		reconcileCh:      make(chan struct{}, 1),
+		accLast:          make(map[accPendingKey]int64),
+		accPending:       make(map[accPendingKey]store.ConnectionHit),
+		abusePending:     make(map[abusePendingKey]store.AbuseHit),
+		abuseAlerted:     make(map[abuseAlertKey]struct{}),
+		applied:          make(map[int64]struct{}),
+		tz:               time.Local,
+		guard:            newBruteGuard(),
+		shaper:           shaper.New(),
+		devNotice:        newDeviceNotice(),
+		payNotice:        newNotice(6 * time.Hour),
+		operaDir:         operaDir,
+		operaSup:         opera.New(filepath.Join(operaDir, "opera-proxy")),
+		webhookCh:        make(chan webhookJob, webhookQueueSize),
+		nodes:            newNodeRegistry(),
+		probes:           newProbeRegistry(),
+		checks:           newCheckRegistry(),
+		nodeRestart:      map[int64]*nodeRestartReq{},
+		nodeLogs:         map[int64]nodeLogEntry{},
+		nodeGeoFiles:     map[int64][]nodeapi.GeoFile{},
+		nodeHostStats:    map[int64]nodeapi.HostStats{},
+		nodeAWGRunning:   map[int64]bool{},
+		nodeAWGErr:       map[int64]string{},
+		nodeComponents:   map[int64][]nodeapi.ComponentStatus{},
+		awg:              awg.New(),
+		probeBlock:       ipblock.New(ipblock.TableProbes),
+		policyBlock:      ipblock.New(ipblock.TablePolicy),
+		nodeSyncFails:    map[int64]int{},
+		nodeLogsWanted:   map[int64]int64{},
+		nodeAlerts:       map[int64]*nodeAlertState{},
+		nodeDesiredCache: make(map[int64]cachedNodeState),
 	}
 	if set, err := st.GetSettings(); err == nil {
 		m.tz = loadLocation(set.Timezone)
@@ -341,11 +352,11 @@ func New(st *store.Store, sup *xray.Supervisor, opts xray.Options, tls TLSPaths,
 		// master's SeedProxies, which service.go runs unconditionally at boot). Without
 		// this, a node's URL lanes would stay empty until the first proxyLoop tick — and
 		// forever when auto-refresh is "never", since the loop is cadence-gated.
-		go m.RefreshNodeProxies()
+		m.runAsync(func() { m.RefreshNodeProxies() })
 		if set.OperaEnabled {
 			// Bring the helper up in the background so a cold-cache download can't
 			// stall startup; the "opera" lane falls back to direct until it's ready.
-			go func() { _ = m.syncOpera(true, set.OperaCountryOr(), set.OperaPortOr()) }()
+			m.runAsync(func() { _ = m.syncOpera(true, set.OperaCountryOr(), set.OperaPortOr()) })
 		}
 	}
 	m.sup.SetOnCrash(m.onXrayCrash)             // alert admins when Xray exits unexpectedly
@@ -436,13 +447,13 @@ func (m *Manager) RecordAccess(email, ip, dest string) {
 	m.recordAbuse(id, dest)
 
 	now := time.Now().Unix()
-	key := email + "|" + ip
+	pk := accPendingKey{userID: id, ip: ip}
 	m.accMu.Lock()
 	defer m.accMu.Unlock()
-	if now-m.accLast[key] < 10 {
+	if now-m.accLast[pk] < 10 {
 		return
 	}
-	m.accLast[key] = now
+	m.accLast[pk] = now
 	if len(m.accLast) > accLastMax {
 		for k, ts := range m.accLast { // drop pairs not seen within the TTL
 			if now-ts > accLastTTL {
@@ -450,7 +461,6 @@ func (m *Manager) RecordAccess(email, ip, dest string) {
 			}
 		}
 	}
-	pk := accPendingKey{userID: id, ip: ip}
 	h, buffered := m.accPending[pk]
 	// Bound the buffer. It normally drains every few seconds, but a persistent write
 	// failure (a full disk, say) makes FlushAccess requeue instead — and the throttle
@@ -525,10 +535,11 @@ func (m *Manager) FlushAccess() {
 	}
 }
 
-// TriggerReconcile requests a FULL config reload (regenerate + restart Xray) for
-// structural changes (protocols, routing, DNS, WARP, TLS, ports). Non-blocking;
-// the reload happens shortly after so the triggering HTTP response flushes first.
+// TriggerReconcile requests a full config reload (structural change: inbounds,
+// TLS, routing, port changes). Coalesced over reconcileDebounce so the reload happens
+// shortly after so the triggering HTTP response flushes first.
 func (m *Manager) TriggerReconcile() {
+	m.InvalidateNodeDesiredCache(0)
 	m.structuralPending.Store(true)
 	m.signalReload()
 }
@@ -536,7 +547,21 @@ func (m *Manager) TriggerReconcile() {
 // TriggerUserSync requests a live user-set sync (add/remove users via the Xray
 // API, no restart) for user-only changes — far cheaper than a full reload.
 func (m *Manager) TriggerUserSync() {
+	m.InvalidateNodeDesiredCache(0)
 	m.signalReload()
+}
+
+// InvalidateNodeDesiredCache clears the cached desired state for nodeID (or all nodes if nodeID == 0).
+func (m *Manager) InvalidateNodeDesiredCache(nodeID int64) {
+	m.nodeDesiredMu.Lock()
+	defer m.nodeDesiredMu.Unlock()
+	if m.nodeDesiredCache != nil {
+		if nodeID == 0 {
+			clear(m.nodeDesiredCache)
+		} else {
+			delete(m.nodeDesiredCache, nodeID)
+		}
+	}
 }
 
 func (m *Manager) signalReload() {
@@ -770,4 +795,18 @@ func (m *Manager) workingChanged(users []model.User) bool {
 		}
 	}
 	return false
+}
+
+// runAsync spawns fn in a goroutine tracked by m.bgWg for deterministic shutdown.
+func (m *Manager) runAsync(fn func()) {
+	m.bgWg.Add(1)
+	go func() {
+		defer m.bgWg.Done()
+		fn()
+	}()
+}
+
+// Wait blocks until all asynchronous tasks spawned via runAsync complete.
+func (m *Manager) Wait() {
+	m.bgWg.Wait()
 }

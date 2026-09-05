@@ -654,6 +654,7 @@ func (s *Store) listPaymentOrders(query string, args ...any) ([]model.PaymentOrd
 }
 
 func (s *Store) SetBillingSettings(st *model.Settings) error {
+	defer s.invalidateSettingsCache()
 	_, err := s.db.Exec(
 		`UPDATE settings SET billing_enabled = ?,
 		 billing_free_plan_id = ?, billing_trial_plan_id = ?, billing_payment_note = ?,

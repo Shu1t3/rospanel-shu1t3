@@ -133,6 +133,7 @@ func (s *UserService) Run(ctx context.Context) {
 	// payment path, where a sweep can touch many users at once.
 	q := newNotifyQueue("user bot")
 	q.run(ctx, 4)
+	defer q.wait()
 	s.panel.SetUserNotifier(func(chatID int64, html string) {
 		q.submit(func(ctx context.Context) {
 			set, err := s.store.GetSettings()
@@ -625,7 +626,8 @@ func userSelfCard(u model.User, set *model.Settings, panel Panel, lang i18n.Lang
 			fmt.Fprintf(&b, "%s\n", i18n.T(lang, "user.cardPlan", esc(name)))
 		}
 	} else if set.BillingEnabled {
-		b.WriteString(i18n.T(lang, "user.cardPlanManual") + "\n")
+		b.WriteString(i18n.T(lang, "user.cardPlanManual"))
+		b.WriteByte('\n')
 	}
 
 	// Expiry + remaining time.
@@ -637,7 +639,8 @@ func userSelfCard(u model.User, set *model.Settings, panel Panel, lang i18n.Lang
 			fmt.Fprintf(&b, "%s\n", i18n.T(lang, "user.cardExpiredOn", exp))
 		}
 	} else {
-		b.WriteString(i18n.T(lang, "user.cardNoExpiry") + "\n")
+		b.WriteString(i18n.T(lang, "user.cardNoExpiry"))
+		b.WriteByte('\n')
 	}
 
 	// Traffic.

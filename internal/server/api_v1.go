@@ -596,37 +596,58 @@ func (rt *Router) apiListUsers(w http.ResponseWriter, r *http.Request) {
 		writeAPIManagerErr(w, err)
 		return
 	}
-	users, err := rt.mgr.Store().ListUsers()
-	if err != nil {
-		writeAPIManagerErr(w, err)
-		return
-	}
 	rt.applyTLSHints(set)
 
 	q := r.URL.Query()
 	status := strings.TrimSpace(q.Get("status"))
 	search := strings.ToLower(strings.TrimSpace(q.Get("search")))
 	tag := strings.ToLower(strings.TrimSpace(q.Get("tag")))
-	filtered := users[:0:0]
-	for _, u := range users {
-		if status != "" && u.Status != status {
-			continue
+
+	var window []model.User
+	var meta map[string]int
+
+	if status == "" && search == "" && tag == "" {
+		offset := clampNonNeg(atoiOr(q.Get("offset"), 0))
+		limit := atoiOr(q.Get("limit"), defaultPageLimit)
+		if limit > maxPageLimit {
+			limit = maxPageLimit
 		}
-		if search != "" && !userMatches(u, search) {
-			continue
+		pagedUsers, total, err := rt.mgr.Store().ListUsersPaged(limit, offset)
+		if err != nil {
+			writeAPIManagerErr(w, err)
+			return
 		}
-		if tag != "" && !slices.Contains(u.Tags, tag) {
-			continue
+		window = pagedUsers
+		meta = map[string]int{"total": total, "offset": offset, "limit": limit}
+	} else {
+		users, err := rt.mgr.Store().ListUsers()
+		if err != nil {
+			writeAPIManagerErr(w, err)
+			return
 		}
-		filtered = append(filtered, u)
+		filtered := users[:0:0]
+		for _, u := range users {
+			if status != "" && u.Status != status {
+				continue
+			}
+			if search != "" && !userMatches(u, search) {
+				continue
+			}
+			if tag != "" && !slices.Contains(u.Tags, tag) {
+				continue
+			}
+			filtered = append(filtered, u)
+		}
+		window, meta = page(r, filtered)
 	}
 
-	// Window the slice — see api_v1_paging.go for what limit/offset mean.
-	window, meta := page(r, filtered)
-
 	custom := rt.localInbounds()
-	groupsMap, _ := rt.mgr.GroupsForAllUsers()
-	accessMap, _ := rt.mgr.Store().AccessMap()
+	userIDs := make([]int64, len(window))
+	for i, u := range window {
+		userIDs[i] = u.ID
+	}
+	groupsMap, _ := rt.mgr.Store().GroupsForUserIDs(userIDs)
+	accessMap, _ := rt.mgr.Store().AccessForUserIDs(userIDs)
 	views := make([]userView, 0, len(window))
 	for _, u := range window {
 		views = append(views, makeUserView(u, set, "", custom, groupsMap[u.ID], model.AccessOf(accessMap, u.ID)))

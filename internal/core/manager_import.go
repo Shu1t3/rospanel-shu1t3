@@ -11,7 +11,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/importer"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
-	"github.com/google/uuid"
+	"uuid"
 )
 
 // Importing users from another panel is two steps on purpose: a preview that

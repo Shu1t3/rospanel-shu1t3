@@ -16,6 +16,7 @@ type userSecretRow struct {
 
 // ReencryptSensitiveFields migrates legacy plaintext secrets to enc:v1: at-rest blobs.
 func (s *Store) ReencryptSensitiveFields() error {
+	defer s.invalidateSettingsCache()
 	// Read all rows first — with MaxOpenConns(1), Exec inside rows.Next deadlocks.
 	var users []userSecretRow
 	rows, err := s.db.Query(`SELECT id, password FROM users`)

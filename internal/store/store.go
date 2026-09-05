@@ -11,7 +11,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 
+	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	_ "modernc.org/sqlite"
 )
 
@@ -34,10 +37,12 @@ type queryer interface {
 }
 
 // withTx runs fn inside a transaction, rolling back on any error. Worth reaching
-// for whenever a change spans more than one row: the pool is a single connection
-// (see Open), so a sequence of bare Exec calls is not just non-atomic, it is also
-// slower — each one pays its own commit and fsync, where a transaction pays one.
+// for whenever a change spans more than one row: each transaction pays one commit
+// and fsync. Multi-statement write transactions are serialized via writeMu to avoid
+// SQLITE_BUSY under concurrent write requests.
 func (s *Store) withTx(fn func(tx *sql.Tx) error) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -57,7 +62,15 @@ var ErrCorrupt = errors.New("database is corrupt")
 
 // Store wraps the SQLite connection pool.
 type Store struct {
-	db *sql.DB
+	db            *sql.DB
+	writeMu       sync.Mutex
+	settingsCache atomic.Pointer[model.Settings]
+}
+
+// invalidateSettingsCache clears the cached settings singleton so the next read
+// re-queries the database.
+func (s *Store) invalidateSettingsCache() {
+	s.settingsCache.Store(nil)
 }
 
 // Open opens (creating if needed) the SQLite database at path, applies pragmas,
@@ -84,9 +97,11 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Single connection keeps writes serialized — correct and plenty for the
-	// panel's scale (a handful of admins, hundreds of users).
-	db.SetMaxOpenConns(1)
+	// In WAL mode, concurrent readers do not block writers and writers do not block readers.
+	// Allow up to 8 connections for parallel query execution, keeping up to 4 idle connections.
+	// Multi-statement write transactions are serialized via writeMu to avoid SQLITE_BUSY.
+	db.SetMaxOpenConns(8)
+	db.SetMaxIdleConns(4)
 	if err := db.Ping(); err != nil {
 		_ = db.Close()
 		return nil, corruptOr("open db", err)

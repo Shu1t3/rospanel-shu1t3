@@ -5,8 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-
-	"github.com/google/uuid"
+	"uuid"
 )
 
 // RollyPay takes RUB card/SBP payments and settles the merchant in USDT — the
@@ -49,7 +48,7 @@ func (r *RollyPay) endpoint() string {
 }
 
 func (r *RollyPay) headers() map[string]string {
-	return map[string]string{"X-API-Key": r.apiKey, "X-Nonce": uuid.NewString()}
+	return map[string]string{"X-API-Key": r.apiKey, "X-Nonce": uuid.New().String()}
 }
 
 // Create opens a payment and returns its id plus the hosted pay URL.

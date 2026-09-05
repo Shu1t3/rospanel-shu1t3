@@ -8,8 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-
-	"github.com/google/uuid"
+	"uuid"
 )
 
 // yooKassaAPI is the single production endpoint. YooKassa has no separate sandbox
@@ -96,7 +95,7 @@ func (y *YooKassa) CreatePayment(ctx context.Context, amountRub int, orderID int
 	}
 	req.Header.Set("Authorization", y.auth())
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Idempotence-Key", uuid.NewString())
+	req.Header.Set("Idempotence-Key", uuid.New().String())
 
 	var out struct {
 		ID           string `json:"id"`

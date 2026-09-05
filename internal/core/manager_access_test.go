@@ -17,7 +17,7 @@ func accessTestManager(t *testing.T) (*Manager, *store.Store) {
 	t.Cleanup(func() { st.Close() })
 	return &Manager{
 		store:      st,
-		accLast:    make(map[string]int64),
+		accLast:    make(map[accPendingKey]int64),
 		accPending: make(map[accPendingKey]store.ConnectionHit),
 	}, st
 }
@@ -137,5 +137,20 @@ func TestRecordAccessWithoutDestination(t *testing.T) {
 	m.RecordAccess(fmt.Sprintf("u%d", u.ID), "1.1.1.1", "")
 	if len(m.accPending) != 1 {
 		t.Fatal("a line without a destination cost us the device sighting")
+	}
+}
+
+func BenchmarkRecordAccess(b *testing.B) {
+	m := &Manager{
+		accLast:    make(map[accPendingKey]int64),
+		accPending: make(map[accPendingKey]store.ConnectionHit),
+	}
+	email := "u42"
+	ip := "192.168.1.1"
+	dest := "example.com"
+
+	b.ReportAllocs()
+	for b.Loop() {
+		m.RecordAccess(email, ip, dest)
 	}
 }

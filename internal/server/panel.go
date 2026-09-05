@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"net/http/pprof"
+	"net/url"
 	"strings"
 	"time"
 
@@ -532,6 +534,12 @@ func (rt *Router) panelMux() http.Handler {
 	authedID("POST /api/broadcasts/{id}/resume", rt.resumeBroadcast)
 	authedID("POST /api/broadcasts/{id}/cancel", rt.cancelBroadcast)
 	authedID("POST /api/broadcasts/{id}/retry", rt.retryBroadcast)
+	// Runtime profiling (pprof) — owner only, protected behind admin session & secret path.
+	authedOwner("GET /api/debug/pprof/", pprofHandler(pprof.Index))
+	authedOwner("GET /api/debug/pprof/cmdline", pprofHandler(pprof.Cmdline))
+	authedOwner("GET /api/debug/pprof/profile", pprofHandler(pprof.Profile))
+	authedOwner("GET /api/debug/pprof/symbol", pprofHandler(pprof.Symbol))
+	authedOwner("GET /api/debug/pprof/trace", pprofHandler(pprof.Trace))
 	// Content-hashed build assets (JS/CSS/fonts) never change for a given URL → cache forever.
 	mux.Handle("GET /assets/", cacheControl(rt.assets, "public, max-age=31536000, immutable"))
 	// No /favicon.* routes: the build has no such files. Vite emits only what is
@@ -999,4 +1007,20 @@ func (rt *Router) requireRole(tier string, next http.HandlerFunc) http.HandlerFu
 		}
 		next(w, r)
 	})
+}
+
+// pprofHandler adapts a net/http/pprof handler mounted under /api/debug/pprof/
+// so the standard pprof routing (which expects paths starting with /debug/pprof/)
+// matches the requested profile correctly.
+func pprofHandler(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		r2 := new(http.Request)
+		*r2 = *r
+		r2.URL = new(url.URL)
+		*r2.URL = *r.URL
+		if rest, ok := strings.CutPrefix(r.URL.Path, "/api"); ok {
+			r2.URL.Path = rest
+		}
+		h(w, r2)
+	}
 }

@@ -98,6 +98,7 @@ func (s *Store) DeleteConfigSnapshot(id int64) error {
 // The two secret columns are re-encrypted on the way in, matching how GetSettings
 // decrypts them on the way out.
 func (s *Store) RestoreServerConfig(c *model.ServerConfigSnapshot) error {
+	defer s.invalidateSettingsCache()
 	routingJSON, err := json.Marshal(c.Routing)
 	if err != nil {
 		return err
