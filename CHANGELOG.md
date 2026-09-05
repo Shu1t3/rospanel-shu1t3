@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.23.4](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.23.3...v2.23.4) (2026-09-05)
+
+
+### Bug Fixes
+
+* **billing:** цикл сброса трафика тарифов, синхронизация с апстримом и устранение предупреждений линтера ([08f4653](https://github.com/Shu1t3/rospanel-shu1t3/commit/08f46539e705f936dbda3e929dfa38273d1414c2))
+* resolve 403 external subscription error with HWID headers and enhance web accessibility ([57f3608](https://github.com/Shu1t3/rospanel-shu1t3/commit/57f3608b616be8776d85ed2eb80f578377ebb27d))
+* the subscription page shows external servers, and addresses the panel ([e5572f1](https://github.com/Shu1t3/rospanel-shu1t3/commit/e5572f1aee71c00141c026acd45b8e6b2d4ce883))
+
 ## [2.23.3](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.23.2...v2.23.3) (2026-09-04)
 
 
