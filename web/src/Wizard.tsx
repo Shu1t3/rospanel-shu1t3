@@ -345,7 +345,7 @@ export function Wizard({ onDone }: { onDone: () => void }) {
                         {cert ? t('wizard.certDaysLeft', { days: cert.days_left }) : ''}
                         {t('wizard.keepOrChange')}
                       </p>
-                      <label className="flex items-center gap-2 text-sm">
+                      <label htmlFor="wizard_mode_keep" className="flex items-center gap-2 text-sm">
                         <input
                           id="wizard_mode_keep"
                           type="radio"
@@ -356,7 +356,7 @@ export function Wizard({ onDone }: { onDone: () => void }) {
                         />
                         {t('wizard.keepDomain', { host: curHost })}
                       </label>
-                      <label className="flex items-center gap-2 text-sm">
+                      <label htmlFor="wizard_mode_change_domain" className="flex items-center gap-2 text-sm">
                         <input
                           id="wizard_mode_change_domain"
                           type="radio"
@@ -373,7 +373,7 @@ export function Wizard({ onDone }: { onDone: () => void }) {
                       <p className="text-sm text-ink-muted">
                         {t('wizard.onDomainTempCert', { host: curHost })}
                       </p>
-                      <label className="flex items-center gap-2 text-sm">
+                      <label htmlFor="wizard_mode_issue_cert" className="flex items-center gap-2 text-sm">
                         <input
                           id="wizard_mode_issue_cert"
                           type="radio"
@@ -384,7 +384,7 @@ export function Wizard({ onDone }: { onDone: () => void }) {
                         />
                         {t('wizard.issueCertFor', { host: curHost })}
                       </label>
-                      <label className="flex items-center gap-2 text-sm">
+                      <label htmlFor="wizard_mode_keep_temp" className="flex items-center gap-2 text-sm">
                         <input
                           id="wizard_mode_keep_temp"
                           type="radio"
@@ -401,7 +401,7 @@ export function Wizard({ onDone }: { onDone: () => void }) {
                       <p className="text-sm text-ink-muted">
                         {certValid ? t('wizard.onIp') : t('wizard.onIpTempCert')}
                       </p>
-                      <label className="flex items-center gap-2 text-sm">
+                      <label htmlFor="wizard_mode_stay_on_ip" className="flex items-center gap-2 text-sm">
                         <input
                           id="wizard_mode_stay_on_ip"
                           type="radio"
@@ -412,7 +412,7 @@ export function Wizard({ onDone }: { onDone: () => void }) {
                         />
                         {certValid ? t('wizard.stayOnIp') : t('wizard.stayOnIpTemp')}
                       </label>
-                      <label className="flex items-center gap-2 text-sm">
+                      <label htmlFor="wizard_mode_move_to_domain" className="flex items-center gap-2 text-sm">
                         <input
                           id="wizard_mode_move_to_domain"
                           type="radio"
@@ -476,7 +476,7 @@ export function Wizard({ onDone }: { onDone: () => void }) {
               {active === 3 && (
                 <div className="flex animate-fade-in flex-col gap-3">
                   <p className="text-sm text-ink-muted">{t('wizard.pathIntro')}</p>
-                  <label className="flex items-start gap-2 text-sm">
+                  <label htmlFor="wizard_pathmode_generate" className="flex items-start gap-2 text-sm">
                     <input
                       id="wizard_pathmode_generate"
                       type="radio"
@@ -492,7 +492,7 @@ export function Wizard({ onDone }: { onDone: () => void }) {
                       </span>
                     </span>
                   </label>
-                  <label className="flex items-start gap-2 text-sm">
+                  <label htmlFor="wizard_pathmode_keep" className="flex items-start gap-2 text-sm">
                     <input
                       id="wizard_pathmode_keep"
                       type="radio"

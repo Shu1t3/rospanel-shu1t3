@@ -1,7 +1,10 @@
 package netguard
 
 import (
+	"io"
 	"net"
+	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -70,5 +73,29 @@ func TestValidateFetchURL(t *testing.T) {
 	}
 	if err := ValidateFetchURL("https://169.254.169.254/latest/meta-data/"); err == nil {
 		t.Error("ValidateFetchURL(169.254.169.254) expected error; got nil")
+	}
+}
+
+func TestFormatHTTPError(t *testing.T) {
+	cases := []struct {
+		code int
+		body string
+		want string
+	}{
+		{403, "Это приложение здесь не подойдёт", "HTTP 403: Это приложение здесь не подойдёт"},
+		{404, "<!doctype html><html><body>Not Found</body></html>", "HTTP 404"},
+		{500, "", "HTTP 500"},
+		{429, "too many requests", "HTTP 429: too many requests"},
+	}
+
+	for _, tc := range cases {
+		resp := &http.Response{
+			StatusCode: tc.code,
+			Body:       io.NopCloser(strings.NewReader(tc.body)),
+		}
+		err := formatHTTPError(resp)
+		if err == nil || err.Error() != tc.want {
+			t.Errorf("formatHTTPError(%d, %q) = %v; want %q", tc.code, tc.body, err, tc.want)
+		}
 	}
 }

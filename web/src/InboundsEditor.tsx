@@ -522,13 +522,16 @@ function ASw({ label, hint, value, onChange }: {
   label: string; hint?: string; value?: boolean; onChange: (v: boolean) => void;
 }) {
   return (
-    <label className="flex items-center justify-between gap-3">
+    <div
+      className="flex cursor-pointer items-center justify-between gap-3 select-none"
+      onClick={() => onChange(!value)}
+    >
       <span className="text-sm">
         {label}
         {hint && <span className="block text-xs text-ink-muted">{hint}</span>}
       </span>
-      <Switch checked={!!value} onChange={onChange} />
-    </label>
+      <Switch checked={!!value} onChange={onChange} aria-label={label} />
+    </div>
   );
 }
 
@@ -1030,7 +1033,10 @@ export function InboundForm({
             onChange={(x) => set("reality_dest", x.join(","))}
             placeholder={t("inb.realityPlaceholder")}
           />
-          <label className="flex items-center justify-between gap-3">
+          <div
+            className="flex cursor-pointer items-center justify-between gap-3 select-none"
+            onClick={() => set("reality_anti_replay", !v.reality_anti_replay)}
+          >
             <span className="text-sm">
               {t("conn.antiReplay")}
               <span className="block text-xs text-ink-muted">
@@ -1040,8 +1046,9 @@ export function InboundForm({
             <Switch
               checked={v.reality_anti_replay}
               onChange={(x) => set("reality_anti_replay", x)}
+              aria-label={t("conn.antiReplay")}
             />
-          </label>
+          </div>
           <p className="text-xs text-ink-muted">
             {t("inb.realityHint")}
           </p>
@@ -1080,10 +1087,13 @@ export function InboundForm({
           knobs in here apply to it. */}
       {!isShadowsocks && <AdvancedSection v={v} set={set} enums={catalog.enums} />}
 
-      <label className="flex items-center justify-between gap-3 border-t border-gray-100 pt-3">
+      <div
+        className="flex cursor-pointer items-center justify-between gap-3 border-t border-gray-100 pt-3 select-none"
+        onClick={() => set("enabled", !v.enabled)}
+      >
         <span className="text-sm">{t("common.enabled")}</span>
-        <Switch checked={v.enabled} onChange={(x) => set("enabled", x)} />
-      </label>
+        <Switch checked={v.enabled} onChange={(x) => set("enabled", x)} aria-label={t("common.enabled")} />
+      </div>
 
       <div className="flex justify-end gap-2 border-t border-gray-100 pt-3">
         <Button variant="light" color="gray" onClick={onCancel} disabled={busy}>

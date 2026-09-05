@@ -380,7 +380,10 @@ export function ConnectionsEditor({
                           onChange={(v) => setReality((r) => ({ ...r, dests: v }))}
                           placeholder={t("conn.sniPlaceholder")}
                         />
-                        <label className="flex items-center justify-between gap-3">
+                        <div
+                          className="flex cursor-pointer items-center justify-between gap-3 select-none"
+                          onClick={() => setReality((r) => ({ ...r, antiReplay: !r.antiReplay }))}
+                        >
                           <span className="text-sm">
                             {t("conn.antiReplay")}
                             <span className="block text-xs text-ink-muted">
@@ -390,8 +393,9 @@ export function ConnectionsEditor({
                           <Switch
                             checked={reality.antiReplay}
                             onChange={(v) => setReality((r) => ({ ...r, antiReplay: v }))}
+                            aria-label={t("conn.antiReplay")}
                           />
-                        </label>
+                        </div>
                         <LongField label="Public key" value={status.reality_public_key} />
                         <LongField label="Short IDs" value={status.reality_short_id} />
                         <LongField label={t("conn.xhttpPath")} value={status.reality_path} />
@@ -428,7 +432,10 @@ export function ConnectionsEditor({
           {t("conn.antiDpiHint")}
         </p>
         <div className="flex flex-col divide-y divide-gray-100">
-          <label className="flex items-center justify-between gap-3 py-3 first:pt-0">
+          <div
+            className="flex cursor-pointer items-center justify-between gap-3 py-3 first:pt-0 select-none"
+            onClick={() => setAnti((a) => ({ ...a, fragment: !a.fragment }))}
+          >
             <span className="text-sm">
               {t("conn.fragment")}
               <span className="block text-xs text-ink-muted">
@@ -436,26 +443,44 @@ export function ConnectionsEditor({
                 (VLESS-Vision).
               </span>
             </span>
-            <Switch checked={anti.fragment} onChange={(v) => setAnti((a) => ({ ...a, fragment: v }))} />
-          </label>
-          <label className="flex items-center justify-between gap-3 py-3">
+            <Switch
+              checked={anti.fragment}
+              onChange={(v) => setAnti((a) => ({ ...a, fragment: v }))}
+              aria-label={t("conn.fragment")}
+            />
+          </div>
+          <div
+            className="flex cursor-pointer items-center justify-between gap-3 py-3 select-none"
+            onClick={() => setAnti((a) => ({ ...a, blockQuic: !a.blockQuic }))}
+          >
             <span className="text-sm">
               {t("conn.blockQuic")}
               <span className="block text-xs text-ink-muted">
                 {t("conn.blockQuicHint")}
               </span>
             </span>
-            <Switch checked={anti.blockQuic} onChange={(v) => setAnti((a) => ({ ...a, blockQuic: v }))} />
-          </label>
-          <label className="flex items-center justify-between gap-3 py-3 last:pb-0">
+            <Switch
+              checked={anti.blockQuic}
+              onChange={(v) => setAnti((a) => ({ ...a, blockQuic: v }))}
+              aria-label={t("conn.blockQuic")}
+            />
+          </div>
+          <div
+            className="flex cursor-pointer items-center justify-between gap-3 py-3 last:pb-0 select-none"
+            onClick={() => setAnti((a) => ({ ...a, min13: !a.min13 }))}
+          >
             <span className="text-sm">
               {t("conn.requireTls13")}
               <span className="block text-xs text-ink-muted">
                 {t("conn.requireTls13Hint")}
               </span>
             </span>
-            <Switch checked={anti.min13} onChange={(v) => setAnti((a) => ({ ...a, min13: v }))} />
-          </label>
+            <Switch
+              checked={anti.min13}
+              onChange={(v) => setAnti((a) => ({ ...a, min13: v }))}
+              aria-label={t("conn.requireTls13")}
+            />
+          </div>
         </div>
       </div>
 

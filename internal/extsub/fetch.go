@@ -2,11 +2,14 @@ package extsub
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
+	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/netguard"
 )
 
@@ -20,6 +23,24 @@ const (
 func IsURL(source string) bool {
 	s := strings.ToLower(strings.TrimSpace(source))
 	return strings.HasPrefix(s, "https://") || strings.HasPrefix(s, "http://")
+}
+
+// SubscriptionHeaders constructs client and device headers for fetching an
+// external subscription. It provides a deterministic x-hwid derived from the
+// source URL so that upstream panels requiring device registration (HWIDRequire)
+// admit the request and bind the same device slot across hourly syncs.
+func SubscriptionHeaders(source string) http.Header {
+	h := sha256.Sum256([]byte("rospanel-extsub:" + source))
+	hwid := fmt.Sprintf("rospanel-%x", h[:16])
+
+	hdr := make(http.Header)
+	hdr.Set("User-Agent", "RosPanel-ExtSub/1.0")
+	hdr.Set("Accept", "text/plain, */*")
+	hdr.Set(model.HeaderHWID, hwid)
+	hdr.Set(model.HeaderDeviceOS, "RosPanel")
+	hdr.Set(model.HeaderOSVersion, "1.0")
+	hdr.Set(model.HeaderDeviceModel, "RosPanel Server")
+	return hdr
 }
 
 // ValidateSource checks a source before it is stored: a URL must pass the same
@@ -58,7 +79,7 @@ func Load(ctx context.Context, source string) ([]Endpoint, error) {
 			defer cancel()
 		}
 		var err error
-		if body, err = netguard.Get(ctx, source, maxBodyBytes); err != nil {
+		if body, err = netguard.GetWithHeaders(ctx, source, maxBodyBytes, SubscriptionHeaders(source)); err != nil {
 			return nil, fmt.Errorf("fetch: %w", err)
 		}
 	} else {

@@ -1239,13 +1239,14 @@ function NodeRentalTab({
                 </span>
               </div>
               <div className="flex flex-col gap-1">
-                <label className="text-xs font-medium text-ink-muted">{t("nodes.shareSpeed")}</label>
+                <span className="text-xs font-medium text-ink-muted">{t("nodes.shareSpeed")}</span>
                 <div className="flex items-center gap-2">
                   <TextInput
                     type="number"
                     value={String(speedVal)}
                     onChange={(v) => setSpeedVal(Math.max(0, Number(v) || 0))}
                     placeholder="0 = ∞"
+                    aria-label={t("nodes.shareSpeed")}
                     className="flex-1 min-w-0"
                   />
                   <Select

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/core"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/extsub"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
 )
@@ -212,5 +213,72 @@ func TestSubscriptionActionsRefuseACrossSiteRequest(t *testing.T) {
 	}
 	if n, _ := st.CountDevices(u.ID); n != 0 {
 		t.Errorf("%d devices left after the page unbound the only one", n)
+	}
+}
+
+func TestSubscriptionAcceptsExtSubHeaders(t *testing.T) {
+	h, mgr, st := nodeAPITestServer(t)
+	u := hwidUser(t, mgr, st, 1, true) // HWIDRequire is ON
+
+	subURL := "https://panel.example.com/sub/" + u.SubToken
+
+	// A request without client identity headers must be refused with 403.
+	bareReq := httptest.NewRequest(http.MethodGet, "/sub/"+u.SubToken, nil)
+	bareReq.RemoteAddr = testClientIP + ":40000"
+	bareRec := httptest.NewRecorder()
+	h.ServeHTTP(bareRec, bareReq)
+	if bareRec.Code != http.StatusForbidden {
+		t.Fatalf("bare request: status %d, want 403", bareRec.Code)
+	}
+
+	// A request with extsub.SubscriptionHeaders must succeed with 200 OK.
+	headers := extsub.SubscriptionHeaders(subURL)
+	req := httptest.NewRequest(http.MethodGet, "/sub/"+u.SubToken, nil)
+	req.RemoteAddr = testClientIP + ":40000"
+	for k, vv := range headers {
+		for _, v := range vv {
+			req.Header.Add(k, v)
+		}
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("extsub headers: status %d, want 200", rec.Code)
+	}
+
+	// Verify device binding record.
+	devices, err := st.ListDevices(u.ID)
+	if err != nil {
+		t.Fatalf("list devices: %v", err)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("expected 1 bound device, got %d", len(devices))
+	}
+	if devices[0].App != "RosPanel-ExtSub/1.0" {
+		t.Errorf("device App = %q, want RosPanel-ExtSub/1.0", devices[0].App)
+	}
+	if devices[0].Model != "RosPanel Server" {
+		t.Errorf("device Model = %q, want RosPanel Server", devices[0].Model)
+	}
+
+	// Repeated fetch with the same URL must reuse the same device and NOT exceed capacity 1.
+	repeatReq := httptest.NewRequest(http.MethodGet, "/sub/"+u.SubToken, nil)
+	repeatReq.RemoteAddr = testClientIP + ":40000"
+	for k, vv := range headers {
+		for _, v := range vv {
+			repeatReq.Header.Add(k, v)
+		}
+	}
+	repeatRec := httptest.NewRecorder()
+	h.ServeHTTP(repeatRec, repeatReq)
+	if repeatRec.Code != http.StatusOK {
+		t.Fatalf("repeated fetch with same headers: status %d, want 200", repeatRec.Code)
+	}
+	devicesAfter, err := st.ListDevices(u.ID)
+	if err != nil {
+		t.Fatalf("list devices after repeat: %v", err)
+	}
+	if len(devicesAfter) != 1 {
+		t.Fatalf("device count changed on repeat fetch: expected 1, got %d", len(devicesAfter))
 	}
 }

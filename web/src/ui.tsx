@@ -732,9 +732,15 @@ function Field({
   if (!label) return <>{children}</>;
   return (
     <div className="block">
-      <label htmlFor={htmlFor} className="mb-1 block text-sm font-medium text-ink">
-        {label}
-      </label>
+      {htmlFor ? (
+        <label htmlFor={htmlFor} className="mb-1 block text-sm font-medium text-ink">
+          {label}
+        </label>
+      ) : (
+        <span className="mb-1 block text-sm font-medium text-ink">
+          {label}
+        </span>
+      )}
       {children}
     </div>
   );
@@ -760,6 +766,7 @@ export function TextInput({
   className,
   id,
   name,
+  "aria-label": ariaLabel,
 }: {
   label?: string;
   value: string;
@@ -776,6 +783,7 @@ export function TextInput({
   className?: string;
   id?: string;
   name?: string;
+  "aria-label"?: string;
 }) {
   const autoId = useId();
   const inputId = id || autoId;
@@ -785,6 +793,7 @@ export function TextInput({
       <input
         id={inputId}
         name={inputName}
+        aria-label={ariaLabel}
         className={cn(
           inputCls,
           mono && "font-mono",
@@ -941,6 +950,7 @@ export function Select({
   searchable,
   placeholder,
   className,
+  id,
 }: {
   label?: string
   value: string
@@ -949,12 +959,15 @@ export function Select({
   searchable?: boolean
   placeholder?: string
   className?: string
+  id?: string
 }) {
   const { t } = useTranslation()
   placeholder = placeholder ?? t('common.select')
   const [open, setOpen] = useState(false)
   const [q, setQ] = useState('')
   const ref = useRef<HTMLButtonElement>(null)
+  const autoId = useId()
+  const triggerId = id || autoId
   const current = data.find((o) => o.value === value)
   const filtered = searchable && q ? data.filter((o) => o.label.toLowerCase().includes(q.toLowerCase())) : data
 
@@ -967,10 +980,13 @@ export function Select({
   const searchInputId = useId()
 
   return (
-    <Field label={label}>
+    <Field label={label} htmlFor={triggerId}>
       <button
+        id={triggerId}
         ref={ref}
         type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
         className={cn(triggerCls, className || 'w-full')}
       >
@@ -1004,6 +1020,7 @@ export function Select({
                     value={q}
                     onChange={(e) => setQ(e.currentTarget.value)}
                     placeholder={t('common.search')}
+                    aria-label={t('common.search')}
                     className="w-full rounded-md border border-gray-200 px-2 py-1.5 text-sm outline-none focus:border-brand-400"
                   />
                 </div>
@@ -1247,12 +1264,14 @@ export function DatePicker({
   onChange,
   min,
   placeholder,
+  id,
 }: {
   label?: string
   value: string
   onChange: (v: string) => void
   min?: string
   placeholder?: string
+  id?: string
 }) {
   const { t } = useTranslation()
   placeholder = placeholder ?? t('common.never')
@@ -1260,6 +1279,8 @@ export function DatePicker({
   const weekdays = weekdayNames()
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLButtonElement>(null)
+  const autoId = useId()
+  const triggerId = id || autoId
   const selected = parseYmd(value)
   const [view, setView] = useState<Date>(selected ?? new Date())
   const minDate = min ? parseYmd(min) : null
@@ -1284,10 +1305,13 @@ export function DatePicker({
   }
 
   return (
-    <Field label={label}>
+    <Field label={label} htmlFor={triggerId}>
       <button
+        id={triggerId}
         ref={ref}
         type="button"
+        aria-haspopup="dialog"
+        aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
         className={triggerCls}
       >
@@ -1481,18 +1505,30 @@ export function Switch({
   checked,
   onChange,
   disabled,
+  id,
+  "aria-label": ariaLabel,
+  "aria-labelledby": ariaLabelledBy,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
   disabled?: boolean;
+  id?: string;
+  "aria-label"?: string;
+  "aria-labelledby"?: string;
 }) {
   return (
     <button
+      id={id}
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-label={ariaLabel}
+      aria-labelledby={ariaLabelledBy}
       disabled={disabled}
-      onClick={() => onChange(!checked)}
+      onClick={(e) => {
+        e.stopPropagation();
+        onChange(!checked);
+      }}
       className={cn(
         "relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition disabled:opacity-50",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2",

@@ -160,18 +160,10 @@ func ProxyTransport(raw string) *http.Transport {
 	return transport
 }
 
-// GetVia is Get, optionally routed through an operator-configured proxy.
-//
-// With no proxy it IS Get, guards and all. With one, the destination host is no
-// longer resolved locally — the proxy does that — so rejectPrivateHost cannot run,
-// and does not: the URL is still required to be https without embedded
-// credentials, but the address checks are structurally unavailable. That is
-// acceptable only because both inputs are trusted here: rawURL is a constant in our
-// own code and the proxy comes from an authenticated admin. Do not hand this a URL
-// that came from a request.
-func GetVia(ctx context.Context, rawURL string, maxBody int64, proxy string) ([]byte, error) {
+// GetViaWithHeaders is GetWithHeaders, optionally routed through an operator-configured proxy.
+func GetViaWithHeaders(ctx context.Context, rawURL string, maxBody int64, proxy string, headers http.Header) ([]byte, error) {
 	if strings.TrimSpace(proxy) == "" {
-		return Get(ctx, rawURL, maxBody)
+		return GetWithHeaders(ctx, rawURL, maxBody, headers)
 	}
 	if err := validateFetchURLShape(rawURL); err != nil {
 		return nil, err
@@ -179,6 +171,11 @@ func GetVia(ctx context.Context, rawURL string, maxBody int64, proxy string) ([]
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
+	}
+	for k, vv := range headers {
+		for _, v := range vv {
+			req.Header.Add(k, v)
+		}
 	}
 	client := &http.Client{Timeout: defaultFetchTimeout, Transport: ProxyTransport(proxy)}
 	if deadline, ok := ctx.Deadline(); ok {
@@ -190,10 +187,23 @@ func GetVia(ctx context.Context, rawURL string, maxBody int64, proxy string) ([]
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return nil, formatHTTPError(resp)
 	}
 	if maxBody <= 0 {
 		maxBody = 1 << 20
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, maxBody))
+}
+
+// GetVia is Get, optionally routed through an operator-configured proxy.
+//
+// With no proxy it IS Get, guards and all. With one, the destination host is no
+// longer resolved locally — the proxy does that — so rejectPrivateHost cannot run,
+// and does not: the URL is still required to be https without embedded
+// credentials, but the address checks are structurally unavailable. That is
+// acceptable only because both inputs are trusted here: rawURL is a constant in our
+// own code and the proxy comes from an authenticated admin. Do not hand this a URL
+// that came from a request.
+func GetVia(ctx context.Context, rawURL string, maxBody int64, proxy string) ([]byte, error) {
+	return GetViaWithHeaders(ctx, rawURL, maxBody, proxy, nil)
 }

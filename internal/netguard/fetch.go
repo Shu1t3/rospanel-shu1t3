@@ -162,14 +162,33 @@ func Client(timeout time.Duration) *http.Client {
 	}
 }
 
-// Get performs a bounded GET after SSRF validation.
-func Get(ctx context.Context, rawURL string, maxBody int64) ([]byte, error) {
+func formatHTTPError(resp *http.Response) error {
+	var detail string
+	if b, err := io.ReadAll(io.LimitReader(resp.Body, 512)); err == nil && len(b) > 0 {
+		trimmed := strings.TrimSpace(string(b))
+		if !strings.HasPrefix(trimmed, "<") && !strings.Contains(trimmed, "<html") {
+			detail = trimmed
+		}
+	}
+	if detail != "" {
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, detail)
+	}
+	return fmt.Errorf("HTTP %d", resp.StatusCode)
+}
+
+// GetWithHeaders performs a bounded GET after SSRF validation, applying custom headers.
+func GetWithHeaders(ctx context.Context, rawURL string, maxBody int64, headers http.Header) ([]byte, error) {
 	if err := ValidateFetchURL(rawURL); err != nil {
 		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
+	}
+	for k, vv := range headers {
+		for _, v := range vv {
+			req.Header.Add(k, v)
+		}
 	}
 	client := Client(0)
 	if deadline, ok := ctx.Deadline(); ok {
@@ -184,10 +203,15 @@ func Get(ctx context.Context, rawURL string, maxBody int64) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return nil, formatHTTPError(resp)
 	}
 	if maxBody <= 0 {
 		maxBody = 1 << 20
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, maxBody))
+}
+
+// Get performs a bounded GET after SSRF validation.
+func Get(ctx context.Context, rawURL string, maxBody int64) ([]byte, error) {
+	return GetWithHeaders(ctx, rawURL, maxBody, nil)
 }

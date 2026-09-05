@@ -418,7 +418,10 @@ export function AwgEditor({
 
               {/* Security Booleans */}
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <label className="flex items-center justify-between gap-2 rounded-lg border border-gray-200/80 bg-white/60 p-2.5 dark:border-neutral-800 dark:bg-neutral-900/60">
+                <div
+                  className="flex cursor-pointer items-center justify-between gap-2 rounded-lg border border-gray-200/80 bg-white/60 p-2.5 select-none dark:border-neutral-800 dark:bg-neutral-900/60"
+                  onClick={() => setParams((p) => ({ ...p, random_trailers: !(p.random_trailers ?? true) }))}
+                >
                   <div>
                     <span className="text-xs font-semibold text-ink">{t("awg.randomTrailers")}</span>
                     <span className="block text-[11px] text-ink-muted">{t("awg.randomTrailersHint")}</span>
@@ -426,9 +429,13 @@ export function AwgEditor({
                   <Switch
                     checked={params.random_trailers ?? true}
                     onChange={(v) => setParams((p) => ({ ...p, random_trailers: v }))}
+                    aria-label={t("awg.randomTrailers")}
                   />
-                </label>
-                <label className="flex items-center justify-between gap-2 rounded-lg border border-gray-200/80 bg-white/60 p-2.5 dark:border-neutral-800 dark:bg-neutral-900/60">
+                </div>
+                <div
+                  className="flex cursor-pointer items-center justify-between gap-2 rounded-lg border border-gray-200/80 bg-white/60 p-2.5 select-none dark:border-neutral-800 dark:bg-neutral-900/60"
+                  onClick={() => setParams((p) => ({ ...p, disable_cookies: !(p.disable_cookies ?? true) }))}
+                >
                   <div>
                     <span className="text-xs font-semibold text-ink">{t("awg.disableCookies")}</span>
                     <span className="block text-[11px] text-ink-muted">{t("awg.disableCookiesHint")}</span>
@@ -436,8 +443,9 @@ export function AwgEditor({
                   <Switch
                     checked={params.disable_cookies ?? true}
                     onChange={(v) => setParams((p) => ({ ...p, disable_cookies: v }))}
+                    aria-label={t("awg.disableCookies")}
                   />
-                </label>
+                </div>
               </div>
 
               {/* I1–I5 Custom Signatures & Presets */}

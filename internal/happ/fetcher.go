@@ -2,9 +2,12 @@ package happ
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"net/http"
 	"time"
 
+	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/netguard"
 )
 
@@ -17,6 +20,22 @@ const (
 type FetchResult struct {
 	Nodes []Node
 	Raw   []byte // raw body for diagnostics
+}
+
+// SubscriptionHeaders builds client headers including a deterministic x-hwid for
+// fetching subscriptions from panels requiring device registration.
+func SubscriptionHeaders(rawURL string) http.Header {
+	h := sha256.Sum256([]byte("rospanel-happ:" + rawURL))
+	hwid := fmt.Sprintf("rospanel-happ-%x", h[:16])
+
+	hdr := make(http.Header)
+	hdr.Set("User-Agent", "RosPanel-Happ/1.0")
+	hdr.Set("Accept", "text/plain, */*")
+	hdr.Set(model.HeaderHWID, hwid)
+	hdr.Set(model.HeaderDeviceOS, "RosPanel")
+	hdr.Set(model.HeaderOSVersion, "1.0")
+	hdr.Set(model.HeaderDeviceModel, "Happ Subscription")
+	return hdr
 }
 
 // Fetch downloads a subscription URL, decodes its body, and parses all proxy
@@ -33,7 +52,7 @@ func Fetch(ctx context.Context, rawURL string, subscriptionID int64) (*FetchResu
 		defer cancel()
 	}
 
-	body, err := netguard.Get(ctx, rawURL, maxSubBodyBytes)
+	body, err := netguard.GetWithHeaders(ctx, rawURL, maxSubBodyBytes, SubscriptionHeaders(rawURL))
 	if err != nil {
 		return nil, fmt.Errorf("fetch: %w", err)
 	}

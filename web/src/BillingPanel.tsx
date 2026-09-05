@@ -133,19 +133,21 @@ function ProviderCard({
           {provider.fields.map((f) => {
             if (f.kind === "bool") {
               return (
-                <label
+                <div
                   key={f.key}
-                  className="flex items-center gap-2 text-sm text-ink"
+                  className="flex cursor-pointer items-center gap-2 text-sm text-ink select-none"
+                  onClick={() => setField(f.key, draft.config[f.key] === "1" ? "" : "1")}
                 >
                   <Switch
                     checked={draft.config[f.key] === "1"}
                     onChange={(v) => setField(f.key, v ? "1" : "")}
+                    aria-label={td(f.label)}
                   />
                   {td(f.label)}
                   {f.help && (
                     <span className="text-xs text-ink-muted">— {td(f.help)}</span>
                   )}
-                </label>
+                </div>
               );
             }
             if (f.kind === "select") {
@@ -357,10 +359,17 @@ function PlanForm({
             value={String(plan.sort_order)}
             onChange={(v) => patch({ sort_order: Math.max(0, Number(v) || 0) })}
           />
-          <label className="flex items-end gap-2 pb-1 text-sm">
-            <Switch checked={plan.enabled} onChange={(v) => patch({ enabled: v })} />
+          <div
+            className="flex cursor-pointer items-end gap-2 pb-1 text-sm select-none"
+            onClick={() => patch({ enabled: !plan.enabled })}
+          >
+            <Switch
+              checked={plan.enabled}
+              onChange={(v) => patch({ enabled: v })}
+              aria-label={t("bill.activeVisible")}
+            />
             {t("bill.activeVisible")}
-          </label>
+          </div>
         </div>
       )}
       <div className={designated ? "grid gap-3" : "grid gap-3 sm:grid-cols-2"}>
