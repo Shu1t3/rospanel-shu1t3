@@ -4,8 +4,6 @@ package core
 
 import (
 	"path/filepath"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -182,15 +180,6 @@ type Manager struct {
 	shaper *shaper.Applier
 	wanMu  sync.Mutex
 	wan    string
-
-	tenantTrafficMu   sync.Mutex
-	tenantTrafficLast map[string]xray.Traffic
-
-	tenantConnsMu sync.Mutex
-	tenantConns   map[string][]model.RentalConnSample
-
-	rentedTrafficMu   sync.Mutex
-	rentedTrafficLast map[string]xray.Traffic
 
 	// devNotice keeps a refused device quiet after its first report — a client that
 	// hit the device cap retries on its own schedule and would otherwise alert the
@@ -431,19 +420,6 @@ type accPendingKey struct {
 // This is called from the access-log reader for every line Xray emits, so it does
 // no I/O at all: it takes a lock, updates two maps, and returns.
 func (m *Manager) RecordAccess(email, ip, dest string) {
-	if strings.HasPrefix(email, "t_") {
-		// Rented node client: tag is t_<tenantID>_<userID>.
-		// Buffer connection for the tenant rather than misattributing to local user ID.
-		rest := email[2:]
-		idx := strings.LastIndex(rest, "_")
-		if idx > 0 && idx < len(rest)-1 {
-			tenantID := rest[:idx]
-			if uid, err := strconv.ParseInt(rest[idx+1:], 10, 64); err == nil && uid > 0 {
-				m.recordTenantAccess(tenantID, uid, ip)
-			}
-		}
-		return
-	}
 	id, ok := userIDFromEmail(email)
 	if !ok {
 		return
@@ -487,25 +463,6 @@ func (m *Manager) RecordAccess(email, ip, dest string) {
 		h.SeenAt = now
 	}
 	m.accPending[pk] = h
-}
-
-// recordTenantAccess buffers connection samples for rented node clients to report back
-// to the tenant panel during sync.
-func (m *Manager) recordTenantAccess(tenantID string, uid int64, ip string) {
-	m.tenantConnsMu.Lock()
-	defer m.tenantConnsMu.Unlock()
-	if m.tenantConns == nil {
-		m.tenantConns = make(map[string][]model.RentalConnSample)
-	}
-	conns := m.tenantConns[tenantID]
-	for _, c := range conns {
-		if c.UserID == uid && c.IP == ip {
-			return
-		}
-	}
-	if len(conns) < 500 {
-		m.tenantConns[tenantID] = append(conns, model.RentalConnSample{UserID: uid, IP: ip})
-	}
 }
 
 // FlushAccess writes the buffered access sightings in one transaction and, if the

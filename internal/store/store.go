@@ -257,7 +257,22 @@ func (s *Store) migrate() error {
 	// ensure the corresponding migration is marked as applied in schema_migrations so it is not re-executed.
 	var shareColCount int
 	if err := s.db.QueryRow(`SELECT COUNT(1) FROM pragma_table_info('nodes') WHERE name = 'share_enabled'`).Scan(&shareColCount); err == nil && shareColCount > 0 {
+		_, _ = s.db.Exec(`ALTER TABLE nodes ADD COLUMN share_quota_percent INTEGER NOT NULL DEFAULT 100`)
+		_, _ = s.db.Exec(`ALTER TABLE nodes ADD COLUMN share_speed_limit INTEGER NOT NULL DEFAULT 0`)
+		_, _ = s.db.Exec(`ALTER TABLE nodes ADD COLUMN share_token TEXT NOT NULL DEFAULT ''`)
+		_, _ = s.db.Exec(`ALTER TABLE nodes ADD COLUMN is_rented INTEGER NOT NULL DEFAULT 0`)
+		_, _ = s.db.Exec(`ALTER TABLE nodes ADD COLUMN rent_owner_node_id INTEGER NOT NULL DEFAULT 0`)
+		_, _ = s.db.Exec(`ALTER TABLE nodes ADD COLUMN rent_share_key TEXT NOT NULL DEFAULT ''`)
+		_, _ = s.db.Exec(`ALTER TABLE nodes ADD COLUMN rent_tenant_id TEXT NOT NULL DEFAULT ''`)
+		_, _ = s.db.Exec(`ALTER TABLE inbounds ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`)
+		_, _ = s.db.Exec(`ALTER TABLE nodes ADD COLUMN rent_master_host TEXT NOT NULL DEFAULT ''`)
+		_, _ = s.db.Exec(`ALTER TABLE settings ADD COLUMN share_enabled INTEGER NOT NULL DEFAULT 0`)
+		_, _ = s.db.Exec(`ALTER TABLE settings ADD COLUMN share_quota_percent INTEGER NOT NULL DEFAULT 100`)
+		_, _ = s.db.Exec(`ALTER TABLE settings ADD COLUMN share_speed_limit INTEGER NOT NULL DEFAULT 0`)
+		_, _ = s.db.Exec(`ALTER TABLE settings ADD COLUMN share_token TEXT NOT NULL DEFAULT ''`)
 		_, _ = s.db.Exec(`INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES ('0066_node_rentals.sql', unixepoch())`)
+		_, _ = s.db.Exec(`INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES ('0067_rent_master_host.sql', unixepoch())`)
+		_, _ = s.db.Exec(`INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES ('0068_node_rentals_settings.sql', unixepoch())`)
 	}
 
 	var rentHostColCount int

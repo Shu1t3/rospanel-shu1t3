@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { listNodes, type NodeView, type SystemStatus } from "./api";
 import { cssVar } from "./charts";
 import { fmtBytes, fmtDuration } from "./format";
-import { formatSpeedLimit, serverName, statusDot } from "./NodesPanel";
+import { serverName, statusDot } from "./NodesPanel";
 import { useIsAdmin } from "./role";
 import { navigate } from "./router";
 import { Badge, Button, Card, Skeleton } from "./ui";
@@ -189,12 +189,6 @@ function ServerRow({ n }: { n: NodeView }) {
           <MiniBar label="CPU" percent={n.cpu_percent} />
           <MiniBar label="RAM" percent={pct(n.mem_used, n.mem_total)} />
           <MiniBar label={t("overview.disk")} percent={pct(n.disk_used, n.disk_total)} />
-        </div>
-      ) : n.is_rented ? (
-        <div className="hidden items-center gap-2 text-xs text-ink-muted sm:flex">
-          <Badge color="indigo" size="xs">{t("nodes.rentedBadge")}</Badge>
-          <span>{t("nodes.quotaPerTenant")}: {n.share_quota_percent}%</span>
-          {n.share_speed_limit > 0 && <span>· {formatSpeedLimit(n.share_speed_limit, t)}</span>}
         </div>
       ) : (
         <span className="hidden text-xs text-ink-muted sm:inline">{t("overview.noStats")}</span>

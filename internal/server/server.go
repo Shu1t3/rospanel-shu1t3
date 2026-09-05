@@ -304,16 +304,6 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Public node rental sync surface (for tenant panels to sync inbounds and stats with owner).
-	if seg == "api" && (rest == "/nodes/rentals/sync" || strings.HasPrefix(rest, "/nodes/rentals/sync/")) {
-		if !rt.apiLimiter.allow(clientIP(r)) {
-			decoy.ServeHTTP(w, r)
-			return
-		}
-		rt.handleRentalSync(w, r)
-		return
-	}
-
 	// Node sync surface, mounted under its own random unguessable segment (kept
 	// separate from the panel secret and the external API so rotating either never
 	// orphans a joined node). Authentication is per-node bearer token inside the
@@ -326,10 +316,6 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// that no static site emits would break that for anyone who floods it. A
 			// real node polls once per hold — it never approaches the limit.
 			decoy.ServeHTTP(w, r)
-			return
-		}
-		if rest == "/rentals/sync" || strings.HasPrefix(rest, "/rentals/sync/") {
-			rt.handleRentalSync(w, r)
 			return
 		}
 		rt.handleNodeAPI(w, r, rest)

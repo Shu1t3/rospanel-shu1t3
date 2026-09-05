@@ -36,7 +36,6 @@ import (
 func nodeSettings(set *model.Settings, n *model.Node) *model.Settings {
 	ns := *set // shallow copy; we only overwrite value fields below
 	ns.ServerID = n.ID
-	ns.IsRented = n.IsRented
 	ns.ServerPlacement = n.Placement
 	ns.Host = n.Host
 	ns.SNI = n.Host
@@ -438,19 +437,6 @@ type NodeView struct {
 	// subscription orders servers by; see model.Placement and sub.Order.
 	model.Placement
 	OnlineUsers int `json:"online_users"`
-
-	// Rental & Sharing fields (Owner supremacy, tenant isolation, and resource quotas)
-	IsRented              bool   `json:"is_rented"`
-	ShareEnabled          bool   `json:"share_enabled"`
-	ShareQuotaPercent     int    `json:"share_quota_percent"`
-	ShareSpeedLimit       int    `json:"share_speed_limit"`
-	ShareLink             string `json:"share_link,omitempty"`
-	RentOwnerNodeID       int64  `json:"rent_owner_node_id,omitempty"`
-	RentTenantID          string `json:"rent_tenant_id,omitempty"`
-	ActiveTenants         int    `json:"active_tenants"`
-	AllocatedSpeedLimit   int    `json:"allocated_speed_limit"`
-	AllocatedQuotaPercent int    `json:"allocated_quota_percent"`
-	ReservedPorts         []int  `json:"reserved_ports,omitempty"`
 }
 
 // NodeViews returns the local server (node 0) followed by every remote node, each
@@ -576,39 +562,6 @@ func (m *Manager) NodeViews() ([]NodeView, error) {
 			RealityShortID:   n.RealityShortID,
 			RealityPath:      n.RealityPath,
 			Proxy:            n.Proxy,
-			// Rental and sharing
-			IsRented:          n.IsRented,
-			ShareEnabled:      n.ShareEnabled,
-			ShareQuotaPercent: n.ShareQuotaPercent,
-			ShareSpeedLimit:   n.ShareSpeedLimit,
-			RentOwnerNodeID:   n.RentOwnerNodeID,
-			RentTenantID:      n.RentTenantID,
-		}
-		if n.IsRented {
-			v.Joined = true
-			v.Online = n.Enabled
-			v.XrayRunning = n.Enabled
-			v.VersionSkew = false
-			v.NodeStatus = "healthy"
-			if !n.Enabled {
-				v.NodeStatus = "disabled"
-			}
-			if n.Enabled && (n.LastSeen == 0 || (now-n.LastSeen > 30)) {
-				go m.SyncRentedNode(n.ID)
-			}
-		}
-		if n.ShareEnabled && !n.IsRented {
-			tenants, _ := m.store.ListNodeTenants(n.ID)
-			v.ActiveTenants = len(tenants)
-			v.AllocatedSpeedLimit = model.CalculateTenantSpeed(n.ShareSpeedLimit, len(tenants))
-			v.AllocatedQuotaPercent = model.CalculateTenantQuota(n.ShareQuotaPercent, len(tenants))
-			v.ShareLink, _ = m.GenerateNodeShareLink(n.ID)
-		}
-		if ports, err := m.GetNodeReservedPorts(n.ID); err == nil {
-			v.ReservedPorts = make([]int, 0, len(ports))
-			for _, p := range ports {
-				v.ReservedPorts = append(v.ReservedPorts, p.Port)
-			}
 		}
 		if t, ok := traffic[n.ID]; ok {
 			v.TrafficUp, v.TrafficDown = t[0], t[1]
@@ -659,7 +612,7 @@ func (m *Manager) NodeLinkSettings() ([]*model.Settings, error) {
 		if set.SubHideOffline && !n.Online(now) {
 			continue
 		}
-		if !n.Enabled || (!n.IsRented && n.LastSeen == 0) {
+		if !n.Enabled || n.LastSeen == 0 {
 			// Disabled, or never installed. Deliberately NOT "currently offline": a node
 			// bounces on every deploy and cert renewal, and yanking its links on a
 			// two-minute blip would strand every client whose next refresh is hours
@@ -671,18 +624,10 @@ func (m *Manager) NodeLinkSettings() ([]*model.Settings, error) {
 		// pinned, so its VLESS/Trojan/Hysteria links would fail silently in a modern
 		// client (no allowInsecure). Skip it until it reports a fingerprint (or gets a
 		// CA cert) — better no link than a broken one.
-		if !n.IsRented && n.CertSelfSigned && n.CertSHA256 == "" {
+		if n.CertSelfSigned && n.CertSHA256 == "" {
 			continue
 		}
 		ns := nodeSettings(set, n)
-		if n.IsRented {
-			// A rented node only serves the custom inbounds provisioned by this tenant
-			// on that node. The owner's built-in lanes (:443, REALITY, Hysteria2) do not
-			// authenticate this tenant's users, so emitting them would hand out broken links.
-			ns.VLESSEnabled = false
-			ns.RealityEnabled = false
-			ns.HysteriaEnabled = false
-		}
 		// Uniqueness is enforced on create/edit, but defend the subscription anyway:
 		// a duplicate label would collide Clash proxy names / sing-box tags and make a
 		// client reject the whole config. Disambiguate any collision with the node id.
@@ -1042,9 +987,6 @@ func (m *Manager) ApplyNodeConnections(id int64, u ConnectionsUpdate) error {
 		n.AWGParams = *u.AWGParams
 	}
 	// REALITY donor + optional key regeneration.
-	if n.IsRented && realityDest == "" && n.RealityDest != "" {
-		realityDest = n.RealityDest
-	}
 	if err := m.store.SetNodeRealityDest(id, realityDest); err != nil {
 		return err
 	}
@@ -1089,9 +1031,7 @@ func (m *Manager) ApplyNodeConnections(id int64, u ConnectionsUpdate) error {
 	if err := m.store.SetNodeConnections(id, blob); err != nil {
 		return err
 	}
-	if n.IsRented {
-		go m.SyncRentedNode(id)
-	} else if m.nodes != nil {
+	if m.nodes != nil {
 		m.nodes.wakeOne(id)
 	}
 	return nil
@@ -1125,10 +1065,6 @@ func (m *Manager) SetNodeEnabled(id int64, enabled bool) error {
 // node-agent PR, where it first becomes reachable. Until then, disabling a node
 // (which keeps the token and answers revoked) is the reliable "stop now" control.
 func (m *Manager) DeleteNode(id int64) error {
-	node, _ := m.store.GetNode(id)
-	if node != nil && node.IsRented {
-		return m.DeleteRentedNode(id)
-	}
 	if err := m.store.DeleteNode(id); err != nil {
 		return err
 	}

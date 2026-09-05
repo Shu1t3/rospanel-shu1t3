@@ -2,10 +2,8 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   FINGERPRINTS,
-  getNodeReservedPorts,
   type ConnectionsStatus,
   type ConnectionsUpdate,
-  type PortInfo,
 } from "./api";
 import { ApplyingModal, useXrayApply } from "./apply";
 import { useAction } from "./hooks";
@@ -109,7 +107,6 @@ export function ConnectionsEditor({
     anti: { fragment: false, min13: false, blockQuic: false },
   });
   const [open, setOpen] = useState<Record<string, boolean>>({});
-  const [reservedPorts, setReservedPorts] = useState<PortInfo[]>([]);
   const { confirm, confirmNode } = useConfirm();
 
   const applyStatus = (s: ConnectionsStatus) => {
@@ -156,12 +153,6 @@ export function ConnectionsEditor({
       .then(applyStatus)
       .catch((e) => notifyError(errMessage(e)))
       .finally(() => setLoaded(true));
-
-    if (serverId > 0) {
-      getNodeReservedPorts(serverId)
-        .then((r) => setReservedPorts(r.ports || []))
-        .catch(() => {});
-    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverId]);
 
@@ -251,33 +242,6 @@ export function ConnectionsEditor({
 
   return (
     <div className="flex flex-col gap-3">
-      {/* Reserved Ports Summary (if any, for rented nodes) */}
-      {reservedPorts.length > 0 && (
-        <div className="rounded-xl border border-indigo-200 bg-indigo-50/70 p-3.5 text-xs dark:border-indigo-900/50 dark:bg-indigo-950/30">
-          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <span className="font-bold text-indigo-950 dark:text-indigo-100">
-              🛡️ {t("nodes.reservedPorts")} ({reservedPorts.length})
-            </span>
-            <span className="text-[11px] text-ink-muted">{t("nodes.reservedPortsHint")}</span>
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            {reservedPorts.map((pi) => (
-              <span
-                key={`${pi.port}-${pi.protocol}`}
-                className={cn(
-                  "inline-flex items-center gap-1 rounded-md px-2 py-0.5 font-mono text-[11px]",
-                  pi.is_owner
-                    ? "bg-amber-100/80 text-amber-900 dark:bg-amber-950/60 dark:text-amber-200"
-                    : "bg-indigo-100/80 text-indigo-900 dark:bg-indigo-950/60 dark:text-indigo-200",
-                )}
-                title={pi.is_owner ? t("nodes.portOwner") : t("nodes.portTenant")}
-              >
-                <strong>{pi.port}</strong>/{pi.protocol.toUpperCase()} ({pi.service || (pi.is_owner ? t("nodes.portOwner") : t("nodes.portTenant"))})
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* Built-in protocols list */}
       <div className="grid grid-cols-1 gap-3">

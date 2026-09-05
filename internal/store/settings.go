@@ -25,8 +25,6 @@ func (s *Store) GetSettings() (*model.Settings, error) {
 	var hwidEn, hwidRequire int
 	var subShowConfigs, statusEn, maintenanceMode, probeDetect, watchdogEnabled int
 	var probeBlock int
-	var shareEn, shareQuota, shareSpeed int
-	var shareToken string
 	var routingCfg, subRulesJSON, subDPIJSON string
 	var masterHideFull, awgEn, hideOffline int
 	var awgParamsJSON, connPolicyJSON string
@@ -73,8 +71,7 @@ func (s *Store) GetSettings() (*model.Settings, error) {
 		       probe_detect, watchdog_enabled, probe_block, sub_dpi,
 		       sub_order_mode, master_country, master_sort_weight, master_capacity, master_hide_when_full,
 		       sub_hide_offline, conn_policy,
-		       awg_enabled, awg_port, awg_private_key, awg_public_key, awg_params, awg_name, awg_dns,
-		       share_enabled, share_quota_percent, share_speed_limit, share_token
+		       awg_enabled, awg_port, awg_private_key, awg_public_key, awg_params, awg_name, awg_dns
 		FROM settings WHERE id = 1`,
 	).Scan(
 		&st.ID, &st.Host, &st.SNI, &st.TLSMode, &st.ACMEEmail, &st.CertPath, &st.KeyPath,
@@ -121,8 +118,8 @@ func (s *Store) GetSettings() (*model.Settings, error) {
 		&st.SubOrderMode, &st.MasterPlacement.Country, &st.MasterPlacement.Weight,
 		&st.MasterPlacement.Capacity, &masterHideFull, &hideOffline, &connPolicyJSON,
 		&awgEn, &st.AWGPort, &st.AWGPrivateKey, &st.AWGPublicKey, &awgParamsJSON, &st.AWGName, &st.AWGDNS,
-		&shareEn, &shareQuota, &shareSpeed, &shareToken,
 	)
+
 	if err != nil {
 		return nil, err
 	}
@@ -194,13 +191,6 @@ func (s *Store) GetSettings() (*model.Settings, error) {
 	st.ProbeDetect = probeDetect != 0
 	st.WatchdogEnabled = watchdogEnabled != 0
 	st.ProbeBlock = probeBlock != 0
-	st.ShareEnabled = shareEn != 0
-	if shareQuota <= 0 {
-		shareQuota = 100
-	}
-	st.ShareQuotaPercent = shareQuota
-	st.ShareSpeedLimit = shareSpeed
-	st.ShareToken = shareToken
 	// Decrypt at-rest secret fields (legacy plaintext rows pass through).
 	st.TGBotToken = decField(st.TGBotToken)
 	st.TGUserBotToken = decField(st.TGUserBotToken)

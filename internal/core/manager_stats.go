@@ -5,14 +5,12 @@ import (
 	"log/slog"
 	"runtime"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/sysstat"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/tlsutil"
-	"github.com/Shu1t3/rospanel-shu1t3/internal/xray"
 )
 
 // PollStats reads per-user traffic from Xray, accumulates lifetime totals
@@ -61,47 +59,6 @@ func (m *Manager) PollStats() error {
 	}
 	if err := m.store.ApplyTrafficDeltas(deltas); err != nil {
 		logErr("stats: traffic batch failed", "users", len(deltas), "err", err)
-	}
-
-	// Ingest traffic for rented node tenants (keys matching t_<tenantID>_<userID>)
-	m.tenantTrafficMu.Lock()
-	if m.tenantTrafficLast == nil {
-		m.tenantTrafficLast = make(map[string]xray.Traffic)
-	}
-	tenantTotals := make(map[string]struct{ up, down int64 })
-	for key, curr := range stats {
-		if !strings.HasPrefix(key, "t_") {
-			continue
-		}
-		prev := m.tenantTrafficLast[key]
-		addUp := curr.Up - prev.Up
-		addDown := curr.Down - prev.Down
-		if curr.Up < prev.Up { // Xray restarted
-			addUp = curr.Up
-		}
-		if curr.Down < prev.Down {
-			addDown = curr.Down
-		}
-		m.tenantTrafficLast[key] = curr
-
-		au, ad := nonNeg(addUp), nonNeg(addDown)
-		if au > 0 || ad > 0 {
-			lastUnderscore := strings.LastIndex(key, "_")
-			if lastUnderscore > 2 {
-				tenantID := key[2:lastUnderscore]
-				tot := tenantTotals[tenantID]
-				tot.up += au
-				tot.down += ad
-				tenantTotals[tenantID] = tot
-			}
-		}
-	}
-	m.tenantTrafficMu.Unlock()
-
-	for tenantID, tot := range tenantTotals {
-		if err := m.store.UpdateTenantTraffic(model.LocalNodeID, tenantID, tot.up, tot.down); err != nil {
-			logErr("stats: update tenant traffic failed", "tenant", tenantID, "err", err)
-		}
 	}
 
 	// Re-baseline a reset user's counters to the live Xray value (reusing the stats

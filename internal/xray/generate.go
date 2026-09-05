@@ -528,71 +528,26 @@ func customInbound(in model.Inbound, set *model.Settings, users []model.User,
 		Sniffing: sniff,
 	}
 
-	if in.IsRental() {
-		switch in.Protocol {
-		case model.InbVLESS:
-			vc := make([]VLESSClient, 0, len(in.Opts.Clients))
-			for _, c := range in.Opts.Clients {
-				flow := c.Flow
-				if flow == "" {
-					flow = in.Opts.Flow
-				}
-				vc = append(vc, VLESSClient{ID: c.ID, Flow: flow, Email: c.Email})
-			}
-			out.Settings = VLESSInboundSettings{
-				Clients:    vc,
-				Decryption: "none",
-			}
-		case model.InbTrojan:
-			tc := make([]TrojanClient, 0, len(in.Opts.Clients))
-			for _, c := range in.Opts.Clients {
-				tc = append(tc, TrojanClient{Password: c.Password, Email: c.Email})
-			}
-			out.Settings = TrojanInboundSettings{Clients: tc}
-		case model.InbHysteria:
-			hc := make([]HysteriaClient, 0, len(in.Opts.Clients))
-			for _, c := range in.Opts.Clients {
-				hc = append(hc, HysteriaClient{Auth: c.Password, Email: c.Email})
-			}
-			out.Protocol = "hysteria"
-			out.Settings = HysteriaInboundSettings{Version: 2, Users: hc}
-		case model.InbShadowsocks:
-			sc := make([]ShadowsocksClient, 0, len(in.Opts.Clients))
-			for _, c := range in.Opts.Clients {
-				sc = append(sc, ShadowsocksClient{Password: c.Password, Email: c.Email})
-			}
-			if len(sc) == 0 {
-				sc = []ShadowsocksClient{{Password: model.LockedShadowKey(in.Opts.ShadowKey, in.Opts.Method), Email: "nobody@disabled"}}
-			}
-			out.Settings = ShadowsocksInboundSettings{
-				Method:   in.Opts.Method,
-				Password: in.Opts.ShadowKey,
-				Network:  "tcp,udp",
-				Users:    sc,
-			}
-		}
-	} else {
-		// Only the users allowed this inbound get a credential in it — the access gate.
-		allowed := allowedUsers(users, func(u model.User) bool { return opts.allowsInbound(u.ID, in.ID) })
+	// Only the users allowed this inbound get a credential in it — the access gate.
+	allowed := allowedUsers(users, func(u model.User) bool { return opts.allowsInbound(u.ID, in.ID) })
 
-		switch in.Protocol {
-		case model.InbVLESS:
-			out.Settings = VLESSInboundSettings{
-				Clients:    customVLESSClients(in, allowed),
-				Decryption: "none",
-			}
-		case model.InbTrojan:
-			out.Settings = TrojanInboundSettings{Clients: customTrojanClients(allowed)}
-		case model.InbHysteria:
-			out.Protocol = "hysteria"
-			out.Settings = HysteriaInboundSettings{Version: 2, Users: customHysteriaClients(allowed)}
-		case model.InbShadowsocks:
-			out.Settings = ShadowsocksInboundSettings{
-				Method:   in.Opts.Method,
-				Password: in.Opts.ShadowKey,
-				Network:  "tcp,udp",
-				Users:    customShadowsocksClients(in, allowed),
-			}
+	switch in.Protocol {
+	case model.InbVLESS:
+		out.Settings = VLESSInboundSettings{
+			Clients:    customVLESSClients(in, allowed),
+			Decryption: "none",
+		}
+	case model.InbTrojan:
+		out.Settings = TrojanInboundSettings{Clients: customTrojanClients(allowed)}
+	case model.InbHysteria:
+		out.Protocol = "hysteria"
+		out.Settings = HysteriaInboundSettings{Version: 2, Users: customHysteriaClients(allowed)}
+	case model.InbShadowsocks:
+		out.Settings = ShadowsocksInboundSettings{
+			Method:   in.Opts.Method,
+			Password: in.Opts.ShadowKey,
+			Network:  "tcp,udp",
+			Users:    customShadowsocksClients(in, allowed),
 		}
 	}
 	out.StreamSettings = customStream(in, set, cert, minTLS)
@@ -855,11 +810,6 @@ func UserInbounds(set *model.Settings, custom []model.Inbound, users []model.Use
 		return in
 	}
 	for _, c := range custom {
-		if c.IsRental() {
-			// Rental inbounds have their client credentials synced directly from the tenant panel.
-			// Owner users being dynamically added must never be placed into rental inbounds.
-			continue
-		}
 
 		allowed := allowedUsers(users, func(u model.User) bool {
 			return model.AccessOf(access, u.ID).AllowsInbound(c.ID)

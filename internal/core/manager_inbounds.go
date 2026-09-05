@@ -192,11 +192,6 @@ func (m *Manager) CreateInbound(ctx context.Context, in model.Inbound) (*Inbound
 	if err := m.checkServerExists(in.ServerID); err != nil {
 		return nil, err
 	}
-	if in.ServerID != model.LocalNodeID {
-		if node, nerr := m.store.GetNode(in.ServerID); nerr == nil && node != nil && node.IsRented {
-			in.TenantID = node.RentTenantID
-		}
-	}
 	in.Normalize()
 	if err := m.prepareInbound(&in); err != nil {
 		return nil, err
@@ -223,9 +218,6 @@ func (m *Manager) UpdateInbound(ctx context.Context, in model.Inbound) (*Inbound
 	}
 	if cur == nil {
 		return nil, invalidCode("err.inboundNotFound", "подключение не найдено")
-	}
-	if cur.IsRental() {
-		return nil, invalidCode("err.rentalInboundReadOnly", "нельзя изменять подключение арендатора")
 	}
 	in.ServerID = cur.ServerID
 	in.CreatedAt = cur.CreatedAt
@@ -276,9 +268,6 @@ func (m *Manager) RegenInboundReality(id int64) (*InboundView, error) {
 	if in == nil {
 		return nil, invalidCode("err.inboundNotFound", "подключение не найдено")
 	}
-	if in.IsRental() {
-		return nil, invalidCode("err.rentalInboundReadOnly", "нельзя изменять подключение арендатора")
-	}
 	if in.Opts.Security != model.SecReality {
 		return nil, invalidCode("err.inboundHasNoReality", "у этого подключения нет REALITY")
 	}
@@ -302,9 +291,6 @@ func (m *Manager) DeleteInbound(id int64) error {
 	}
 	if in == nil {
 		return nil // already gone; deleting twice is not an error
-	}
-	if in.IsRental() {
-		return invalidCode("err.rentalInboundReadOnly", "нельзя удалять подключение арендатора")
 	}
 	if err := m.store.DeleteInbound(id); err != nil {
 		return err
@@ -447,18 +433,6 @@ func (m *Manager) validateCandidate(ctx context.Context, serverID int64, set []m
 		return nil
 	}
 
-	node, _ := m.store.GetNode(serverID)
-	if node != nil && node.IsRented {
-		// A rented node is managed by the owner's panel. Validate candidate syntax locally
-		// with the supervisor rather than waiting for a direct agent long-poll that does not exist.
-		if m.sup != nil {
-			if err := m.sup.ValidateConfig(cfg); err != nil {
-				return invalidCode("err.xrayRejectedConfig", "Xray отклонил конфигурацию: {{err}}", map[string]any{"err": err.Error()})
-			}
-		}
-		return nil
-	}
-
 	raw, err := json.Marshal(cfg)
 	if err != nil {
 		return nil
@@ -467,7 +441,7 @@ func (m *Manager) validateCandidate(ctx context.Context, serverID int64, set []m
 	case err == nil:
 		return nil
 	case errors.Is(err, errProbeUnavailable):
-		logWarn("inbound: node config check skipped", "server", serverID, "scope", model.ScopeOwner)
+		logWarn("inbound: node config check skipped", "server", serverID)
 		return nil
 	default:
 		return err
@@ -598,23 +572,12 @@ func (m *Manager) probePort(ctx context.Context, serverID int64, network string,
 		}
 		return nil
 	}
-	node, _ := m.store.GetNode(serverID)
-	if node != nil && node.IsRented {
-		// For a rented node, check against known reserved ports without blocking on a direct agent poll.
-		ports, _ := m.GetNodeReservedPorts(serverID)
-		for _, p := range ports {
-			if p.Port == port && p.Protocol == network && p.TenantID != node.RentTenantID {
-				return invalidCode("err.portTakenOnServer", "порт {{port}} ({{network}}) уже занят на этом сервере — выберите другой", map[string]any{"port": port, "network": network})
-			}
-		}
-		return nil
-	}
 	if m.isNodeXrayPort(serverID, network, port) {
 		return nil
 	}
 	free, err := m.ProbeNodePort(ctx, serverID, network, port)
 	if err != nil {
-		logWarn("inbound: node port probe skipped", "node", serverID, "port", port, "scope", model.ScopeOwner, "err", err)
+		logWarn("inbound: node port probe skipped", "node", serverID, "port", port, "err", err)
 		return nil
 	}
 	if !free {
@@ -628,9 +591,7 @@ func (m *Manager) probePort(ctx context.Context, serverID int64, network string,
 // so its held poll returns with the fresh config.
 func (m *Manager) applyInboundChange(serverID int64) {
 	if serverID != model.LocalNodeID {
-		if node, nerr := m.store.GetNode(serverID); nerr == nil && node != nil && node.IsRented {
-			go m.SyncRentedNode(serverID)
-		} else if m.nodes != nil {
+		if m.nodes != nil {
 			m.nodes.wakeOne(serverID)
 		}
 		return

@@ -345,7 +345,7 @@ export function InboundRow({
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
-  const isReadOnly = readOnly || !!v.tenant_id;
+  const isReadOnly = readOnly;
   const o = v.opts;
   const isSS = v.protocol === "shadowsocks";
   // Shadowsocks-2022 is encrypted by its own AEAD, so "no TLS" would misread as
@@ -370,7 +370,6 @@ export function InboundRow({
           {o.security === "reality" && <Badge color="green">REALITY</Badge>}
           {o.security === "none" && !isSS && <Badge color="orange">{t("inb.noTls")}</Badge>}
           <Badge color="gray">{v.port}</Badge>
-          {v.tenant_id && <Badge color="indigo">{t("nodes.rentedBadge")}</Badge>}
           {!v.enabled && <Badge color="gray">{t("conn.off")}</Badge>}
         </div>
         <span onClick={(e) => e.stopPropagation()} className="flex items-center">
@@ -380,12 +379,6 @@ export function InboundRow({
 
       {open && (
         <div className="flex flex-col gap-3 border-t border-gray-100 px-4 pb-4 pt-3">
-          {v.tenant_id && (
-            <div className="flex items-center justify-between rounded-lg bg-indigo-50/60 px-3 py-1.5 text-xs text-indigo-900 dark:bg-indigo-950/40 dark:text-indigo-200">
-              <span className="font-semibold">{t("nodes.portTenant")}</span>
-              <span className="font-mono">{v.tenant_id}</span>
-            </div>
-          )}
           {hasAdvanced(v) && (
             <p className="rounded-lg bg-gray-100 px-3 py-2 text-xs text-ink-muted">
               {t("inb.hasExtras")}

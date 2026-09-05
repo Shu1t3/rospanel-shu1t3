@@ -97,14 +97,6 @@ const MaxInboundsPerServer = 16
 // An inbound belongs to exactly one server (ServerID, LocalNodeID for the master) —
 // there is no global list with per-node toggles, because a port that is free on one
 // box says nothing about the next one.
-// ScopeType represents the multi-tenancy access scope of an inbound or user.
-type ScopeType string
-
-const (
-	ScopeOwner  ScopeType = "OWNER"
-	ScopeRental ScopeType = "RENTAL"
-)
-
 type Inbound struct {
 	ID       int64       `json:"id"`
 	ServerID int64       `json:"server_id"` // LocalNodeID (0) = the master
@@ -114,31 +106,8 @@ type Inbound struct {
 	Protocol string      `json:"protocol"`
 	Port     int         `json:"port"`
 	Opts     InboundOpts `json:"opts"`
-	TenantID string      `json:"tenant_id,omitempty"` // populated if created by a tenant on a rented node
 
 	CreatedAt int64 `json:"created_at"`
-}
-
-// Scope reports whether this inbound belongs to the node owner or a rental tenant.
-func (in *Inbound) Scope() ScopeType {
-	if in != nil && in.TenantID != "" {
-		return ScopeRental
-	}
-	return ScopeOwner
-}
-
-// IsRental reports whether this inbound is tenant-owned.
-func (in *Inbound) IsRental() bool { return in != nil && in.TenantID != "" }
-
-// IsOwner reports whether this inbound is owner-owned.
-func (in *Inbound) IsOwner() bool { return in == nil || in.TenantID == "" }
-
-// InboundClient represents one client authorized on an inbound (used for tenant custom inbounds).
-type InboundClient struct {
-	ID       string `json:"id,omitempty"`       // UUID for VLESS
-	Password string `json:"password,omitempty"` // Password for Trojan / Hysteria2 / Shadowsocks
-	Flow     string `json:"flow,omitempty"`     // Flow for VLESS (e.g. xtls-rprx-vision)
-	Email    string `json:"email,omitempty"`    // User email identifier for accounting
 }
 
 // InboundOpts is the transport/security-dependent half of an inbound. It is stored
@@ -148,9 +117,6 @@ type InboundClient struct {
 type InboundOpts struct {
 	Transport string `json:"transport"`
 	Security  string `json:"security"`
-
-	// Clients carries authorized client credentials for tenant-owned inbounds.
-	Clients []InboundClient `json:"clients,omitempty"`
 
 	// SNI overrides the TLS server name (empty ⇒ the server's own host). Also the
 	// value that goes into the share link's sni=.

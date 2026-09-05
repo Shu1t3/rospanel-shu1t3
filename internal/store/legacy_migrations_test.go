@@ -92,9 +92,9 @@ func TestLegacyForkMigrationsUpgrade(t *testing.T) {
 		t.Errorf("upstream 0064_abuse_measures was not applied: colCount=%d, err=%v", colCount, err)
 	}
 
-	// 5. Verify columns/tables from fork migrations 0066..0069 are present
-	if err := st.db.QueryRow(`SELECT COUNT(1) FROM pragma_table_info('nodes') WHERE name = 'share_enabled'`).Scan(&colCount); err != nil || colCount != 1 {
-		t.Errorf("node_rentals share_enabled missing: colCount=%d, err=%v", colCount, err)
+	// 5. Verify fork migration 0072 safely dropped share_enabled and happ_subscriptions table is present
+	if err := st.db.QueryRow(`SELECT COUNT(1) FROM pragma_table_info('nodes') WHERE name = 'share_enabled'`).Scan(&colCount); err != nil || colCount != 0 {
+		t.Errorf("node_rentals share_enabled was not dropped by 0072: colCount=%d, err=%v", colCount, err)
 	}
 
 	var tableCount int

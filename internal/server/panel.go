@@ -187,13 +187,7 @@ func (rt *Router) localInbounds() []model.Inbound {
 	if err != nil {
 		return nil
 	}
-	out := make([]model.Inbound, 0, len(list))
-	for _, in := range list {
-		if in.IsOwner() {
-			out = append(out, in)
-		}
-	}
-	return out
+	return list
 }
 
 func (rt *Router) panelMux() http.Handler {
@@ -249,7 +243,6 @@ func (rt *Router) panelMux() http.Handler {
 	}
 	mux.HandleFunc("POST /api/login", rt.login)
 	mux.HandleFunc("POST /api/logout", rt.logout)
-	mux.HandleFunc("POST /api/nodes/rentals/sync", rt.handleRentalSync)
 	// Branding reads are unauthenticated: the login screen (under the secret path)
 	// renders the panel name/accent/logo before any session exists.
 	mux.HandleFunc("GET /api/branding", rt.getBranding)
@@ -458,13 +451,6 @@ func (rt *Router) panelMux() http.Handler {
 	authedID("POST /api/nodes/{id}/xray-restart", rt.nodeXrayRestart)
 	authed("POST /api/nodes/update-all", rt.updateAllNodes)
 	authedID("POST /api/nodes/{id}/provision", rt.provisionNode)
-	// Node Rental & Sharing endpoints
-	authedID("GET /api/nodes/{id}/rental", rt.nodeRentalSettings)
-	authedID("POST /api/nodes/{id}/rental", rt.saveNodeRentalSettings)
-	authedID("POST /api/nodes/{id}/rental/share-link", rt.getNodeShareLink)
-	authed("POST /api/nodes/import-rented", rt.importRentedNode)
-	authedID("GET /api/nodes/{id}/reserved-ports", rt.nodeReservedPorts)
-	authedID("DELETE /api/nodes/{id}/tenants/{tenantId}", rt.deleteNodeTenant)
 	// Happ subscriptions (external proxy subscription sources → Xray outbounds).
 	authed("POST /api/happ/subscriptions", rt.createHappSubscription)
 	authed("GET /api/happ/subscriptions", rt.listHappSubscriptions)

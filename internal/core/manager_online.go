@@ -4,7 +4,6 @@ import (
 	"context"
 	"net"
 	"net/netip"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -83,7 +82,7 @@ func (m *Manager) RecordLocalAccess(email, ip, dest string) {
 	m.RecordAccessOn(model.LocalNodeID, email, ip, dest)
 }
 
-// userIDFromEmail parses the "u<id>" or "t_<tenantID>_<id>" Xray client tag.
+// userIDFromEmail parses the "u<id>" Xray client tag.
 func userIDFromEmail(email string) (int64, bool) {
 	if strings.HasPrefix(email, "u") {
 		var id int64
@@ -97,17 +96,6 @@ func userIDFromEmail(email string) (int64, bool) {
 			}
 		}
 		return id, len(email) > 1
-	}
-	if strings.HasPrefix(email, "t_") {
-		idx := strings.LastIndex(email, "_")
-		if idx <= 1 || idx >= len(email)-1 {
-			return 0, false
-		}
-		id, err := strconv.ParseInt(email[idx+1:], 10, 64)
-		if err != nil || id <= 0 || id > 1<<40 {
-			return 0, false
-		}
-		return id, true
 	}
 	return 0, false
 }

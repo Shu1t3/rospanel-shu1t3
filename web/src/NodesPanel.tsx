@@ -42,16 +42,6 @@ import {
   restartXray,
   updateNode,
   updateNodeVersion,
-  getNodeRental,
-  saveNodeRental,
-  getNodeShareLink,
-  importRentedNode,
-  getNodeReservedPorts,
-  deleteNodeTenant,
-  type NodeRentalSettings,
-  type NodeTenant,
-  type NodeRentalResp,
-  type PortInfo,
   type GeoCategories,
   type GeoFile,
   type GeoInfo,
@@ -476,7 +466,6 @@ function clampCoefficient(v: string): number {
 }
 
 export function statusDot(node: NodeView): string {
-  if (node.is_rented) return node.enabled ? "bg-emerald-500" : "bg-gray-400";
   if (!node.enabled || !node.joined) return "bg-gray-400";
   if (!node.is_local && !node.online) return "bg-red-500";
   return node.xray_running ? "bg-emerald-500" : "bg-amber-500";
@@ -487,10 +476,6 @@ export function statusDot(node: NodeView): string {
 // plain "up and serving" is left to the green dot to keep the row quiet; the states
 // that need words get an xs badge.
 function StatusChip({ node }: { node: NodeView }) {
-  if (node.is_rented) {
-    if (!node.enabled) return <Badge color="gray" size="xs">{i18n.t("nodes.disabled")}</Badge>;
-    return null; // up and serving
-  }
   if (!node.is_local) {
     if (!node.enabled) return <Badge color="gray" size="xs">{i18n.t("nodes.disabled")}</Badge>;
     if (!node.joined) return <Badge color="gray" size="xs">{i18n.t("nodes.notJoined")}</Badge>;
@@ -584,10 +569,9 @@ function AddNodeDialog({
   onDone: () => void;
 }) {
   const { t } = useTranslation();
-  const [mode, setMode] = useState<"command" | "ssh" | "import">("command");
+  const [mode, setMode] = useState<"command" | "ssh">("command");
   const [name, setName] = useState("");
   const [host, setHost] = useState("");
-  const [shareLink, setShareLink] = useState("");
   const [busy, setBusy] = useState(false);
 
   // SSH (auto) fields.
@@ -607,22 +591,6 @@ function AddNodeDialog({
     try {
       const res = await createNode(name.trim(), host.trim());
       onCreated(res.install_command);
-    } catch (e) {
-      notifyError(errMessage(e));
-      setBusy(false);
-    }
-  };
-
-  const submitImport = async () => {
-    if (!shareLink.trim()) return;
-    setBusy(true);
-    try {
-      await importRentedNode({
-        share_link: shareLink.trim(),
-        name: name.trim() || undefined,
-      });
-      notifySuccess(t("nodes.importedSuccess"));
-      onDone();
     } catch (e) {
       notifyError(errMessage(e));
       setBusy(false);
@@ -672,7 +640,7 @@ function AddNodeDialog({
   return (
     <Modal open onClose={onClose} title={t("nodes.addNode")} size="lg" dismissible={!installing}>
       <div className="mb-4 inline-flex rounded-lg border border-gray-200 dark:border-gray-700 p-0.5 text-sm">
-        {(["command", "ssh", "import"] as const).map((m) => (
+        {(["command", "ssh"] as const).map((m) => (
           <button
             key={m}
             onClick={() => setMode(m)}
@@ -684,103 +652,76 @@ function AddNodeDialog({
           >
             {m === "command"
               ? t("nodes.tabCommand")
-              : m === "ssh"
-                ? t("nodes.tabSsh")
-                : t("nodes.tabImportShare")}
+              : t("nodes.tabSsh")}
           </button>
         ))}
       </div>
 
-      {mode === "import" ? (
-        <div className="space-y-4">
-          <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-3.5 text-xs text-indigo-950 dark:text-indigo-200">
-            <p className="font-medium">{t("nodes.importShareHint")}</p>
-          </div>
-          <Textarea
-            label={t("nodes.pasteShareLink")}
-            value={shareLink}
-            onChange={setShareLink}
-            rows={3}
-            placeholder="rpnshare://eyJhbGciOi..."
-          />
-          <TextInput
-            label={t("groups.name")}
-            value={name}
-            onChange={setName}
-            placeholder={t("nodes.namePlaceholder")}
-          />
-        </div>
-      ) : (
-        <div className="space-y-3">
-          <TextInput label={t("groups.name")} value={name} onChange={setName} placeholder={t("nodes.namePlaceholder")} />
-          <TextInput
-            label={t("nodes.hostLabel")}
-            value={host}
-            onChange={setHost}
-            placeholder="nl1.example.com"
-          />
+      <div className="space-y-3">
+        <TextInput label={t("groups.name")} value={name} onChange={setName} placeholder={t("nodes.namePlaceholder")} />
+        <TextInput
+          label={t("nodes.hostLabel")}
+          value={host}
+          onChange={setHost}
+          placeholder="nl1.example.com"
+        />
 
-          {mode === "ssh" && (
-            <div className="space-y-3 border-t border-gray-100 pt-3">
-              <p className="text-xs text-ink-muted">
-                {t("nodes.sshHint")}
-              </p>
-              <div className="grid grid-cols-3 gap-2">
-                <div className="col-span-2">
-                  <TextInput label={t("nodes.sshHost")} value={sshHost} onChange={setSshHost} placeholder="203.0.113.10" />
-                </div>
-                <TextInput label={t("conn.port")} value={sshPort} onChange={setSshPort} placeholder="22" />
+        {mode === "ssh" && (
+          <div className="space-y-3 border-t border-gray-100 pt-3">
+            <p className="text-xs text-ink-muted">
+              {t("nodes.sshHint")}
+            </p>
+            <div className="grid grid-cols-3 gap-2">
+              <div className="col-span-2">
+                <TextInput label={t("nodes.sshHost")} value={sshHost} onChange={setSshHost} placeholder="203.0.113.10" />
               </div>
-              <TextInput label={t("nodes.sshUser")} value={sshUser} onChange={setSshUser} placeholder="root" />
-              <div className="inline-flex rounded-lg border border-gray-200 p-0.5 text-sm">
-                {(["password", "key"] as const).map((a) => (
-                  <button
-                    key={a}
-                    onClick={() => setSshAuth(a)}
-                    className={cn(
-                      "rounded-md px-3 py-1 transition",
-                      sshAuth === a ? "bg-brand-600 text-onaccent" : "text-ink-muted",
-                    )}
-                  >
-                    {t(a === "password" ? "login.password" : "nodes.key")}
-                  </button>
-                ))}
-              </div>
-              {sshAuth === "password" ? (
-                <PasswordInput label={t("nodes.sshPassword")} value={sshPassword} onChange={setSshPassword} />
-              ) : (
-                <Textarea
-                  label={t("nodes.privateKey")}
-                  value={sshKey}
-                  onChange={setSshKey}
-                  rows={4}
-                  placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
-                />
-              )}
+              <TextInput label={t("conn.port")} value={sshPort} onChange={setSshPort} placeholder="22" />
             </div>
-          )}
-
-          {log.length > 0 && (
-            <div className="max-h-56 overflow-auto rounded-md bg-gray-50 p-3 font-mono text-xs">
-              {log.map((l, i) => (
-                <div key={i} className={l.startsWith(ERR_PREFIX) ? "text-danger" : ""}>
-                  {l}
-                </div>
+            <TextInput label={t("nodes.sshUser")} value={sshUser} onChange={setSshUser} placeholder="root" />
+            <div className="inline-flex rounded-lg border border-gray-200 p-0.5 text-sm">
+              {(["password", "key"] as const).map((a) => (
+                <button
+                  key={a}
+                  onClick={() => setSshAuth(a)}
+                  className={cn(
+                    "rounded-md px-3 py-1 transition",
+                    sshAuth === a ? "bg-brand-600 text-onaccent" : "text-ink-muted",
+                  )}
+                >
+                  {t(a === "password" ? "login.password" : "nodes.key")}
+                </button>
               ))}
             </div>
-          )}
-        </div>
-      )}
+            {sshAuth === "password" ? (
+              <PasswordInput label={t("nodes.sshPassword")} value={sshPassword} onChange={setSshPassword} />
+            ) : (
+              <Textarea
+                label={t("nodes.privateKey")}
+                value={sshKey}
+                onChange={setSshKey}
+                rows={4}
+                placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+              />
+            )}
+          </div>
+        )}
+
+        {log.length > 0 && (
+          <div className="max-h-56 overflow-auto rounded-md bg-gray-50 p-3 font-mono text-xs">
+            {log.map((l, i) => (
+              <div key={i} className={l.startsWith(ERR_PREFIX) ? "text-danger" : ""}>
+                {l}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       <div className="mt-5 flex justify-end gap-2">
         <Button variant="light" color="gray" onClick={onClose} disabled={installing}>
           {t("common.cancel")}
         </Button>
-        {mode === "import" ? (
-          <Button onClick={submitImport} loading={busy} disabled={!shareLink.trim()}>
-            {t("nodes.importNode")}
-          </Button>
-        ) : mode === "command" ? (
+        {mode === "command" ? (
           <Button onClick={submitCommand} loading={busy} disabled={!name.trim() || !host.trim()}>
             {t("common.create")}
           </Button>
@@ -1109,260 +1050,6 @@ export function formatSpeedLimit(kbps: number, t?: (k: any) => string): string {
   return `${kbps} ${kbpsLabel}`;
 }
 
-function NodeRentalTab({
-  node,
-  onRefresh,
-}: {
-  node: NodeView;
-  onRefresh: () => void;
-}) {
-  const { t } = useTranslation();
-  const [data, setData] = useState<NodeRentalResp | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [shareEnabled, setShareEnabled] = useState(false);
-  const [quota, setQuota] = useState(100);
-  const [speedVal, setSpeedVal] = useState(0);
-  const [speedUnit, setSpeedUnit] = useState<"kbps" | "mbps" | "gbps">("kbps");
-  const [saving, setSaving] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const [deletingTenant, setDeletingTenant] = useState<string | null>(null);
-
-  const speedToKbps = (val: number, unit: "kbps" | "mbps" | "gbps") => {
-    if (unit === "gbps") return val * 1_000_000;
-    if (unit === "mbps") return val * 1_000;
-    return val;
-  };
-
-  const kbpsToValAndUnit = (kbps: number): [number, "kbps" | "mbps" | "gbps"] => {
-    if (!kbps || kbps <= 0) return [0, "kbps"];
-    if (kbps >= 1_000_000 && kbps % 1_000_000 === 0) return [kbps / 1_000_000, "gbps"];
-    if (kbps >= 1_000 && kbps % 1_000 === 0) return [kbps / 1_000, "mbps"];
-    return [kbps, "kbps"];
-  };
-
-  const loadData = () => {
-    getNodeRental(node.id)
-      .then((r) => {
-        setData(r);
-        setShareEnabled(r.settings.share_enabled);
-        setQuota(r.settings.share_quota_percent || 100);
-        const [v, u] = kbpsToValAndUnit(r.settings.share_speed_limit || 0);
-        setSpeedVal(v);
-        setSpeedUnit(u);
-      })
-      .catch((e) => notifyError(errMessage(e)))
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    loadData();
-  }, [node.id]);
-
-  const onSave = async () => {
-    setSaving(true);
-    try {
-      const totalKbps = speedToKbps(Number(speedVal) || 0, speedUnit);
-      await saveNodeRental(node.id, {
-        share_enabled: shareEnabled,
-        share_quota_percent: Number(quota) || 100,
-        share_speed_limit: totalKbps,
-      });
-      notifySuccess(t("nodes.rentalSaved"));
-      loadData();
-      onRefresh();
-    } catch (e) {
-      notifyError(errMessage(e));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const copyLink = async () => {
-    if (!data?.share_link) return;
-    try {
-      await navigator.clipboard.writeText(data.share_link);
-      setCopied(true);
-      notifySuccess(t("nodes.shareLinkCopied"));
-      setTimeout(() => setCopied(false), 2500);
-    } catch {
-      // fallback
-    }
-  };
-
-  const removeTenant = async (tenantId: string) => {
-    setDeletingTenant(tenantId);
-    try {
-      await deleteNodeTenant(node.id, tenantId);
-      notifySuccess(t("nodes.deleted"));
-      loadData();
-      onRefresh();
-    } catch (e) {
-      notifyError(errMessage(e));
-    } finally {
-      setDeletingTenant(null);
-    }
-  };
-
-  if (loading || !data) return <CenterLoader />;
-
-  const currentKbps = speedToKbps(Number(speedVal) || 0, speedUnit);
-  const isDirty =
-    shareEnabled !== data.settings.share_enabled ||
-    Number(quota) !== data.settings.share_quota_percent ||
-    currentKbps !== data.settings.share_speed_limit;
-
-  const tenants = data.tenants || [];
-
-  return (
-    <div className="flex flex-col gap-5">
-      <Section title={t("nodes.tabRental")}>
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex flex-col">
-            <span className="text-sm font-medium text-ink">{t("nodes.shareEnabled")}</span>
-            <span className="text-xs text-ink-muted">{t("nodes.shareLinkHint")}</span>
-          </div>
-          <Switch checked={shareEnabled} onChange={setShareEnabled} />
-        </div>
-
-        {shareEnabled && (
-          <div className="mt-4 flex flex-col gap-4 border-t border-gray-100 pt-4">
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-[160px_1fr]">
-              <div className="flex flex-col gap-1">
-                <TextInput
-                  label={t("nodes.shareQuota")}
-                  type="number"
-                  value={String(quota)}
-                  onChange={(v) => setQuota(Math.min(100, Math.max(1, Number(v) || 100)))}
-                />
-                <span className="text-xs text-ink-muted">
-                  {t("nodes.quotaPerTenant")}: <strong>{data.allocated_quota_percent}%</strong>
-                </span>
-              </div>
-              <div className="flex flex-col gap-1">
-                <span className="text-xs font-medium text-ink-muted">{t("nodes.shareSpeed")}</span>
-                <div className="flex items-center gap-2">
-                  <TextInput
-                    type="number"
-                    value={String(speedVal)}
-                    onChange={(v) => setSpeedVal(Math.max(0, Number(v) || 0))}
-                    placeholder="0 = ∞"
-                    aria-label={t("nodes.shareSpeed")}
-                    className="flex-1 min-w-0"
-                  />
-                  <Select
-                    value={speedUnit}
-                    onChange={(v) => setSpeedUnit(v as any)}
-                    data={[
-                      { value: "kbps", label: t("nodes.unitKbps") },
-                      { value: "mbps", label: t("nodes.unitMbps") },
-                      { value: "gbps", label: t("nodes.unitGbps") },
-                    ]}
-                    className="w-28 shrink-0"
-                  />
-                </div>
-                <span className="text-xs text-ink-muted">
-                  {t("nodes.speedPerTenant")}:{" "}
-                  <strong>{formatSpeedLimit(data.allocated_speed_limit, t)}</strong>
-                </span>
-              </div>
-            </div>
-
-            <div className="rounded-lg border border-brand-500/20 bg-brand-500/5 p-3 text-xs text-brand-900 dark:text-brand-200">
-              <div className="flex items-center gap-2 font-semibold">
-                <span>ℹ️ {t("nodes.evenDivisionNotice")}</span>
-              </div>
-            </div>
-
-            {data.share_link && (
-              <div className="flex flex-col gap-1.5 rounded-xl border border-gray-200 bg-gray-50/60 p-3.5 dark:border-gray-800 dark:bg-gray-900/50">
-                <span className="text-xs font-semibold uppercase tracking-wider text-ink-muted">
-                  {t("nodes.shareLink")}
-                </span>
-                <div className="flex items-center gap-2">
-                  <input
-                    id="node_share_link"
-                    name="node_share_link"
-                    readOnly
-                    value={data.share_link}
-                    className="flex-1 truncate rounded-lg border border-gray-200 bg-white px-3 py-1.5 font-mono text-xs text-ink select-all dark:border-gray-700 dark:bg-gray-800"
-                  />
-                  <Button size="sm" onClick={copyLink}>
-                    {copied ? t("nodes.shareLinkCopied") : t("nodes.copyShareLink")}
-                  </Button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </Section>
-
-      <TabSaveBar
-        onSave={onSave}
-        onReset={() => {
-          setShareEnabled(data.settings.share_enabled);
-          setQuota(data.settings.share_quota_percent || 100);
-          const [v, u] = kbpsToValAndUnit(data.settings.share_speed_limit || 0);
-          setSpeedVal(v);
-          setSpeedUnit(u);
-        }}
-        dirty={isDirty}
-        busy={saving}
-      />
-
-      {shareEnabled && (
-        <Section title={t("nodes.tenantsTitle")}>
-          {tenants.length === 0 ? (
-            <p className="py-2 text-sm text-ink-muted">{t("nodes.noTenants")}</p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead>
-                  <tr className="border-b border-gray-200 text-ink-muted">
-                    <th className="pb-2 font-medium">{t("nodes.tenantName")}</th>
-                    <th className="pb-2 font-medium">{t("nodes.tenantTraffic")}</th>
-                    <th className="pb-2 font-medium">{t("nodes.tenantSpeed")}</th>
-                    <th className="pb-2 font-medium">{t("nodes.tenantLastSeen")}</th>
-                    <th className="pb-2 font-medium text-right" />
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {tenants.map((ten) => (
-                    <tr key={ten.tenant_id} className="hover:bg-gray-50/50">
-                      <td className="py-2.5 font-mono font-medium text-ink">
-                        {ten.name || ten.tenant_id}
-                      </td>
-                      <td className="py-2.5 text-ink-muted">
-                        ↑ {fmtBytes(ten.traffic_up)} / ↓ {fmtBytes(ten.traffic_down)}
-                      </td>
-                      <td className="py-2.5 text-ink-muted">
-                        {ten.speed_limit > 0 ? `${ten.speed_limit} Kbps` : "—"}
-                      </td>
-                      <td className="py-2.5 text-ink-muted">
-                        {ten.last_seen > 0 ? new Date(ten.last_seen * 1000).toLocaleString() : "—"}
-                      </td>
-                      <td className="py-2.5 text-right">
-                        <Button
-                          size="xs"
-                          variant="light"
-                          color="red"
-                          loading={deletingTenant === ten.tenant_id}
-                          onClick={() => removeTenant(ten.tenant_id)}
-                        >
-                          {t("nodes.tenantRemove")}
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </Section>
-      )}
-    </div>
-  );
-}
-
 function NodeSettingsDialog({
   node,
   decoys,
@@ -1401,7 +1088,7 @@ function NodeSettingsDialog({
   const [dns, setDns] = useState(canonicalDns(node.xray_dns ?? ""));
   const [dnsBase, setDnsBase] = useState(canonicalDns(node.xray_dns ?? ""));
   const [saving, setSaving] = useState(false);
-  const [tab, setTab] = useState(node.is_rented ? "connections" : "general");
+  const [tab, setTab] = useState("general");
   const genDirty =
     name !== genBase.name || decoy !== genBase.decoy || coef !== genBase.coef || proxyDirty || plDirty;
   const dnsDirty = dns !== dnsBase;
@@ -1419,23 +1106,16 @@ function NodeSettingsDialog({
     if (!name.trim()) return;
     setSaving(true);
     try {
-      if (node.is_rented) {
-        await updateNode(node.id, {
-          name: name.trim(),
-          host: node.host,
-        });
-      } else {
-        await updateNode(node.id, {
-          name: name.trim(),
-          host: node.host,
-          decoy_template: decoy,
-          traffic_coefficient: clampCoefficient(coef),
-          placement: pl,
-        });
-        if (proxyDirty) {
-          await setServerProxy(node.id, proxy);
-          setProxyBase(proxy);
-        }
+      await updateNode(node.id, {
+        name: name.trim(),
+        host: node.host,
+        decoy_template: decoy,
+        traffic_coefficient: clampCoefficient(coef),
+        placement: pl,
+      });
+      if (proxyDirty) {
+        await setServerProxy(node.id, proxy);
+        setProxyBase(proxy);
       }
       setGenBase({ name, decoy, coef });
       setPlBase(pl);
@@ -1488,13 +1168,8 @@ function NodeSettingsDialog({
     { value: "inbounds", label: t("nodes.tabInbounds") },
     { value: "routing", label: t("nodes.tabRouting") },
     { value: "dns", label: "DNS" },
-    ...(!node.is_rented
-      ? [
-          { value: "geo", label: "Geo" },
-          { value: "domain", label: t("restore.domain") },
-          { value: "rental", label: t("nodes.tabRental") },
-        ]
-      : []),
+    { value: "geo", label: "Geo" },
+    { value: "domain", label: t("restore.domain") },
   ];
 
   const isDirty = genDirty || dnsDirty || r.dirty;
@@ -1507,96 +1182,57 @@ function NodeSettingsDialog({
 
   return (
     <Modal open onClose={handleClose} title={t("nodes.settingsOf", { name: node.name })} size="xl">
-      {node.is_rented && (
-        <div className="mb-4 rounded-xl border border-indigo-500/20 bg-indigo-50/5 p-3 text-xs text-indigo-950 dark:text-indigo-200">
-          <div className="flex items-center gap-2 font-medium">
-            <span className="h-2 w-2 rounded-full bg-indigo-500" />
-            <span>{t("nodes.ownerSupremacy")}</span>
-          </div>
-        </div>
-      )}
       <DialogTabs value={tab} onChange={setTab} tabs={dialogTabs} />
 
       {tab === "general" && (
-        node.is_rented ? (
-          <div className="flex flex-col gap-4">
-            <Section title={t("nodes.server")}>
+        <div className="flex flex-col gap-4">
+          <Section title={t("nodes.server")}>
+            <TextInput label={t("groups.name")} value={name} onChange={setName} placeholder={t("nodes.namePlaceholder")} />
+            <Select
+              label={t("nodes.decoy")}
+              value={decoy}
+              onChange={setDecoy}
+              data={decoys.map((d) => ({ value: d, label: decoyLabel(d) }))}
+            />
+            <div className="flex flex-col gap-1">
               <TextInput
-                label={t("groups.name")}
-                value={name}
-                onChange={setName}
-                placeholder={t("nodes.namePlaceholder")}
+                label={t("nodes.coefficient")}
+                type="number"
+                value={coef}
+                onChange={setCoef}
+                placeholder="1.0"
               />
-              <div className="flex items-center justify-between py-1 text-xs text-ink-muted">
-                <span>{t("nodes.hostLabel")}:</span>
-                <span className="font-mono font-medium text-ink">{node.host}</span>
-              </div>
-              <div className="flex items-center justify-between py-1 text-xs text-ink-muted">
-                <span>{t("nodes.quotaPerTenant")}:</span>
-                <span className="font-medium text-ink">{node.share_quota_percent}%</span>
-              </div>
-              <div className="flex items-center justify-between py-1 text-xs text-ink-muted">
-                <span>{t("nodes.speedPerTenant")}:</span>
-                <span className="font-medium text-ink">{formatSpeedLimit(node.share_speed_limit, t)}</span>
-              </div>
-            </Section>
-            <TabSaveBar
-              onSave={saveGeneral}
-              onReset={() => setName(genBase.name)}
-              dirty={name !== genBase.name}
-              busy={saving}
+              <p className="text-xs text-ink-muted">{t("nodes.coefficientHint")}</p>
+            </div>
+            <PlacementFields value={pl} onChange={setPl} online={node.online_users ?? 0} />
+            <SystemProxyEditor
+              host={node.host}
+              value={proxy}
+              saved={proxyBase}
+              onChange={setProxy}
             />
-          </div>
-        ) : (
-          <div className="flex flex-col gap-4">
-            <Section title={t("nodes.server")}>
-              <TextInput label={t("groups.name")} value={name} onChange={setName} placeholder={t("nodes.namePlaceholder")} />
-              <Select
-                label={t("nodes.decoy")}
-                value={decoy}
-                onChange={setDecoy}
-                data={decoys.map((d) => ({ value: d, label: decoyLabel(d) }))}
-              />
-              <div className="flex flex-col gap-1">
-                <TextInput
-                  label={t("nodes.coefficient")}
-                  type="number"
-                  value={coef}
-                  onChange={setCoef}
-                  placeholder="1.0"
-                />
-                <p className="text-xs text-ink-muted">{t("nodes.coefficientHint")}</p>
-              </div>
-              <PlacementFields value={pl} onChange={setPl} online={node.online_users ?? 0} />
-              <SystemProxyEditor
-                host={node.host}
-                value={proxy}
-                saved={proxyBase}
-                onChange={setProxy}
-              />
-            </Section>
-            <TabSaveBar
-              onSave={saveGeneral}
-              onReset={() => {
-                setName(genBase.name);
-                setDecoy(genBase.decoy);
-                setCoef(genBase.coef);
-                setPl(plBase);
-                setProxy(proxyBase);
-              }}
-              dirty={genDirty}
-              busy={saving}
-              invalid={proxyIssue !== ""}
-            />
-          </div>
-        )
+          </Section>
+          <TabSaveBar
+            onSave={saveGeneral}
+            onReset={() => {
+              setName(genBase.name);
+              setDecoy(genBase.decoy);
+              setCoef(genBase.coef);
+              setPl(plBase);
+              setProxy(proxyBase);
+            }}
+            dirty={genDirty}
+            busy={saving}
+            invalid={proxyIssue !== ""}
+          />
+        </div>
       )}
 
       {tab === "connections" && (
         <ConnectionsEditor
           load={() => getNodeConnections(node.id)}
           save={(u) => applyNodeConnections(node.id, u)}
-          reset={node.is_rented ? undefined : () => resetNodeConnections(node.id)}
+          reset={() => resetNodeConnections(node.id)}
           serverId={node.id}
           restartsPanel={false}
         />
@@ -1606,7 +1242,6 @@ function NodeSettingsDialog({
         <InboundsEditor
           serverId={node.id}
           restartsPanel={false}
-          readOnly={node.is_rented}
         />
       )}
 
@@ -1659,10 +1294,6 @@ function NodeSettingsDialog({
           redirectOnSuccess={false}
           onChanged={onRefresh}
         />
-      )}
-
-      {tab === "rental" && !node.is_rented && (
-        <NodeRentalTab node={node} onRefresh={onRefresh} />
       )}
     </Modal>
   );
@@ -2066,27 +1697,15 @@ function NodeCard({
   };
 
   const remove = async () => {
-    if (node.is_rented) {
-      if (
-        !(await confirm({
-          title: t("nodes.deleteRentedTitle"),
-          body: t("nodes.deleteRentedBody", { name: node.name }),
-          confirmLabel: t("nodes.detachRented"),
-          danger: true,
-        }))
-      )
-        return;
-    } else {
-      if (
-        !(await confirm({
-          title: t("nodes.deleteTitle"),
-          body: t("nodes.deleteBody", { name: node.name }),
-          confirmLabel: t("common.delete"),
-          danger: true,
-        }))
-      )
-        return;
-    }
+    if (
+      !(await confirm({
+        title: t("nodes.deleteTitle"),
+        body: t("nodes.deleteBody", { name: node.name }),
+        confirmLabel: t("common.delete"),
+        danger: true,
+      }))
+    )
+      return;
     try {
       await deleteNode(node.id);
       notifySuccess(t("nodes.deleted"));
@@ -2099,27 +1718,14 @@ function NodeCard({
   const doUpdate = async () => {
     try {
       await updateNodeVersion(node.id);
-      notifySuccess(t("nodes.updating"));
+      notifySuccess(t("nodes.updateStarted", { count: 1 }));
+      onChanged();
     } catch (e) {
       notifyError(errMessage(e));
     }
   };
 
-  // Bouncing Xray drops every live connection on THAT server, so it is confirmed
-  // first. On the master it happens right away; on a node the panel can only ask —
-  // the node acts when its (immediately woken) poll returns, and the row then reads
-  // the restart-queued badge until the node reports an Xray that actually restarted.
-  // Hence no success toast for a node: the claim isn't ours to make yet.
   const doXrayRestart = async () => {
-    const ok = await confirm({
-      title: node.is_local
-        ? t("nodes.restartXrayTitle")
-        : t("nodes.restartXrayOn", { name: node.name }),
-      body: t("nodes.restartXrayBody"),
-      confirmLabel: t("manage.restartConfirm"),
-      danger: true,
-    });
-    if (!ok) return;
     setRestarting(true);
     try {
       if (node.is_local) {
@@ -2127,9 +1733,9 @@ function NodeCard({
         notifySuccess(t("nodes.xrayRestarted"));
       } else {
         await restartNodeXray(node.id);
-        notifySuccess(t("nodes.awaitingNode"));
-        onChanged(); // pick up the pending badge now, not on the next poll tick
+        notifySuccess(t("nodes.restartQueued"));
       }
+      onChanged();
     } catch (e) {
       notifyError(errMessage(e));
     } finally {
@@ -2138,52 +1744,38 @@ function NodeCard({
   };
 
   return (
-    <div className={cn("px-4 py-3.5", !node.enabled && !node.is_local && "opacity-55")}>
-      {confirmNode}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+    <>
+      <div className="flex flex-wrap items-center justify-between gap-3 p-4">
+        {confirmNode}
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className={cn("h-2.5 w-2.5 shrink-0 rounded-full", statusDot(node))} />
-            <span className="truncate font-semibold text-ink">{serverName(node)}</span>
-            {/* Address before the chip: the two identify the server and belong
-                together, and a chip wedged between them pushed the address around
-                every time the state changed. */}
+          <div className="flex flex-wrap items-center gap-2">
+            <span
+              className={cn("h-2 w-2 shrink-0 rounded-full", statusDot(node))}
+              title={node.enabled ? (node.online ? "Online" : "Offline") : "Disabled"}
+            />
+            <span className="truncate font-medium text-ink">
+              {serverName(node)}
+            </span>
             <span className="truncate font-mono text-sm text-ink-muted">{node.host}</span>
-            {node.is_rented && <Badge color="indigo">{t("nodes.rentedBadge")}</Badge>}
             <StatusChip node={node} />
           </div>
           <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-ink-muted">
             <span>{t("nodes.todayTraffic", { value: fmtBytes(node.traffic_up + node.traffic_down) })}</span>
-            {node.is_rented ? (
+            {!node.is_local && (
               <>
                 <Sep />
-                <span>{t("nodes.quotaPerTenant")}: {node.share_quota_percent}%</span>
-                <Sep />
-                <span>{t("nodes.speedPerTenant")}: {formatSpeedLimit(node.share_speed_limit, t)}</span>
-                <Sep />
-                <span>Xray {node.xray_version || "—"}</span>
+                <span>{fmtSeen(node.last_seen)}</span>
+              </>
+            )}
+            <Sep />
+            <span className={node.version_skew ? "text-amber-600" : undefined}>
+              Xray {node.xray_version || "—"}
+              {node.version_skew ? " ⚠" : ""}
+            </span>
+            {!node.is_local && (
+              <>
                 <Sep />
                 <span>{t("nodes.agentVersion", { version: node.node_version || "—" })}</span>
-              </>
-            ) : (
-              <>
-                {!node.is_local && (
-                  <>
-                    <Sep />
-                    <span>{fmtSeen(node.last_seen)}</span>
-                  </>
-                )}
-                <Sep />
-                <span className={node.version_skew ? "text-amber-600" : undefined}>
-                  Xray {node.xray_version || "—"}
-                  {node.version_skew ? " ⚠" : ""}
-                </span>
-                {!node.is_local && (
-                  <>
-                    <Sep />
-                    <span>{t("nodes.agentVersion", { version: node.node_version || "—" })}</span>
-                  </>
-                )}
               </>
             )}
           </div>
@@ -2195,38 +1787,34 @@ function NodeCard({
           <IconButton title={t("nav.settings")} onClick={() => setEditingRouting(true)}>
             <IconGear size={18} />
           </IconButton>
-          {!node.is_rented && (
-            <>
-              <IconButton title={t("nodes.diagnostics")} onClick={() => setShowingHealth(true)}>
-                <IconPulse size={18} />
-              </IconButton>
-              <IconButton title={t("xray.configTitle")} onClick={() => setShowingConfig(true)}>
-                <IconBraces size={18} />
-              </IconButton>
-              <IconButton title={t("manage.logs")} onClick={() => setShowingLogs(true)}>
-                <IconTerminal size={18} />
-              </IconButton>
-              <IconButton
-                title={
-                  node.xray_restart === "pending"
-                    ? t("nodes.restartQueuedHint")
-                    : t("nodes.restartXray")
-                }
-                color="red"
-                disabled={
-                  restarting ||
-                  node.xray_restart === "pending" ||
-                  (!node.is_local && (!node.enabled || !node.joined))
-                }
-                onClick={doXrayRestart}
-              >
-                <IconRestart
-                  size={18}
-                  className={node.xray_restart === "pending" ? "animate-spin" : undefined}
-                />
-              </IconButton>
-            </>
-          )}
+          <IconButton title={t("nodes.diagnostics")} onClick={() => setShowingHealth(true)}>
+            <IconPulse size={18} />
+          </IconButton>
+          <IconButton title={t("xray.configTitle")} onClick={() => setShowingConfig(true)}>
+            <IconBraces size={18} />
+          </IconButton>
+          <IconButton title={t("manage.logs")} onClick={() => setShowingLogs(true)}>
+            <IconTerminal size={18} />
+          </IconButton>
+          <IconButton
+            title={
+              node.xray_restart === "pending"
+                ? t("nodes.restartQueuedHint")
+                : t("nodes.restartXray")
+            }
+            color="red"
+            disabled={
+              restarting ||
+              node.xray_restart === "pending" ||
+              (!node.is_local && (!node.enabled || !node.joined))
+            }
+            onClick={doXrayRestart}
+          >
+            <IconRestart
+              size={18}
+              className={node.xray_restart === "pending" ? "animate-spin" : undefined}
+            />
+          </IconButton>
           {!node.is_local && (
             <Dropdown
               align="end"
@@ -2240,24 +1828,16 @@ function NodeCard({
                 </span>
               }
             >
-              {node.is_rented ? (
-                <DropdownItem color="red" onClick={remove}>
-                  {t("nodes.detachRented")}
-                </DropdownItem>
-              ) : (
-                <>
-                  <DropdownItem onClick={doUpdate}>
-                    {t("nodes.update")}{node.version_skew ? ` ${t("nodes.newVersionSuffix")}` : ""}
-                  </DropdownItem>
-                  <DropdownItem onClick={() => setReconnecting(true)}>
-                    {t("nodes.reinstall")}
-                  </DropdownItem>
-                  <DropdownDivider />
-                  <DropdownItem color="red" onClick={remove}>
-                    {t("common.delete")}
-                  </DropdownItem>
-                </>
-              )}
+              <DropdownItem onClick={doUpdate}>
+                {t("nodes.update")}{node.version_skew ? ` ${t("nodes.newVersionSuffix")}` : ""}
+              </DropdownItem>
+              <DropdownItem onClick={() => setReconnecting(true)}>
+                {t("nodes.reinstall")}
+              </DropdownItem>
+              <DropdownDivider />
+              <DropdownItem color="red" onClick={remove}>
+                {t("common.delete")}
+              </DropdownItem>
             </Dropdown>
           )}
         </div>
@@ -2318,7 +1898,7 @@ function NodeCard({
           onClose={() => setShowingConfig(false)}
         />
       )}
-    </div>
+    </>
   );
 }
 
@@ -2468,8 +2048,6 @@ export function NodesPanel() {
 
   if (nodes === null) return <CenterLoader />;
 
-  const ownedNodes = nodes.filter((n) => !n.is_rented);
-  const rentedNodes = nodes.filter((n) => n.is_rented);
   const remoteCount = nodes.filter((n) => !n.is_local).length;
   const anyStale = nodes.some((n) => !n.is_local && n.version_skew && n.online);
 
@@ -2499,7 +2077,7 @@ export function NodesPanel() {
       </div>
 
       <Card className="divide-y divide-gray-100">
-        {ownedNodes.map((n) => (
+        {nodes.map((n) => (
           <NodeCard
             key={n.id}
             node={n}
@@ -2510,34 +2088,6 @@ export function NodesPanel() {
           />
         ))}
       </Card>
-
-      {rentedNodes.length > 0 && (
-        <div className="space-y-3 pt-2">
-          <div className="flex items-center gap-2.5 px-1">
-            <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-indigo-600 dark:text-indigo-400">
-              <span className="h-2 w-2 rounded-full bg-indigo-500 animate-pulse" />
-              <span>{t("nodes.rentedBadge")} ({rentedNodes.length})</span>
-            </div>
-            <div className="h-px flex-1 bg-gradient-to-r from-indigo-500/30 via-indigo-500/10 to-transparent" />
-          </div>
-          <div className="space-y-2.5">
-            {rentedNodes.map((n) => (
-              <div
-                key={n.id}
-                className="relative rounded-2xl border border-indigo-500/30 bg-gradient-to-br from-indigo-500/[0.04] via-transparent to-purple-500/[0.03] shadow-sm ring-1 ring-indigo-500/20 transition-all hover:border-indigo-500/50 hover:shadow dark:border-indigo-500/40"
-              >
-                <NodeCard
-                  node={n}
-                  decoys={decoys}
-                  geo={geo}
-                  onChanged={load}
-                  onRegen={setInstallCmd}
-                />
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       <ExternalServers />
 

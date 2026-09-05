@@ -53,9 +53,6 @@ func (m *Manager) ResetNodeConnections(ctx context.Context, id int64) (*Connecti
 	if n == nil {
 		return nil, invalidCode("err.nodeNotFound", "нода не найдена")
 	}
-	if n.IsRented {
-		return nil, invalidCode("err.rentedNodeResetForbidden", "сброс настроек недоступен для арендованной ноды")
-	}
 	if err := m.dropServerInbounds(id); err != nil {
 		return nil, err
 	}

@@ -946,12 +946,6 @@ type Settings struct {
 
 	Routing RoutingConfig `json:"-"` // structured routing config (Settings → Routing)
 
-	// Node rental & sharing fields for the master server (node 0)
-	ShareEnabled      bool   `json:"-"`
-	ShareQuotaPercent int    `json:"-"`
-	ShareSpeedLimit   int    `json:"-"`
-	ShareToken        string `json:"-"`
-
 	// Computed per request (NOT stored). When the active cert isn't CA-trusted (a
 	// self-signed fallback), TLSInsecure is set and TLSPinSHA256 carries the hex
 	// SHA-256 of that cert so Xray links can pin it (pinnedPeerCertSha256) — clients
@@ -969,9 +963,6 @@ type Settings struct {
 	// what pairs a settings value with that server's custom inbounds, which live in
 	// their own table rather than in this row.
 	ServerID int64 `json:"-"`
-
-	// IsRented is computed (NOT stored): whether this server is a rented node.
-	IsRented bool `json:"-"`
 
 	// ServerPlacement is computed alongside ServerID: this server's placement, so
 	// the subscription can order the servers it spans (sub.Order).

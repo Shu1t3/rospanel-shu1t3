@@ -50,8 +50,6 @@ func (rt *Router) handleNodeAPI(w http.ResponseWriter, r *http.Request, rest str
 		rt.handleNodeJoin(w, r)
 	case "sync":
 		rt.handleNodeSync(w, r)
-	case "rent-sync":
-		rt.handleRentalSync(w, r)
 	default:
 		rt.currentDecoy().ServeHTTP(w, r)
 	}
