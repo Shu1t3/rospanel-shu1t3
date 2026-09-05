@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.24.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.23.4...v2.24.0) (2026-09-05)
+
+
+### Features
+
+* **hysteria2:** the obfuscation key is generated, never typed ([9c2cb2e](https://github.com/Shu1t3/rospanel-shu1t3/commit/9c2cb2e0b333dda52169fb45729a1edc5557ae64))
+
+
+### Bug Fixes
+
+* **admins:** the owner's password no longer has to be ASCII to remove an account ([a5fed37](https://github.com/Shu1t3/rospanel-shu1t3/commit/a5fed374c1d21889b6544f319b755934249326e5))
+* **nodes:** удаление экспериментальной функциональности аренды нод и изоляции арендаторов ([2790345](https://github.com/Shu1t3/rospanel-shu1t3/commit/2790345cc5329e6aeac509447efceb186ae0ad5c))
+* синхронизация с апстримом AppsGanin/rospanel v2.13.0 и устранение уязвимостей ([526c380](https://github.com/Shu1t3/rospanel-shu1t3/commit/526c3805bf4a94865d66915fe025f7fa8ed2b652))
+
 ## [2.23.4](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.23.3...v2.23.4) (2026-09-05)
 
 
