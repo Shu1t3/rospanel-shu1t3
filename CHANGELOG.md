@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.24.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.24.0...v2.24.1) (2026-09-05)
+
+
+### Performance Improvements
+
+* комплексная оптимизация производительности и масштабируемости (Go 1.27) ([593db48](https://github.com/Shu1t3/rospanel-shu1t3/commit/593db489bece3113cf44dcf3065d730068ba32d6))
+
 ## [2.24.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.23.4...v2.24.0) (2026-09-05)
 
 
