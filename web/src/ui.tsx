@@ -761,6 +761,8 @@ export function TextInput({
   min,
   max,
   autoFocus,
+  autoComplete,
+  inputMode,
   mono,
   disabled,
   className,
@@ -778,6 +780,8 @@ export function TextInput({
   min?: number | string;
   max?: number | string;
   autoFocus?: boolean;
+  autoComplete?: string;
+  inputMode?: "text" | "numeric";
   mono?: boolean;
   disabled?: boolean;
   className?: string;
@@ -806,6 +810,8 @@ export function TextInput({
         max={max}
         placeholder={placeholder}
         autoFocus={autoFocus}
+        autoComplete={autoComplete}
+        inputMode={inputMode}
         disabled={disabled}
         onChange={(e) => onChange(e.currentTarget.value)}
         onKeyDown={onKeyDown}

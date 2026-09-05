@@ -82,7 +82,7 @@ func GenerateClash(req Request) string {
 // GenerateClashWithTemplate injects the user's proxies into a routing template.
 func GenerateClashWithTemplate(req Request, template string) string {
 	proxies := clashProxiesAll(req.User, req.Servers, req.External, req.Access)
-	if len(proxies) == 0 || !strings.Contains(template, "proxies: # LEAVE THIS LINE!") {
+	if len(proxies) == 0 || !strings.Contains(template, clashProxiesMarker) {
 		return GenerateClash(req)
 	}
 	defs := make([]string, len(proxies))
@@ -90,7 +90,7 @@ func GenerateClashWithTemplate(req Request, template string) string {
 		defs[i] = p.line
 	}
 	out := strings.Replace(template,
-		"proxies: # LEAVE THIS LINE!",
+		clashProxiesMarker,
 		"proxies:\n"+strings.Join(defs, "\n"),
 		1,
 	)
@@ -98,7 +98,7 @@ func GenerateClashWithTemplate(req Request, template string) string {
 	for _, p := range proxies {
 		fmt.Fprintf(&names, "      - %q\n", p.name)
 	}
-	return strings.Replace(out, "    # LEAVE THIS LINE!", strings.TrimRight(names.String(), "\n"), 1)
+	return strings.Replace(out, clashNamesMarker, strings.TrimRight(names.String(), "\n"), 1)
 }
 
 // GenerateSingBox produces a sing-box JSON configuration spanning physical and external servers.
@@ -108,16 +108,7 @@ func GenerateSingBox(req Request) string {
 		return "{}"
 	}
 
-	var proxies []any
-	var tags []string
-	for _, srv := range req.Servers {
-		p, t := singboxProxies(req.User, srv)
-		proxies = append(proxies, p...)
-		tags = append(tags, t...)
-	}
-	ep, et := singboxExternalProxies(req.Access, req.External)
-	proxies = append(proxies, ep...)
-	tags = append(tags, et...)
+	proxies, tags := singboxProxiesAll(req)
 
 	group := SubTitle(req.User, set)
 	if len(tags) == 0 {
@@ -192,6 +183,72 @@ func GenerateSingBox(req Request) string {
 	return string(out)
 }
 
+// GenerateSingBoxWithTemplate renders outbounds into the operator's own sing-box document.
+// {{proxies}} takes the generated outbounds, {{tags}} their tags and {{group}} the profile's
+// name. Falls back to GenerateSingBox whenever the template cannot produce a working profile.
+func GenerateSingBoxWithTemplate(req Request, template string) (string, error) {
+	if strings.TrimSpace(template) == "" {
+		return GenerateSingBox(req), nil
+	}
+	if len(req.Servers) == 0 && len(req.External) == 0 {
+		return GenerateSingBox(req), nil
+	}
+	proxies, tags := singboxProxiesAll(req)
+	if len(tags) == 0 {
+		return GenerateSingBox(req), nil
+	}
+	tagList := make([]any, len(tags))
+	for i, t := range tags {
+		tagList[i] = t
+	}
+	set := req.ensureSettings()
+	out, err := renderJSONTemplate(template,
+		map[string]any{TplGroup: SubTitle(req.User, set)},
+		map[string][]any{TplProxies: proxies, TplTags: tagList},
+	)
+	if err != nil {
+		return GenerateSingBox(req), err
+	}
+	return out, nil
+}
+
+// singboxProxiesAll gathers every server's outbounds, giving each a tag no other
+// outbound shares. A duplicate tag is fatal in sing-box — the selector would name it
+// twice and the profile is refused — so the de-duplication is not cosmetic; see
+// uniqueLabel for how two differently-named lanes end up asking for the same tag.
+func singboxProxiesAll(req Request) ([]any, []string) {
+	var proxies []any
+	var tags []string
+	seen := map[string]int{}
+	for _, srv := range req.Servers {
+		p, t := singboxProxies(req.User, srv)
+		for i := range p {
+			uniq := uniqueLabel(seen, t[i])
+			if uniq != t[i] {
+				if m, ok := p[i].(map[string]any); ok {
+					m["tag"] = uniq
+				}
+				t[i] = uniq
+			}
+			proxies = append(proxies, p[i])
+			tags = append(tags, t[i])
+		}
+	}
+	ep, et := singboxExternalProxies(req.Access, req.External)
+	for i := range ep {
+		uniq := uniqueLabel(seen, et[i])
+		if uniq != et[i] {
+			if m, ok := ep[i].(map[string]any); ok {
+				m["tag"] = uniq
+			}
+			et[i] = uniq
+		}
+		proxies = append(proxies, ep[i])
+		tags = append(tags, et[i])
+	}
+	return proxies, tags
+}
+
 // GenerateXrayJSON produces Xray client JSON array from all physical and external endpoints.
 func GenerateXrayJSON(req Request) string {
 	configs := make([]map[string]any, 0, 8)
@@ -205,6 +262,51 @@ func GenerateXrayJSON(req Request) string {
 		return "[]"
 	}
 	return string(b)
+}
+
+// GenerateXrayJSONWithTemplate renders each lane into the operator's own Xray config.
+// The template is ONE config — the format is an array of independent configs, one per lane —
+// so {{outbounds}} takes that lane's outbound chain and {{remarks}} its display name.
+// Falls back to GenerateXrayJSON on an unparseable template or rendering error.
+func GenerateXrayJSONWithTemplate(req Request, template string) (string, error) {
+	if strings.TrimSpace(template) == "" {
+		return GenerateXrayJSON(req), nil
+	}
+	configs := make([]any, 0, 8)
+	for _, l := range GenerateShareLinks(req) {
+		cfg, ok := xrayConfigFromLink(l, req.DPI)
+		if !ok {
+			continue
+		}
+		outbounds, ok := cfg["outbounds"].([]map[string]any)
+		if !ok || len(outbounds) == 0 {
+			return GenerateXrayJSON(req), fmt.Errorf("lane %q produced no outbound chain", cfg["remarks"])
+		}
+		chain := make([]any, len(outbounds))
+		for i, o := range outbounds {
+			chain[i] = o
+		}
+		rendered, err := renderJSONTemplate(template,
+			map[string]any{TplRemarks: cfg["remarks"]},
+			map[string][]any{TplOutbounds: chain},
+		)
+		if err != nil {
+			return GenerateXrayJSON(req), err
+		}
+		var doc any
+		if err := json.Unmarshal([]byte(rendered), &doc); err != nil {
+			return GenerateXrayJSON(req), err
+		}
+		configs = append(configs, doc)
+	}
+	if len(configs) == 0 {
+		return GenerateXrayJSON(req), nil
+	}
+	b, err := json.MarshalIndent(configs, "", "  ")
+	if err != nil {
+		return GenerateXrayJSON(req), err
+	}
+	return string(b), nil
 }
 
 // GeneratePage renders the subscription HTML page spanning physical and external servers.

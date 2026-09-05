@@ -308,6 +308,8 @@ export interface ConnectionsStatus {
   hop_start: number
   hop_end: number
   hop_interval: string
+  // Salamander pre-shared key for the built-in Hysteria2 lane ("" = obfuscation off).
+  hysteria_obfs?: string
   reality_port: number
   reality_dest: string
   reality_public_key: string
@@ -338,6 +340,9 @@ export interface ConnectionsUpdate {
   hop_start: number
   hop_end: number
   hop_interval: string
+  hysteria_obfs?: string
+  // Ask the server to mint a fresh Salamander key, ignoring hysteria_obfs.
+  regen_obfs?: boolean
   reality_port: number
   reality_dest: string
   reality_anti_replay: boolean
@@ -453,10 +458,10 @@ export const restoreBackup = (file: File, currentPassword: string) =>
 // resetPanel wipes all state and restarts the panel into first-run mode. It
 // returns the URL the panel will come back on (auto-detected IP + default path),
 // which may differ from the current address (e.g. a custom domain).
-export const resetPanel = (currentPassword: string) =>
+export const resetPanel = (currentPassword: string, code?: string) =>
   api<{ url: string }>('api/reset', {
     method: 'POST',
-    body: JSON.stringify({ current_password: currentPassword }),
+    body: JSON.stringify({ current_password: currentPassword, code: code || '' }),
   })
 
 export const getConnections = () => api<ConnectionsStatus>('api/connections')
@@ -693,6 +698,7 @@ export interface Me {
   timezone: string
   version: string
   must_change_password?: boolean
+  totp_enabled?: boolean
   billing_enabled?: boolean
   user_bot_enabled?: boolean
 }
@@ -747,12 +753,13 @@ export const resetAdminPassword = (
     body: JSON.stringify({ password, current_password: currentPassword }),
   })
 
-// The owner's password rides in a header: a DELETE body is the kind of thing
-// proxies and clients feel free to drop.
+// The owner's password rides in the BODY, not a header: header values are ISO-8859-1
+// only, so fetch throws outright on a Cyrillic password and mangles an accented one
+// into bytes that can never match the stored hash.
 export const deleteAdmin = (id: number, currentPassword: string) =>
   api<{ ok: boolean }>(`api/admins/${id}`, {
     method: 'DELETE',
-    headers: { 'X-Current-Password': currentPassword },
+    body: JSON.stringify({ current_password: currentPassword }),
   })
 
 export interface AdminSession {
@@ -1148,6 +1155,22 @@ export const saveSubRules = (rules: SubRule[]) =>
   api<{ ok: boolean }>('api/settings/sub-rules', {
     method: 'POST',
     body: JSON.stringify({ rules }),
+  })
+
+// SubTemplates are the operator's own profile documents, one per format. Empty means
+// "use the generated profile", which is what every install starts with.
+export interface SubTemplates {
+  clash: string
+  singbox: string
+  xray: string
+}
+
+export const getSubTemplates = () => api<SubTemplates>('api/settings/sub-templates')
+
+export const saveSubTemplates = (tpl: SubTemplates) =>
+  api<{ ok: boolean }>('api/settings/sub-templates', {
+    method: 'POST',
+    body: JSON.stringify(tpl),
   })
 
 export const saveMaintenance = (enabled: boolean) =>
@@ -1985,6 +2008,12 @@ export interface NodeView {
   sort_weight: number
   capacity: number
   hide_when_full: boolean
+  // Traffic cap and what has been used against it in the current period.
+  traffic_limit: number
+  traffic_period: string
+  hide_when_over: boolean
+  traffic_period_used: number
+  traffic_over: boolean
   online_users: number
   // REALITY identity (per-server). reality_dest "" on a node = inherits the master's
   // donor. The public key / short id / XHTTP path are shown; private key is hidden.
@@ -2100,6 +2129,11 @@ export interface Placement {
   sort_weight: number
   capacity: number
   hide_when_full: boolean
+  // Bytes the server may carry per traffic_period ('month' | 'day'); 0 = no cap.
+  // hide_when_over drops it out of subscriptions once the cap is reached.
+  traffic_limit: number
+  traffic_period: string
+  hide_when_over: boolean
 }
 
 export interface NodePatch {
@@ -2128,8 +2162,15 @@ export const setNodeEnabled = (id: number, enabled: boolean) =>
     body: JSON.stringify({ enabled }),
   })
 
-export const deleteNode = (id: number) =>
-  api<{ ok: boolean }>(`api/nodes/${id}`, { method: 'DELETE' })
+// Deleting a server is irreversible and cuts off everyone on it, so it is re-authorised
+// like a factory reset. The credentials go in the BODY, not a header: header values are
+// ISO-8859-1 only, so fetch throws outright on a Cyrillic password and mangles an
+// accented one into bytes that can never match the stored hash.
+export const deleteNode = (id: number, currentPassword: string, code: string) =>
+  api<{ ok: boolean }>(`api/nodes/${id}`, {
+    method: 'DELETE',
+    body: JSON.stringify({ current_password: currentPassword, code }),
+  })
 
 export const regenNodeJoin = (id: number) =>
   api<{ install_command: string }>(`api/nodes/${id}/regen-join`, {
@@ -2330,6 +2371,8 @@ export interface InboundOpts {
   hop_start?: number
   hop_end?: number
   hop_interval?: string
+  // Hysteria2 Salamander pre-shared key ("" / absent = no obfuscation).
+  obfs?: string
   // Shadowsocks-2022: the AEAD method. The server key is generated and never sent to
   // the client, so there is no field for it here.
   method?: string
@@ -2454,6 +2497,10 @@ export interface InboundInput {
   hop_start: number
   hop_end: number
   hop_interval: string
+  // The Salamander key is display-only; regen_obfs is what asks the server to mint a
+  // new one. The editor never lets it be typed.
+  obfs: string
+  regen_obfs: boolean
   header_type: string
   header_hosts: string[]
   header_paths: string[]

@@ -488,7 +488,14 @@ func (rt *Router) setNodeEnabled(w http.ResponseWriter, r *http.Request, id int6
 }
 
 // deleteNode removes a node; its held poll learns it's revoked and stops serving.
-func (rt *Router) deleteNode(w http.ResponseWriter, _ *http.Request, id int64) {
+func (rt *Router) deleteNode(w http.ResponseWriter, r *http.Request, id int64) {
+	var req stepUpBody
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if !rt.verifyStepUpTOTP(w, r, req.CurrentPassword, req.Code) {
+		return
+	}
 	if err := rt.mgr.DeleteNode(id); err != nil {
 		writeManagerErr(w, err)
 		return

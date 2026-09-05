@@ -15,6 +15,12 @@ import (
 // sub.SubTitle).
 func Label(proto string, set *model.Settings) string { return set.ProtoLabel(proto) }
 
+// LabelFor is Label with the user in hand, so a name carrying variables ({left},
+// {expire}, …) resolves against the person the link is being built for.
+func LabelFor(proto string, u model.User, set *model.Settings) string {
+	return set.ProtoLabelFor(proto, &u)
+}
+
 // assemble joins the share-link shape shared by every protocol:
 //
 //	<scheme>://<cred>@<host>:<port>?<query>#<label>
@@ -23,7 +29,7 @@ func Label(proto string, set *model.Settings) string { return set.ProtoLabel(pro
 // url.QueryEscape(pw); UUID links pass the raw uuid). host is always set.Host.
 func assemble(scheme, cred string, port int, q url.Values, proto string, u model.User, set *model.Settings) string {
 	return fmt.Sprintf("%s://%s@%s:%d?%s#%s",
-		scheme, cred, set.Host, port, q.Encode(), url.PathEscape(Label(proto, set)))
+		scheme, cred, set.Host, port, q.Encode(), url.PathEscape(LabelFor(proto, u, set)))
 }
 
 // pinSelfSigned adds the cert-pin query param (pcs) when the active cert isn't

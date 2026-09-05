@@ -410,7 +410,8 @@ operate, and the configuration behind them — settings, per-server routing and 
 save-points with rollback. Administrators, API keys and the panel's secret path are
 deliberately not exposed. **Webhooks** send HMAC-SHA256 signed events with retries. **Prometheus metrics**
 at `/<api-path>/v1/metrics` behind the same key — users, traffic, throughput, host stats and
-one series per node. An **MCP server** hands the same API to an AI assistant, with the tool
+one series per node; a ready **Grafana dashboard** for them is in [docs/grafana/rospanel.json](docs/grafana/rospanel.json)
+(Dashboards → New → Import). An **MCP server** hands the same API to an AI assistant, with the tool
 list generated from that OpenAPI document: paste `…/v1/mcp/<key>` into an assistant that takes
 a URL and there is nothing to install anywhere. Write operations are off unless you ask for
 them (the `/write` address). More in [docs/api.md](docs/api.md).

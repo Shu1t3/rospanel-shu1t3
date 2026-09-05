@@ -116,6 +116,12 @@ func (rt *Router) userViewFor(u model.User, set *model.Settings, bot string) use
 // and attaches the cert pin so Xray links can pin it (pinnedPeerCertSha256); a
 // trusted CA cert leaves verification on.
 func (rt *Router) applyTLSHints(set *model.Settings) {
+	// The master's own placement, which the subscription path fills in when it builds
+	// the per-server settings. Every other consumer of a bare GetSettings() value is
+	// looking at the master, so without this a connection name using {flag} or
+	// {country} renders as "unknown" on the admin's user card while the subscription
+	// renders it properly — the same name, two answers.
+	set.ServerPlacement = set.MasterPlacement
 	if rt.mgr.HasValidCert() {
 		return
 	}
@@ -165,7 +171,8 @@ func (rt *Router) subPhysicalServers(local *model.Settings, userID int64, client
 		return nil, model.Access{}, err
 	}
 	servers := sub.Servers(sets, custom, access)
-	ordered := sub.Order(servers, local.SubOrderMode, rt.mgr.CountryOfIP(clientIP), rt.mgr.OnlineByServer())
+	ordered := sub.Order(servers, local.SubOrderMode, rt.mgr.CountryOfIP(clientIP),
+		rt.mgr.OnlineByServer(), rt.mgr.ServersOverTrafficLimit())
 	return ordered, access, nil
 }
 
@@ -174,10 +181,49 @@ func (rt *Router) subExternalServers() []model.ExtServer {
 	return rt.mgr.EnabledExtServers()
 }
 
-// subServers preserves backward compatibility for legacy callers.
+// subServers returns ordered servers including external servers carried on a node.
 func (rt *Router) subServers(local *model.Settings, userID int64, clientIP string) ([]sub.Server, error) {
-	servers, _, err := rt.subPhysicalServers(local, userID, clientIP)
-	return servers, err
+	sets := rt.subSettings(local)
+	custom, err := rt.mgr.Store().AllInbounds()
+	if err != nil {
+		return nil, err
+	}
+	access, err := rt.mgr.Store().UserAccess(userID)
+	if err != nil {
+		return nil, err
+	}
+	// Ordered for THIS client: their country, each server's live load and the
+	// operator's weights decide who comes first, and a full server can drop out.
+	// Under the manual mode with no weights this is the old order, unchanged.
+	servers := sub.Servers(sets, custom, access)
+	ordered := sub.Order(servers, local.SubOrderMode, rt.mgr.CountryOfIP(clientIP),
+		rt.mgr.OnlineByServer(), rt.mgr.ServersOverTrafficLimit())
+	// External servers are the panel's, not any one server's, so they ride along on
+	// whichever entry survived the ordering — the master by preference, since that is
+	// where they have always appeared. It must not be *only* the master: the master
+	// drops out like anything else once it is full with hide-when-full set, and
+	// attaching to nothing at all silently took every external server down with it —
+	// for a plan whose grants are all external, the whole subscription.
+	if ext := rt.mgr.EnabledExtServers(); len(ext) > 0 {
+		if len(ordered) > 0 {
+			carrier := 0
+			for i, s := range ordered {
+				if s.Set.ServerID == model.LocalNodeID {
+					carrier = i
+					break
+				}
+			}
+			ordered[carrier].External = ext
+			ordered[carrier].Access = access
+		} else {
+			ordered = []sub.Server{{
+				Set:      local,
+				External: ext,
+				Access:   access,
+			}}
+		}
+	}
+	return ordered, nil
 }
 
 // localInbounds is the master's own custom inbounds, or none when they can't be
@@ -288,6 +334,8 @@ func (rt *Router) panelMux() http.Handler {
 	authed("POST /api/settings/subscription", rt.saveSubSettings)
 	authed("GET /api/settings/sub-rules", rt.getSubRules)
 	authed("POST /api/settings/sub-rules", rt.saveSubRules)
+	authed("GET /api/settings/sub-templates", rt.getSubTemplates)
+	authed("POST /api/settings/sub-templates", rt.saveSubTemplates)
 	authed("POST /api/settings/sub-dpi", rt.saveSubDPI)
 	authed("POST /api/settings/hwid", rt.saveHWIDSettings)
 	authed("POST /api/settings/maintenance", rt.saveMaintenance)
@@ -699,6 +747,12 @@ func (rt *Router) me(w http.ResponseWriter, r *http.Request) {
 		"version":              version.Version,
 		"must_change_password": a.MustChangePassword,
 	}
+	// Whether this admin has a second factor. A UI hint only — it decides whether the
+	// destructive-action dialogs ask for a code — and the server checks for real
+	// regardless, so an error here degrades towards ASKING rather than towards a
+	// dialog with no field to type the required code into.
+	totp, err := rt.mgr.Store().AdminTOTPByID(a.ID)
+	resp["totp_enabled"] = err != nil || totp.Enabled()
 	if set, err := rt.mgr.Store().GetSettings(); err == nil {
 		resp["setup_done"] = set.SetupDone
 		resp["timezone"] = set.Timezone
@@ -741,6 +795,102 @@ func (rt *Router) verifyStepUp(w http.ResponseWriter, r *http.Request, password 
 		return true
 	}
 	return rt.verifyAdminPassword(w, r, password)
+}
+
+// stepUpBody is how an irreversible action carries its credentials. A JSON body even
+// on DELETE, because an HTTP header cannot hold them: the Fetch API restricts header
+// values to ISO-8859-1, so a browser refuses outright to send a Cyrillic password and
+// silently mangles an accented one into a byte string that can never match the stored
+// hash — a correct password answered "wrong password", with nothing to explain it.
+// Passwords have no charset restriction, so this is not a corner case.
+type stepUpBody struct {
+	CurrentPassword string `json:"current_password"`
+	Code            string `json:"code"`
+}
+
+// verifyStepUpTOTP is verifyStepUp plus a FRESH second factor, for the handful of
+// actions that destroy something no backup taken afterwards can bring back.
+//
+// The password alone is the wrong bar for those: it is the credential most likely to
+// be reused elsewhere, and an admin who has bound an authenticator has already said
+// they want a second one. The code is required only when that admin actually has 2FA
+// — turning it on must not become a prerequisite for operating the panel.
+//
+// "Fresh" is load-bearing. The step is claimed through MarkAdminTOTPStep exactly as
+// login claims it, so the code that just signed the admin in cannot also authorise
+// the deletion: an attacker who watched one code over a shoulder gets one action, not
+// every action inside the same 30 seconds. The cost is real and deliberate — two
+// destructive actions in one window need two codes — so the refusal says so.
+func (rt *Router) verifyStepUpTOTP(w http.ResponseWriter, r *http.Request, password, code string) bool {
+	// Deliberately NOT verifyStepUp: that one waives re-authentication entirely while
+	// the first-run wizard is unfinished, and "unfinished" is a state a panel can sit
+	// in forever — the wizard clears the forced password change several steps before it
+	// marks setup done, so an abandoned wizard leaves a working panel with the shortcut
+	// open. There is nothing to factory-reset or delete during first run anyway, so
+	// asking costs nothing and closes the window.
+	if !rt.verifyAdminPassword(w, r, password) {
+		return false
+	}
+	id, ok := rt.adminID(r)
+	if !ok {
+		writeErrCode(w, http.StatusUnauthorized, "err.unauthorized", "не авторизован")
+		return false
+	}
+	totp, err := rt.mgr.Store().AdminTOTPByID(id)
+	if err != nil {
+		// A secret that will not decrypt must never read as "no second factor" — that
+		// would turn a broken encryption key into an open door.
+		writeErrCode(w, http.StatusInternalServerError, "err.internal", "внутренняя ошибка сервера")
+		return false
+	}
+	if !totp.Enabled() {
+		return true
+	}
+	ip := clientIP(r)
+	if rt.stepUp.blocked(ip, "") {
+		// The attacker this counts is already past the password and holds a session, so
+		// nothing but a lockout on THIS endpoint slows the walk through a six-digit
+		// space. Checked before the code is even read.
+		writeErrCode(w, http.StatusTooManyRequests, "err.tooManyAttempts", "слишком много попыток, попробуйте позже")
+		return false
+	}
+	code = strings.TrimSpace(code)
+	if code == "" {
+		writeErrCode(w, http.StatusForbidden, "err.totpRequired", "введите код из приложения")
+		return false
+	}
+	// Verified WITHOUT the replay marker, then compared against it separately. Folding
+	// the two together (as the login does) collapses "wrong code" and "the code you
+	// just signed in with" into one message — and here the second is the likely one,
+	// because the admin often reaches a destructive action seconds after logging in.
+	// Security is unchanged: the step still has to beat the marker, and the atomic
+	// claim below is what actually settles a race between two requests.
+	step, ok := auth.VerifyTOTP(totp.Secret, code, time.Now(), 0)
+	if !ok {
+		// Counted against the lockout for the same reason the login counts it: six
+		// digits is a small space, and whoever is guessing here has already got past
+		// the password. The legitimate case costs nothing — a correct code never
+		// reaches this branch.
+		rt.stepUp.fail(ip, "")
+		writeErrCode(w, http.StatusForbidden, "err.totpInvalid", "неверный код")
+		return false
+	}
+	if step <= totp.LastStep {
+		writeErrCode(w, http.StatusForbidden, "err.totpUsed", "этот код уже использован — дождитесь следующего")
+		return false
+	}
+	rt.stepUp.success(ip, "")
+	// Claim the step before acting, so a replayed code cannot drive the action twice.
+	claimed, err := rt.mgr.Store().MarkAdminTOTPStep(id, step)
+	if err != nil {
+		writeErrCode(w, http.StatusInternalServerError, "err.internal", "внутренняя ошибка сервера")
+		return false
+	}
+	if !claimed {
+		writeErrCode(w, http.StatusForbidden, "err.totpUsed", "этот код уже использован — дождитесь следующего")
+		return false
+	}
+	return true
 }
 
 // verifyAdminPassword checks the current admin password (step-up for sensitive

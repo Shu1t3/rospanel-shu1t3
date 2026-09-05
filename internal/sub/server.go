@@ -1,6 +1,9 @@
 package sub
 
 import (
+	"fmt"
+
+	"github.com/Shu1t3/rospanel-shu1t3/internal/extsub"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 )
 
@@ -18,6 +21,12 @@ type Server struct {
 	Set    *model.Settings
 	Custom []model.Inbound
 	Access model.Access
+	// External are servers that are not ours, handed on beside this server's own
+	// lanes (model.ExtServer). They are a panel-level list, so exactly one entry
+	// carries them for the whole subscription — the master where it survived the
+	// ordering, otherwise the first server that did. Nothing about the carrier
+	// reaches the output: an external server renders from its own fields alone.
+	External []model.ExtServer
 }
 
 // allowsBuiltin / allowsInbound apply the user's access for THIS server.
@@ -25,6 +34,19 @@ func (s Server) allowsBuiltin(lane string) bool {
 	return s.Access.AllowsBuiltin(s.Set.ServerID, lane)
 }
 func (s Server) allowsInbound(id int64) bool { return s.Access.AllowsInbound(id) }
+func (s Server) allowsExt(id int64) bool     { return s.Access.AllowsExt(id) }
+
+// externalEndpoints is the external servers the user may have, in the shape the
+// format converters read.
+func (s Server) externalEndpoints() []extsub.Endpoint {
+	var out []extsub.Endpoint
+	for _, e := range s.External {
+		if e.Enabled && s.allowsExt(e.ID) {
+			out = append(out, extsub.Endpoint{Protocol: e.Protocol, Host: e.Host, Port: e.Port, Name: e.Name, Link: e.Link})
+		}
+	}
+	return out
+}
 
 // Servers pairs each settings value with its server's custom inbounds (looked up by
 // Settings.ServerID) and the requesting user's access, applied to every server.
@@ -56,4 +78,25 @@ func filterInbounds(list []model.Inbound) []model.Inbound {
 		out = append(out, in)
 	}
 	return out
+}
+
+// uniqueLabel returns name, or name with a discriminator appended, so that no two
+// entries in one profile carry the same one.
+//
+// It exists because the uniqueness the panel enforces when a name is SAVED is
+// uniqueness of the stored text, and a name may carry variables (model.RenderName)
+// that resolve per user at render time. Two different names can resolve to the same
+// string — "{left}" and "{total}" are both ∞ for an account with no quota, "{used}"
+// and "{left}" meet for one user at the moment they have spent half of theirs — and a
+// duplicate Clash node name or sing-box tag makes a client reject the WHOLE profile,
+// costing that user every server rather than one.
+//
+// The same shape NodeLinkSettings already uses for colliding server labels: keep the
+// first, discriminate the rest, never drop anything.
+func uniqueLabel(seen map[string]int, name string) string {
+	seen[name]++
+	if n := seen[name]; n > 1 {
+		return fmt.Sprintf("%s #%d", name, n)
+	}
+	return name
 }

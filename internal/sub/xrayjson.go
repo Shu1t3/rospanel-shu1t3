@@ -28,6 +28,17 @@ func XrayJSONMulti(u model.User, servers []Server, dpi model.SubDPI) string {
 	})
 }
 
+// XrayJSONWithTemplate renders each lane into the operator's own Xray config instead
+// of the panel's (legacy helper).
+func XrayJSONWithTemplate(u model.User, servers []Server, dpi model.SubDPI, template string) (string, error) {
+	return GenerateXrayJSONWithTemplate(Request{
+		User:    u,
+		Servers: servers,
+		Access:  model.UnrestrictedAccess(),
+		DPI:     dpi,
+	}, template)
+}
+
 // xrayConfigFromLink turns one share link into a complete client config: local
 // SOCKS/HTTP inbounds on the ports every Xray app expects, the proxy outbound, the
 // optional fragment/noise dialer, direct and block, and a routing block that keeps

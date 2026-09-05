@@ -666,6 +666,13 @@ type Settings struct {
 	// HopInterval is the port-hopping rotation interval in seconds ("min-max"),
 	// embedded in the Hysteria2 share link's quicParams.
 	HopInterval string `json:"-"`
+	// HysteriaObfs is the Salamander pre-shared key for the built-in Hysteria2 lane
+	// (empty ⇒ no obfuscation). Salamander XORs every UDP datagram with
+	// BLAKE2b-256(psk‖salt), so what leaves the host stops looking like a QUIC
+	// handshake — the one thing a DPI box can fingerprint about Hysteria2 before any
+	// traffic flows. Both ends must carry the same key, so it is embedded in every
+	// share link and profile the panel hands out. See ValidObfsPassword.
+	HysteriaObfs string `json:"-"`
 
 	// Per-protocol toggles for the Connections panel. A disabled protocol drops
 	// out of user subscriptions/share links and its clients are removed from the
@@ -712,14 +719,20 @@ type Settings struct {
 	Timezone  string `json:"-"`
 
 	// Subscription delivery settings (Settings → Subscriptions).
-	SubPath           string `json:"-"` // public subscription URL prefix /<sub_path>/<token>
-	SubBase64         bool   `json:"-"` // base64-encode the universal link list
-	SubNameInTitle    bool   `json:"-"` // append the user name to Profile-Title / group name
-	SubTitle          string `json:"-"` // profile title base (empty ⇒ the brand name)
-	SubRouting        bool   `json:"-"` // attach auto-routing headers
-	SubRoutingHapp    string `json:"-"` // Happ routing config URL
-	SubRoutingIncy    string `json:"-"` // INCY routing config URL
-	SubRoutingMihomo  string `json:"-"` // Mihomo (Clash Meta) routing config URL
+	SubPath          string `json:"-"` // public subscription URL prefix /<sub_path>/<token>
+	SubBase64        bool   `json:"-"` // base64-encode the universal link list
+	SubNameInTitle   bool   `json:"-"` // append the user name to Profile-Title / group name
+	SubTitle         string `json:"-"` // profile title base (empty ⇒ the brand name)
+	SubRouting       bool   `json:"-"` // attach auto-routing headers
+	SubRoutingHapp   string `json:"-"` // Happ routing config URL
+	SubRoutingIncy   string `json:"-"` // INCY routing config URL
+	SubRoutingMihomo string `json:"-"` // Mihomo (Clash Meta) routing config URL
+	// Operator-editable profile templates, one per format (empty ⇒ the generated
+	// profile). See internal/sub/template.go for the placeholders and why the shape is
+	// "your document, our proxies" rather than a template language.
+	SubTplClash       string `json:"-"`
+	SubTplSingBox     string `json:"-"`
+	SubTplXray        string `json:"-"`
 	SubUpdateInterval int    `json:"-"` // subscription auto-update interval (hours)
 	// SubShowConfigs renders the "individual configs" card on the page — the raw
 	// share link of every lane, each with a copy button. On by default (that is what
@@ -1017,6 +1030,11 @@ const (
 	AdminEventAbuse         int64 = 1 << 7 // a user's traffic hit a threat/piracy/gambling list
 	AdminEventProbe         int64 = 1 << 8 // daily summary of IPs scanning for the hidden panel
 	AdminEventLogin         int64 = 1 << 9 // an admin signed in from an address they had not used before
+	// AdminEventNodeTraffic fires when a server reaches the traffic cap the operator
+	// set for it, and again when the period rolls over and it has room. Its own flag
+	// rather than riding XrayDown: nothing is down, the bill is what is at risk, and
+	// an operator who muted outage noise still wants to hear about overage.
+	AdminEventNodeTraffic int64 = 1 << 10
 )
 
 // AdminEventCatalog is the stable key→flag mapping the settings API/UI iterate
@@ -1035,6 +1053,7 @@ var AdminEventCatalog = []struct {
 	{"abuse", AdminEventAbuse},
 	{"probe", AdminEventProbe},
 	{"login", AdminEventLogin},
+	{"node_traffic", AdminEventNodeTraffic},
 }
 
 // AdminEventEnabled reports whether the given AdminEvent* flag is enabled.
@@ -1418,11 +1437,17 @@ func (s *Settings) BuiltinLaneLabels() []string {
 	return out
 }
 
-// ProtoLabel returns the display name for a protocol constant (ProtoVLESS, …):
-// the admin-configured custom name when set, otherwise the constant itself. Used
-// for the share-link node label and the sing-box/Clash node tag. A nil receiver
-// falls back to the constant so link builders stay safe.
-func (s *Settings) ProtoLabel(proto string) string {
+// ProtoLabel is ProtoLabelFor with no user in hand — the surfaces that list lanes as
+// things rather than as one person's connections (the access-group editor). Any
+// user-dependent variable in the name renders as NameUnknown there.
+func (s *Settings) ProtoLabel(proto string) string { return s.ProtoLabelFor(proto, nil) }
+
+// ProtoLabelFor returns the display name for a protocol constant (ProtoVLESS, …):
+// the admin-configured custom name when set, otherwise the constant itself, with any
+// name variables expanded against this user and this server. Used for the share-link
+// node label and the sing-box/Clash node tag. A nil receiver falls back to the
+// constant so link builders stay safe.
+func (s *Settings) ProtoLabelFor(proto string, u *User) string {
 	if s == nil {
 		return proto
 	}
@@ -1441,12 +1466,56 @@ func (s *Settings) ProtoLabel(proto string) string {
 	if custom = strings.TrimSpace(custom); custom != "" {
 		label = custom
 	}
+	return s.decorate(label, u)
+}
+
+// DecorateName is decorate for the packages that build a name the settings do not own
+// — a custom inbound's, which lives on the inbound row. Same rules, one implementation.
+func (s *Settings) DecorateName(name string, u *User) string { return s.decorate(name, u) }
+
+// decorate expands a name's variables and adds the multi-node prefix.
+//
+// The prefix is skipped when the name places the server itself: an operator who wrote
+// "{flag} {server} VLESS" has said where the server goes, and prefixing on top of that
+// produces "Netherlands · 🇳🇱 Netherlands VLESS".
+func (s *Settings) decorate(name string, u *User) string {
+	rendered := name
+	// Resolving the timezone means reading the zone database, and this runs once per
+	// lane per server on every subscription request — so it happens only for a name
+	// that actually asks for a date. A plain name (every install that never touches
+	// this feature) does no work here at all.
+	if UsesNameVars(name) {
+		server := s.NodeLabel
+		if server == "" {
+			server = s.MasterLabel
+		}
+		rendered = RenderName(name, NameVars{
+			Server:  server,
+			Country: s.ServerPlacement.Country,
+			User:    u,
+			Loc:     s.Location(),
+		})
+	}
 	// Multi-node: prefix with the server name so a client shows "Netherlands · VLESS"
 	// — server first, then protocol.
-	if s.NodeLabel != "" {
-		return s.NodeLabel + " · " + label
+	if s.NodeLabel != "" && !HasNameVar(name, NameVarServer) {
+		return s.NodeLabel + " · " + rendered
 	}
-	return label
+	return rendered
+}
+
+// Location is the operator timezone as a *time.Location, defaulting to UTC. Only the
+// name variables need it, and they need it rarely, so it resolves on demand rather
+// than being cached on the settings value.
+func (s *Settings) Location() *time.Location {
+	if s == nil || strings.TrimSpace(s.Timezone) == "" {
+		return time.UTC
+	}
+	loc, err := time.LoadLocation(s.Timezone)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
 }
 
 // Fingerprints are the uTLS ClientHello fingerprints offered in the UI.

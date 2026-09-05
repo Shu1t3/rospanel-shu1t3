@@ -97,10 +97,14 @@ func (rt *Router) resetAdminPassword(w http.ResponseWriter, r *http.Request, id 
 	writeOK(w)
 }
 
-// deleteAdmin removes an account. The password comes in a header rather than a body:
-// DELETE bodies are the kind of thing proxies and clients feel free to drop.
 func (rt *Router) deleteAdmin(w http.ResponseWriter, r *http.Request, id int64) {
-	if !rt.verifyAdminPassword(w, r, r.Header.Get("X-Current-Password")) {
+	var req struct {
+		CurrentPassword string `json:"current_password"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if !rt.verifyAdminPassword(w, r, req.CurrentPassword) {
 		return
 	}
 	me, _ := rt.adminID(r)

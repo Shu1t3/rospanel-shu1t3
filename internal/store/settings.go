@@ -26,7 +26,7 @@ func (s *Store) GetSettings() (*model.Settings, error) {
 	var subShowConfigs, statusEn, maintenanceMode, probeDetect, watchdogEnabled int
 	var probeBlock int
 	var routingCfg, subRulesJSON, subDPIJSON string
-	var masterHideFull, awgEn, hideOffline int
+	var masterHideFull, masterHideOver, awgEn, hideOffline int
 	var awgParamsJSON, connPolicyJSON string
 	err := s.db.QueryRow(`
 		SELECT id, host, sni, tls_mode, acme_email, cert_path, key_path,
@@ -40,7 +40,7 @@ func (s *Store) GetSettings() (*model.Settings, error) {
 		       sub_update_interval, xray_dns,
 		       warp_enabled, warp_private_key, warp_public_key, warp_endpoint,
 		       warp_address_v4, warp_address_v6, warp_reserved, routing_config,
-		       vless_fp, reality_fp, hop_interval,
+		       vless_fp, reality_fp, hop_interval, hysteria_obfs,
 		       reality_enabled, reality_port, reality_dest, reality_private_key,
 		       reality_public_key, reality_short_id, reality_path,
 		       proxy_socks_enabled, proxy_socks_port,
@@ -70,7 +70,9 @@ func (s *Store) GetSettings() (*model.Settings, error) {
 		       sub_show_configs, status_enabled, status_path, sub_rules, maintenance_mode,
 		       probe_detect, watchdog_enabled, probe_block, sub_dpi,
 		       sub_order_mode, master_country, master_sort_weight, master_capacity, master_hide_when_full,
+		       master_traffic_limit, master_traffic_period, master_hide_when_over,
 		       sub_hide_offline, conn_policy,
+		       sub_tpl_clash, sub_tpl_singbox, sub_tpl_xray,
 		       awg_enabled, awg_port, awg_private_key, awg_public_key, awg_params, awg_name, awg_dns
 		FROM settings WHERE id = 1`,
 	).Scan(
@@ -85,7 +87,7 @@ func (s *Store) GetSettings() (*model.Settings, error) {
 		&st.SubUpdateInterval, &st.XrayDNS,
 		&warpEn, &st.WarpPrivateKey, &st.WarpPublicKey, &st.WarpEndpoint,
 		&st.WarpAddressV4, &st.WarpAddressV6, &st.WarpReserved, &routingCfg,
-		&st.VLESSFp, &st.RealityFp, &st.HopInterval,
+		&st.VLESSFp, &st.RealityFp, &st.HopInterval, &st.HysteriaObfs,
 		&realityEn, &st.RealityPort, &st.RealityDest, &st.RealityPrivateKey,
 		&st.RealityPublicKey, &st.RealityShortID, &st.RealityPath,
 		&proxySocksEn, &st.ProxySocksPort,
@@ -116,7 +118,10 @@ func (s *Store) GetSettings() (*model.Settings, error) {
 		&subShowConfigs, &statusEn, &st.StatusPath, &subRulesJSON, &maintenanceMode,
 		&probeDetect, &watchdogEnabled, &probeBlock, &subDPIJSON,
 		&st.SubOrderMode, &st.MasterPlacement.Country, &st.MasterPlacement.Weight,
-		&st.MasterPlacement.Capacity, &masterHideFull, &hideOffline, &connPolicyJSON,
+		&st.MasterPlacement.Capacity, &masterHideFull,
+		&st.MasterPlacement.TrafficLimit, &st.MasterPlacement.TrafficPeriod, &masterHideOver,
+		&hideOffline, &connPolicyJSON,
+		&st.SubTplClash, &st.SubTplSingBox, &st.SubTplXray,
 		&awgEn, &st.AWGPort, &st.AWGPrivateKey, &st.AWGPublicKey, &awgParamsJSON, &st.AWGName, &st.AWGDNS,
 	)
 
@@ -129,6 +134,7 @@ func (s *Store) GetSettings() (*model.Settings, error) {
 	// A blank column (pre-0059, or never saved) reads as the defaults with every
 	// switch off; a corrupt one too — the subscription must keep serving.
 	st.MasterPlacement.HideWhenFull = masterHideFull != 0
+	st.MasterPlacement.HideWhenOver = masterHideOver != 0
 	st.SubHideOffline = hideOffline != 0
 	// A blank column (pre-0063, or never saved) reads as the feature off; so does a
 	// corrupt one — a policy nobody can parse must not start refusing connections.
@@ -340,12 +346,14 @@ func (s *Store) SetAntiDPI(tlsFragment, tlsMin13, blockQUIC bool, realityMaxTime
 	return err
 }
 
-// SetHysteriaPorts persists the Hysteria2 base port, hop range, and hop interval.
-func (s *Store) SetHysteriaPorts(port, hopStart, hopEnd int, interval string) error {
+// SetHysteriaPorts persists the Hysteria2 base port, hop range, hop interval and
+// Salamander obfuscation key — the whole client-visible shape of the lane, written
+// together because a link built from half of it does not connect.
+func (s *Store) SetHysteriaPorts(port, hopStart, hopEnd int, interval, obfs string) error {
 	_, err := s.db.Exec(
 		`UPDATE settings SET hysteria_port = ?, hop_start = ?, hop_end = ?,
-		        hop_interval = ?, updated_at = unixepoch() WHERE id = 1`,
-		port, hopStart, hopEnd, interval,
+		        hop_interval = ?, hysteria_obfs = ?, updated_at = unixepoch() WHERE id = 1`,
+		port, hopStart, hopEnd, interval, obfs,
 	)
 	return err
 }
@@ -442,8 +450,21 @@ func (s *Store) SetSubSettings(st *model.Settings) error {
 func (s *Store) SetMasterPlacement(p model.Placement) error {
 	p = p.Normalized()
 	_, err := s.db.Exec(`UPDATE settings SET master_country = ?, master_sort_weight = ?, master_capacity = ?,
-		master_hide_when_full = ?, updated_at = unixepoch() WHERE id = 1`,
-		p.Country, p.Weight, p.Capacity, boolToInt(p.HideWhenFull))
+		master_hide_when_full = ?, master_traffic_limit = ?, master_traffic_period = ?,
+		master_hide_when_over = ?, updated_at = unixepoch() WHERE id = 1`,
+		p.Country, p.Weight, p.Capacity, boolToInt(p.HideWhenFull),
+		p.TrafficLimit, p.TrafficPeriod, boolToInt(p.HideWhenOver))
+	return err
+}
+
+// SetSubTemplates persists the three profile templates. Its own method, like the
+// response rules: the template editor is its own surface, and saving a renamed
+// subscription title should not rewrite a document the operator is still working on.
+func (s *Store) SetSubTemplates(clash, singbox, xray string) error {
+	_, err := s.db.Exec(
+		`UPDATE settings SET sub_tpl_clash = ?, sub_tpl_singbox = ?, sub_tpl_xray = ?,
+		        updated_at = unixepoch() WHERE id = 1`,
+		clash, singbox, xray)
 	return err
 }
 

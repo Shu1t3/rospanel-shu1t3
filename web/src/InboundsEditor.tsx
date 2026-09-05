@@ -34,6 +34,7 @@ import {
   TextInput,
 } from "./ui";
 import { AwgEditor } from "./AwgEditor";
+import { NameVarsHint } from "./namevars";
 
 // Labels for the wire values, so the UI never shows a bare protocol slug.
 const PROTOCOL_LABELS: Record<string, string> = {
@@ -99,6 +100,8 @@ export const blank = (): InboundInput => ({
   hop_start: 0,
   hop_end: 0,
   hop_interval: "5-10",
+  obfs: "",
+  regen_obfs: false,
   header_type: "",
   header_hosts: [],
   header_paths: [],
@@ -132,6 +135,10 @@ export function toInput(v: Inbound): InboundInput {
     hop_start: o.hop_start ?? 0,
     hop_end: o.hop_end ?? 0,
     hop_interval: o.hop_interval || "5-10",
+    obfs: o.obfs ?? "",
+    // Never carried back from a stored inbound: regenerating is a fresh decision each
+    // time the form is opened, not a sticky flag.
+    regen_obfs: false,
     header_type: o.header_type ?? "",
     header_hosts: o.header_hosts ?? [],
     header_paths: (o.header_paths ?? []).map((p) => p.replace(/^\/+/, "")),
@@ -892,6 +899,7 @@ export function InboundForm({
       <p className="-mt-1 text-xs text-ink-muted">
         {t("inb.nameHint")}
       </p>
+      <NameVarsHint onInsert={(x) => set("name", (v.name + " " + x).trim())} />
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <Select
@@ -1073,6 +1081,38 @@ export function InboundForm({
           <p className="text-xs text-ink-muted">
             {t("inb.hopHint")}
           </p>
+          {/* Salamander: shared with the client, so it is shown, not masked — but read
+              only. The key is minted by the server on save (regen_obfs), never typed,
+              the same way this inbound's REALITY material is. */}
+          <div className="flex flex-col gap-1">
+            <span className="text-sm text-ink-muted">{t("conn.obfs")}</span>
+            <code className="block break-all rounded border border-gray-200 bg-white/60 px-2 py-1 font-mono text-xs text-ink">
+              {v.regen_obfs ? t("conn.obfsWillRegen") : v.obfs || t("conn.obfsOff")}
+            </code>
+          </div>
+          <div className="flex items-center gap-2">
+            <p className="flex-1 text-xs text-ink-muted">{t("conn.obfsHint")}</p>
+            <Button
+              variant="subtle"
+              size="xs"
+              color={v.regen_obfs ? "orange" : "gray"}
+              onClick={() => set("regen_obfs", !v.regen_obfs)}
+            >
+              {t("conn.obfsGenerate")}
+            </Button>
+            {(v.obfs !== "" || v.regen_obfs) && (
+              <Button
+                variant="subtle"
+                size="xs"
+                onClick={() => {
+                  set("obfs", "");
+                  set("regen_obfs", false);
+                }}
+              >
+                {t("conn.obfsDisable")}
+              </Button>
+            )}
+          </div>
         </div>
       )}
 

@@ -334,26 +334,34 @@ func PageWithSources(u model.User, set *model.Settings, servers []Server, ext []
 		s := srv.Set
 		if s.AWGEnabled && s.AWGPort != 0 && srv.allowsBuiltin(model.LaneAWG) {
 			awgCards = append(awgCards, awgCard{
-				Label:   s.ProtoLabel(model.ProtoAWG),
+				Label:   s.ProtoLabelFor(model.ProtoAWG, &u),
 				ConfURL: AWGConfURL(s, u.SubToken, s.ServerID),
 				QRURL:   fmt.Sprintf("%s/awg/%d.png", subURL, s.ServerID),
 			})
 		}
 		if s.VLESSEnabled && srv.allowsBuiltin(model.LaneVLESS) {
-			protoLinks = append(protoLinks, protoLink{s.ProtoLabel(model.ProtoVLESS), link.VLESS(u, s)})
+			protoLinks = append(protoLinks, protoLink{s.ProtoLabelFor(model.ProtoVLESS, &u), link.VLESS(u, s)})
 		}
 		if s.RealityEnabled && s.RealityPublicKey != "" && srv.allowsBuiltin(model.LaneReality) {
-			protoLinks = append(protoLinks, protoLink{s.ProtoLabel(model.ProtoReality), link.Reality(u, s)})
+			protoLinks = append(protoLinks, protoLink{s.ProtoLabelFor(model.ProtoReality, &u), link.Reality(u, s)})
 		}
 		if s.HysteriaEnabled && srv.allowsBuiltin(model.LaneHysteria) {
-			protoLinks = append(protoLinks, protoLink{s.ProtoLabel(model.ProtoHysteria), link.Hysteria2(u, s)})
+			protoLinks = append(protoLinks, protoLink{s.ProtoLabelFor(model.ProtoHysteria, &u), link.Hysteria2(u, s)})
 		}
 		for _, in := range srv.Custom {
 			if !srv.allowsInbound(in.ID) {
 				continue
 			}
 			if l := link.Custom(u, in, s); l != "" {
-				protoLinks = append(protoLinks, protoLink{link.CustomLabel(in, s), l})
+				protoLinks = append(protoLinks, protoLink{link.CustomLabelFor(in, u, s), l})
+			}
+		}
+	}
+	if len(ext) == 0 {
+		for _, srv := range servers {
+			if len(srv.External) > 0 {
+				ext = append(ext, srv.External...)
+				access = srv.Access
 			}
 		}
 	}

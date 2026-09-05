@@ -23,8 +23,8 @@ func SingBoxJSON(u model.User, set *model.Settings) string {
 // unambiguous.
 func singboxProxies(u model.User, srv Server) (proxies []any, tags []string) {
 	set := srv.Set
-	nV := link.Label(model.ProtoVLESS, set)
-	nH := link.Label(model.ProtoHysteria, set)
+	nV := link.LabelFor(model.ProtoVLESS, u, set)
+	nH := link.LabelFor(model.ProtoHysteria, u, set)
 	insecure := set.TLSInsecure // true only for a self-signed/IP cert
 
 	vless := map[string]any{
@@ -48,6 +48,7 @@ func singboxProxies(u model.User, srv Server) (proxies []any, tags []string) {
 		hy2["hop_interval"] = "10s"
 		delete(hy2, "server_port")
 	}
+	singboxObfs(hy2, set.HysteriaObfs)
 
 	// Anti-DPI shaping of the generated config (client-side only; no server change).
 	// ClientHello fragmentation (sing-box ≥1.12) defeats stateless SNI inspection on
@@ -113,7 +114,7 @@ func singboxCustom(u model.User, in model.Inbound, set *model.Settings) (map[str
 		return nil, "", false
 	}
 	o := in.Opts
-	tag := link.CustomLabel(in, set)
+	tag := link.CustomLabelFor(in, u, set)
 
 	if in.Protocol == model.InbHysteria {
 		out := map[string]any{
@@ -129,6 +130,7 @@ func singboxCustom(u model.User, in model.Inbound, set *model.Settings) (map[str
 			out["hop_interval"] = "10s"
 			delete(out, "server_port")
 		}
+		singboxObfs(out, o.Obfs)
 		return out, tag, true
 	}
 
@@ -200,4 +202,36 @@ func SingBoxJSONMulti(u model.User, servers []Server) string {
 		Servers:  servers,
 		Access:   model.UnrestrictedAccess(),
 	})
+}
+
+// SingBoxWithTemplate renders the user's outbounds into the operator's own sing-box
+// document. {{proxies}} takes the generated outbounds, {{tags}} their tags and
+// {{group}} the profile's name — enough to write any group layout, DNS and rule set
+// on top of servers the panel still owns.
+//
+// Falls back to the generated profile whenever the template cannot produce a working
+// one: unparseable, or the user has no servers to put in it. A client that cannot
+// parse a profile drops all of it, so serving the plain one is always better than
+// serving a broken document.
+func SingBoxWithTemplate(u model.User, servers []Server, template string) (string, error) {
+	var set *model.Settings
+	if len(servers) > 0 {
+		set = servers[0].Set
+	}
+	return GenerateSingBoxWithTemplate(Request{
+		User:     u,
+		Settings: set,
+		Servers:  servers,
+		Access:   model.UnrestrictedAccess(),
+	}, template)
+}
+
+// singboxObfs adds sing-box's Salamander block to a Hysteria2 outbound, or leaves
+// it alone when the lane is not obfuscated. sing-box's implementation is wire
+// compatible with the Xray finalmask mask the server runs, so one key serves both.
+func singboxObfs(out map[string]any, obfs string) {
+	if obfs == "" {
+		return
+	}
+	out["obfs"] = map[string]any{"type": "salamander", "password": obfs}
 }

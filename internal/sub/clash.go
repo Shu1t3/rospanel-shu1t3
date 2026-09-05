@@ -52,14 +52,14 @@ func clashProxies(u model.User, srv Server) []clashProxy {
 	}
 	out := make([]clashProxy, 0, 2+len(srv.Custom))
 	if set.VLESSEnabled && srv.allowsBuiltin(model.LaneVLESS) {
-		n := link.Label(model.ProtoVLESS, set)
+		n := link.LabelFor(model.ProtoVLESS, u, set)
 		out = append(out, clashProxy{n, fmt.Sprintf(
 			"  - {name: %q, type: vless, server: %q, port: %d, uuid: %q, network: tcp, tls: true, udp: true, servername: %q, flow: xtls-rprx-vision, client-fingerprint: %s, skip-cert-verify: %s}",
 			n, set.Host, set.VLESSPort, u.UUID, set.SNI, set.VLESSFP(), sv)})
 	}
 	// No public key, no dialable lane — see ShareLinks.
 	if set.RealityEnabled && set.RealityPublicKey != "" && srv.allowsBuiltin(model.LaneReality) {
-		n := link.Label(model.ProtoReality, set)
+		n := link.LabelFor(model.ProtoReality, u, set)
 		out = append(out, clashProxy{n, fmt.Sprintf(
 			"  - {name: %q, type: vless, server: %q, port: %d, uuid: %q, network: xhttp, tls: true, udp: true, servername: %q, client-fingerprint: %s, reality-opts: {public-key: %q, short-id: %q}, xhttp-opts: {path: %q}}",
 			n, set.Host, set.RealityPort, u.UUID, set.RealitySNI(), set.RealityFP(), set.RealityPublicKey, set.RealitySID(), set.RealityPathOr())})
@@ -69,10 +69,10 @@ func clashProxies(u model.User, srv Server) []clashProxy {
 		if set.HopEnd > set.HysteriaPort {
 			hop = fmt.Sprintf(", ports: %q", fmt.Sprintf("%d-%d", model.HopAdvertised(set.HysteriaPort, set.HopStart), set.HopEnd))
 		}
-		n := link.Label(model.ProtoHysteria, set)
+		n := link.LabelFor(model.ProtoHysteria, u, set)
 		out = append(out, clashProxy{n, fmt.Sprintf(
-			"  - {name: %q, type: hysteria2, server: %q, port: %d, password: %q, sni: %q, alpn: [h3], skip-cert-verify: %s%s}",
-			n, set.Host, set.HysteriaPort, u.Password, set.SNI, sv, hop)})
+			"  - {name: %q, type: hysteria2, server: %q, port: %d, password: %q, sni: %q, alpn: [h3], skip-cert-verify: %s%s%s}",
+			n, set.Host, set.HysteriaPort, u.Password, set.SNI, sv, hop, clashObfs(set.HysteriaObfs))})
 	}
 	for _, in := range srv.Custom {
 		if !srv.allowsInbound(in.ID) {
@@ -83,6 +83,17 @@ func clashProxies(u model.User, srv Server) []clashProxy {
 		}
 	}
 	return out
+}
+
+// clashObfs renders mihomo's Salamander fields for a Hysteria2 proxy, or "" when
+// the lane is not obfuscated. %q on the key is safe rather than decorative: the key
+// is operator input, and an unquoted one would end the inline mapping early and cost
+// the user every proxy in the profile.
+func clashObfs(obfs string) string {
+	if obfs == "" {
+		return ""
+	}
+	return fmt.Sprintf(", obfs: salamander, obfs-password: %q", obfs)
 }
 
 // clashExternalProxies builds Clash proxy entries for allowed external servers.
@@ -107,7 +118,7 @@ func clashCustom(u model.User, in model.Inbound, set *model.Settings, sv string)
 		return clashProxy{}, false
 	}
 	o := in.Opts
-	n := link.CustomLabel(in, set)
+	n := link.CustomLabelFor(in, u, set)
 
 	if in.Protocol == model.InbHysteria {
 		hop := ""
@@ -115,8 +126,8 @@ func clashCustom(u model.User, in model.Inbound, set *model.Settings, sv string)
 			hop = fmt.Sprintf(", ports: %q", fmt.Sprintf("%d-%d", model.HopAdvertised(in.Port, o.HopStart), o.HopEnd))
 		}
 		return clashProxy{n, fmt.Sprintf(
-			"  - {name: %q, type: hysteria2, server: %q, port: %d, password: %q, sni: %q, alpn: [h3], skip-cert-verify: %s%s}",
-			n, set.Host, in.Port, u.Password, clashSNI(in, set), sv, hop)}, true
+			"  - {name: %q, type: hysteria2, server: %q, port: %d, password: %q, sni: %q, alpn: [h3], skip-cert-verify: %s%s%s}",
+			n, set.Host, in.Port, u.Password, clashSNI(in, set), sv, hop, clashObfs(o.Obfs))}, true
 	}
 
 	if in.Protocol == model.InbShadowsocks {
@@ -200,13 +211,32 @@ func firstShortID(o model.InboundOpts) string {
 }
 
 // clashProxiesAll concatenates a user's proxy entries across physical servers and external servers.
-// Names are unique because Settings.ProtoLabel appends the node label.
+// Names are unique because Settings.ProtoLabel appends the node label, and uniqueLabel ensures
+// lanes whose names resolve to the same variable expansion never collide.
 func clashProxiesAll(u model.User, servers []Server, ext []model.ExtServer, access model.Access) []clashProxy {
 	out := make([]clashProxy, 0, len(servers)*2+len(ext))
+	seen := map[string]int{}
 	for _, srv := range servers {
-		out = append(out, clashProxies(u, srv)...)
+		for _, p := range clashProxies(u, srv) {
+			uniq := uniqueLabel(seen, p.name)
+			if uniq != p.name {
+				// The name is the first %q-quoted field of the line, so replacing its
+				// first occurrence rewrites exactly the one that matters and leaves an
+				// SNI or a password that happens to read the same alone.
+				p.line = strings.Replace(p.line, fmt.Sprintf("%q", p.name), fmt.Sprintf("%q", uniq), 1)
+				p.name = uniq
+			}
+			out = append(out, p)
+		}
 	}
-	out = append(out, clashExternalProxies(access, ext)...)
+	for _, p := range clashExternalProxies(access, ext) {
+		uniq := uniqueLabel(seen, p.name)
+		if uniq != p.name {
+			p.line = strings.Replace(p.line, fmt.Sprintf("%q", p.name), fmt.Sprintf("%q", uniq), 1)
+			p.name = uniq
+		}
+		out = append(out, p)
+	}
 	return out
 }
 
@@ -228,6 +258,15 @@ func ClashYAMLMulti(u model.User, servers []Server) string {
 		Access:   model.UnrestrictedAccess(),
 	})
 }
+
+// The two markers a mihomo template carries. Named constants because the operator's
+// template, the validator and the injector all have to agree on them character for
+// character — a template whose marker is a space out is silently served without any
+// proxies in it.
+const (
+	clashProxiesMarker = "proxies: # LEAVE THIS LINE!"
+	clashNamesMarker   = "    # LEAVE THIS LINE!"
+)
 
 // clashGroupName is the select-group name for the generated profile. Mihomo parses a
 // rule line by splitting on commas, so a comma in the operator's subscription title

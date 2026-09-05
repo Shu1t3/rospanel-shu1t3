@@ -29,7 +29,7 @@ func TestHostFirewallRules(t *testing.T) {
 	if err := st.SetProtocolEnabled("reality", true); err != nil {
 		t.Fatalf("set reality enabled: %v", err)
 	}
-	if err := st.SetHysteriaPorts(9443, 20000, 25000, "10s"); err != nil {
+	if err := st.SetHysteriaPorts(9443, 20000, 25000, "10s", ""); err != nil {
 		t.Fatalf("set hysteria ports: %v", err)
 	}
 	if err := st.SetProtocolEnabled("hysteria2", true); err != nil {

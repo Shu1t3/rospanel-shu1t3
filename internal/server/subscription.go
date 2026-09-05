@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -99,34 +100,29 @@ func handleSub(rt *Router, w http.ResponseWriter, r *http.Request, rest string) 
 		if !rt.admitDevice(w, r, *u, set) {
 			return
 		}
-		// physicalServers spans the local server plus each enabled, connected node.
-		// extServers spans external subscriptions. Both are combined independently
-		// at the subscription generator level.
-		physicalServers, access, err := rt.subPhysicalServers(set, u.ID, clientIP(r))
+		// allServers spans the local server plus each enabled, connected node, so the
+		// payload carries one entry per protocol × server (single-server = local only).
+		allServers, err := rt.subServers(set, u.ID, clientIP(r))
 		if err != nil {
 			rt.subUnavailable(w, u.ID, err)
 			return
 		}
-		extServers := rt.subExternalServers()
 		supportURL := rt.telegramSupportURL(r.Context(), set, *u)
 		setSubHeaders(w, *u, set, supportURL)
 		rt.setRoutingHeaders(w, r, set)
-		subReq := sub.Request{
-			User:     *u,
-			Settings: set,
-			Servers:  physicalServers,
-			External: extServers,
-			Access:   access,
-			DPI:      set.SubDPI,
-		}
 		switch format {
 		case "clash":
 			// Mihomo/Clash ignores the routing header — inject the routing rules
 			// straight into the YAML by merging proxies into the template.
-			body := sub.GenerateClash(subReq)
-			if set.SubRouting && strings.TrimSpace(set.SubRoutingMihomo) != "" {
+			body := sub.ClashYAMLMulti(*u, allServers)
+			// The operator's own stored template wins over the fetched one: they wrote
+			// it, and a remote URL that has quietly changed under them is exactly what
+			// storing it is meant to avoid.
+			if tpl := strings.TrimSpace(set.SubTplClash); tpl != "" {
+				body = sub.ClashWithTemplateMulti(*u, allServers, tpl)
+			} else if set.SubRouting && strings.TrimSpace(set.SubRoutingMihomo) != "" {
 				if tpl, err := rt.mgr.FetchRoutingTemplate(set.SubRoutingMihomo); err == nil {
-					body = sub.GenerateClashWithTemplate(subReq, tpl)
+					body = sub.ClashWithTemplateMulti(*u, allServers, tpl)
 				}
 			}
 			w.Header().Set("Content-Type", "text/yaml; charset=utf-8")
@@ -138,13 +134,24 @@ func handleSub(rt *Router, w http.ResponseWriter, r *http.Request, rest string) 
 			_, _ = w.Write([]byte(body))
 		case "singbox", "sing-box":
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-			_, _ = w.Write([]byte(sub.GenerateSingBox(subReq)))
+			// A template that fails here has already passed validation on save, so a
+			// failure now is worth a log line — but never worth a broken profile: the
+			// renderer hands back the generated one and the user keeps working.
+			body, err := sub.SingBoxWithTemplate(*u, allServers, set.SubTplSingBox)
+			if err != nil {
+				slog.Warn("subscription: sing-box template failed, serving the generated profile", "err", err)
+			}
+			_, _ = w.Write([]byte(body))
 		case model.SubActionXrayJSON, "xray", "json":
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-			_, _ = w.Write([]byte(sub.GenerateXrayJSON(subReq)))
+			body, err := sub.XrayJSONWithTemplate(*u, allServers, set.SubDPI, set.SubTplXray)
+			if err != nil {
+				slog.Warn("subscription: xray template failed, serving the generated profile", "err", err)
+			}
+			_, _ = w.Write([]byte(body))
 		default:
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			links := sub.GenerateShareLinks(subReq)
+			links := sub.ShareLinksAll(*u, allServers)
 			var body string
 			if set.SubBase64 {
 				body = sub.Base64Payload(links)
@@ -493,20 +500,15 @@ func (rt *Router) servePage(w http.ResponseWriter, u model.User, set *model.Sett
 	// A required HWID means the browser cannot fetch the machine payload — so the
 	// page must not offer a download button that answers 403 to its own owner.
 	showDownload := !(set.HWIDEnabled && set.HWIDRequire)
-	servers, access, err := rt.subPhysicalServers(set, u.ID, clientIP)
+	servers, err := rt.subServers(set, u.ID, clientIP)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errSubUnavailable, err)
 	}
-	ext := rt.subExternalServers()
-	subReq := sub.Request{
+	html, err := sub.GeneratePage(sub.Request{
 		User:     u,
 		Settings: set,
 		Servers:  servers,
-		External: ext,
-		Access:   access,
-	}
-	html, err := sub.GeneratePage(subReq, rt.buildBilling(u, set, lang),
-		rt.buildDevices(u, set, lang), showDownload, lang)
+	}, rt.buildBilling(u, set, lang), rt.buildDevices(u, set, lang), showDownload, lang)
 	if err != nil {
 		return err
 	}

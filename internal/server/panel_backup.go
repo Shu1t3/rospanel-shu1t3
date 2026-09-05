@@ -48,13 +48,13 @@ func (rt *Router) factoryReset(w http.ResponseWriter, r *http.Request) {
 	// Re-authenticate. This wipes every user, the admin roster, the TLS identity and the
 	// secret path, with no undo — a stolen session cookie must not be enough on its own.
 	// Changing a payment key already re-prompts; this is strictly more destructive.
-	var req struct {
-		CurrentPassword string `json:"current_password"`
-	}
+	var req stepUpBody
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if !rt.verifyStepUp(w, r, req.CurrentPassword) {
+	// The second factor too, when this admin has one: there is no restore path after
+	// this, so a stolen session plus a reused password must not be able to reach it.
+	if !rt.verifyStepUpTOTP(w, r, req.CurrentPassword, req.Code) {
 		return
 	}
 	for _, name := range []string{"rospanel.db", "rospanel.db-wal", "rospanel.db-shm"} {

@@ -154,6 +154,12 @@ type InboundOpts struct {
 	HopEnd      int    `json:"hop_end,omitempty"`
 	HopInterval string `json:"hop_interval,omitempty"`
 
+	// Obfs is the Hysteria2 Salamander pre-shared key (empty ⇒ no obfuscation).
+	// Client and server must agree on it, so it rides in the share link and in every
+	// generated profile. See ValidObfsPassword for the shape and Settings.HysteriaObfs
+	// for the built-in lane's equivalent.
+	Obfs string `json:"obfs,omitempty"`
+
 	// VLESS Encryption (Xray's post-quantum handshake, `xray vlessenc`). Reserved:
 	// nothing generates it yet, but current Xray deprecates VLESS-without-flow and
 	// points at this as the migration, so the field exists to avoid re-migrating
@@ -294,16 +300,22 @@ func validateJSONObject(blob json.RawMessage, allowed map[string]bool, label str
 // between them would let one surface accept what the other rejects.
 //
 // It is an allowlist, and what it keeps out is the punctuation that would break the
-// documents the name is embedded in: quotes, colons and braces. Emoji are none of
+// documents the name is embedded in: quotes and colons. Braces are IN, because a name
+// may carry the variables in nametmpl.go ("{flag} {left}") — they are expanded before
+// the name reaches any document, and a brace that survives (an unknown variable, kept
+// verbatim on purpose) is escaped by every surface that renders it. The middle dot is
+// in for the same reason: it is the separator the panel's own "<server> · <lane>"
+// prefix uses, so a name that places {server} itself has to be able to spell it. Emoji are none of
 // those and are explicitly in — a flag is how an operator labels a location, and
 // every format the name reaches handles it (Clash quotes with %q, sing-box goes
 // through encoding/json, and a share link percent-escapes its fragment).
 //
-// Flags are the reason for the ranges below: one is a PAIR of regional indicator
+// Unicode property escapes (\p{L}, \p{N}) cover letters and numbers in every script;
+// emoji are more complicated. The pictographs proper are "other" punctuation and
 // symbols, which are category So, and the rest of the emoji machinery — skin tones,
 // ZWJ sequences, variation selectors — is spread across categories that \p{So}
 // alone does not cover.
-var LaneNameRe = regexp.MustCompile(`^[\p{L}\p{N} _.()\-` +
+var LaneNameRe = regexp.MustCompile(`^[\p{L}\p{N} _.(){}·\-` +
 	`\p{So}` + // emoji proper, and both halves of a flag
 	`\x{1F3FB}-\x{1F3FF}` + // skin-tone modifiers (category Sk)
 	`\x{200D}\x{FE0E}\x{FE0F}\x{20E3}` + // ZWJ, variation selectors, keycap
@@ -505,6 +517,24 @@ func (o InboundOpts) HopIntervalOr() string {
 	return o.HopInterval
 }
 
+// Salamander obfuscation key limits. The floor is well above Xray's own 4-byte
+// minimum: the key is the only thing standing between a probe and a recognisable
+// QUIC handshake, and four characters is guessable. The charset is deliberately
+// URL- and JSON-safe — the key is carried in a share-link query parameter and inside
+// the link's double-encoded finalmask blob, so a quote or an ampersand there would
+// corrupt the link rather than fail loudly.
+const (
+	ObfsMinLen = 8
+	ObfsMaxLen = 64
+)
+
+var obfsRe = regexp.MustCompile(`^[A-Za-z0-9._~-]+$`)
+
+// ValidObfsPassword reports whether s is usable as a Salamander pre-shared key.
+func ValidObfsPassword(s string) bool {
+	return len(s) >= ObfsMinLen && len(s) <= ObfsMaxLen && obfsRe.MatchString(s)
+}
+
 // Normalize fills in the derivable defaults and canonicalizes free-text fields, so
 // Validate and the generators see one shape regardless of what the UI submitted.
 // Called before Validate on every write.
@@ -532,6 +562,7 @@ func (in *Inbound) Normalize() {
 		if o.HopInterval == "" && o.HopEnd > in.Port {
 			o.HopInterval = "5-10"
 		}
+		o.Obfs = strings.TrimSpace(o.Obfs)
 		return
 	}
 
@@ -595,8 +626,8 @@ func (in *Inbound) Normalize() {
 	o.XHTTPExtra = dropEmptyJSON(o.XHTTPExtra)
 	o.Sockopt = dropEmptyJSON(o.Sockopt)
 	o.TLSExtra = dropEmptyJSON(o.TLSExtra)
-	// Hop fields belong to Hysteria2 only.
-	o.HopStart, o.HopEnd, o.HopInterval = 0, 0, ""
+	// Hop and obfuscation fields belong to Hysteria2 only.
+	o.HopStart, o.HopEnd, o.HopInterval, o.Obfs = 0, 0, "", ""
 }
 
 // VisionFlowName is the VLESS flow used for raw-TCP Vision. It duplicates
@@ -615,7 +646,7 @@ func (in *Inbound) Validate() error {
 		return fieldErr("err.inboundNameTooLong2", "название подключения не длиннее 32 символов")
 	}
 	if !LaneNameRe.MatchString(in.Name) {
-		return fieldErr("err.inboundNameCharset2", "недопустимое название {{name}} (буквы, цифры, эмодзи, пробел, . _ - ( ))", map[string]any{"name": in.Name})
+		return fieldErr("err.inboundNameCharset2", "недопустимое название {{name}} (буквы, цифры, эмодзи, переменные в фигурных скобках, пробел, . _ - ( ) ·)", map[string]any{"name": in.Name})
 	}
 	if lower := strings.ToLower(in.Name); lower == "auto" || lower == "direct" {
 		return fieldErr("err.inboundNameReserved", "название {{name}} зарезервировано — выберите другое", map[string]any{"name": in.Name})
@@ -648,6 +679,10 @@ func (in *Inbound) Validate() error {
 			if o.HopInterval != "" && !inboundHopRe.MatchString(o.HopInterval) {
 				return fieldErr("err.badHopInterval", "неверный интервал хопа (нужно «N-M», напр. 5-10)")
 			}
+		}
+		if o.Obfs != "" && !ValidObfsPassword(o.Obfs) {
+			return fieldErr("err.badObfsPassword", "пароль обфускации: {{min}}–{{max}} символов, латиница, цифры и .~_-",
+				map[string]any{"min": ObfsMinLen, "max": ObfsMaxLen})
 		}
 		return nil
 	}

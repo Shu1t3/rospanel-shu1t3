@@ -70,6 +70,11 @@ type nodeAlertState struct {
 	// server, so the alarm doesn't repeat on every sweep and the all-clear only fires
 	// for an alert they actually saw.
 	diskLowAlerted bool
+
+	// trafficAlerted records that admins were told this server reached its traffic
+	// cap, so they are told once per crossing rather than once per sweep — and get an
+	// all-clear only for an alarm they actually saw.
+	trafficAlerted bool
 }
 
 // nodeAlertMsg is one pending message: which admin-event category gates it and the
@@ -87,6 +92,10 @@ func (m *Manager) nodeWatchLoop() {
 	defer t.Stop()
 	for {
 		m.SweepNodeAlerts()
+		// Per-server traffic caps ride the same tick: the question is the same shape
+		// (compare a server against a threshold, tell admins once per crossing) and the
+		// answer is a SUM the subscription path must not be paying for per request.
+		m.refreshNodeTraffic()
 		<-t.C
 		// The status page's history rides this tick: it needs the same "is each server
 		// up" question the sweep just answered, on the same cadence, and a second timer
@@ -339,6 +348,15 @@ func (m *Manager) pruneNodeAlerts(live map[int64]struct{}) {
 	m.nodeAlertMu.Lock()
 	defer m.nodeAlertMu.Unlock()
 	for id := range m.nodeAlerts {
+		// The master is always live — it is the panel — and it is never in the node
+		// list the sweep builds `live` from. Pruning it would drop every flag recording
+		// what admins were already told about this server, so the next sweep would tell
+		// them again: an alarm every minute for a condition that has not changed. It
+		// used to be saved by localDiskAlertMsg inserting itself into `live`, which
+		// only runs when the host sampler exists; the rule belongs here instead.
+		if id == model.LocalNodeID {
+			continue
+		}
 		if _, ok := live[id]; !ok {
 			delete(m.nodeAlerts, id)
 		}
