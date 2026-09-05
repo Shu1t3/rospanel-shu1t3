@@ -207,6 +207,9 @@ type TariffPlan struct {
 	DataLimit   int64  `json:"data_limit"`
 	DeviceLimit int    `json:"device_limit"`
 	SpeedLimit  int    `json:"speed_limit"` // kbit/s, 0 = unlimited
+	// The plan's own quota-refill cycle: daily | weekly | monthly | yearly, or ""
+	// for the derived default (free: every plan duration; paid: none inside the period).
+	ResetPeriod string `json:"reset_period"`
 	SortOrder   int    `json:"sort_order"`
 	Enabled     bool   `json:"enabled"`
 	// GroupIDs are the access groups this plan grants: whoever is put on the plan is
@@ -214,6 +217,18 @@ type TariffPlan struct {
 	// and what every pre-existing plan has) means the plan says nothing about access —
 	// the user keeps whatever groups they were given by hand.
 	GroupIDs []int64 `json:"group_ids"`
+}
+
+// ValidPlanResetPeriod reports whether p is an accepted tariff-level refill cycle.
+// Blank means the derived default. "none" is accepted as an alias for blank by the
+// API decoder and normalised to "" before reaching the store.
+func ValidPlanResetPeriod(p string) bool {
+	switch p {
+	case "", "daily", "weekly", "monthly", "yearly":
+		return true
+	default:
+		return false
+	}
 }
 
 // IsFree reports whether this is a free plan. A plan is free iff it has no price:

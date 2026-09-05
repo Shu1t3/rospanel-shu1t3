@@ -118,6 +118,9 @@ func TestDeadColumnsRescueLegacyPaymentKeys(t *testing.T) {
 		}
 		got[k], enabled[k] = m, en
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
 	if got["yookassa"]["secret_key"] != `live_a"b\c` || got["yookassa"]["shop_id"] != "123456" {
 		t.Errorf("the YooKassa keys were lost: %+v", got["yookassa"])
 	}

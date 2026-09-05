@@ -172,6 +172,7 @@ type tariffPlanDTO struct {
 	DataLimit   int64   `json:"data_limit"`
 	DeviceLimit int     `json:"device_limit"`
 	SpeedLimit  int     `json:"speed_limit"`
+	ResetPeriod string  `json:"reset_period"`
 	SortOrder   int     `json:"sort_order"`
 	Enabled     bool    `json:"enabled"`
 	GroupIDs    []int64 `json:"group_ids"`
@@ -194,6 +195,7 @@ func toTariffPlanDTO(p *model.TariffPlan) tariffPlanDTO {
 		DataLimit:   p.DataLimit,
 		DeviceLimit: p.DeviceLimit,
 		SpeedLimit:  p.SpeedLimit,
+		ResetPeriod: p.ResetPeriod,
 		SortOrder:   p.SortOrder,
 		Enabled:     p.Enabled,
 		GroupIDs:    groupIDs,
@@ -225,6 +227,7 @@ func fromTariffPlanDTO(d tariffPlanDTO) model.TariffPlan {
 		DataLimit:   d.DataLimit,
 		DeviceLimit: d.DeviceLimit,
 		SpeedLimit:  d.SpeedLimit,
+		ResetPeriod: d.ResetPeriod,
 		SortOrder:   d.SortOrder,
 		Enabled:     d.Enabled,
 		GroupIDs:    groupIDs,

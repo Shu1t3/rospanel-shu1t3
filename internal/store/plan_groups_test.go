@@ -30,6 +30,9 @@ func groupNamesOf(t *testing.T, st *Store, userID int64) (all []string, viaPlan 
 			viaPlan = append(viaPlan, name)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("membership rows: %v", err)
+	}
 	return all, viaPlan
 }
 

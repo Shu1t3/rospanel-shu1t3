@@ -951,6 +951,7 @@ export function Select({
   placeholder,
   className,
   id,
+  disabled,
 }: {
   label?: string
   value: string
@@ -960,6 +961,7 @@ export function Select({
   placeholder?: string
   className?: string
   id?: string
+  disabled?: boolean
 }) {
   const { t } = useTranslation()
   placeholder = placeholder ?? t('common.select')
@@ -985,10 +987,11 @@ export function Select({
         id={triggerId}
         ref={ref}
         type="button"
+        disabled={disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
-        className={cn(triggerCls, className || 'w-full')}
+        onClick={() => !disabled && setOpen((o) => !o)}
+        className={cn(triggerCls, disabled && 'cursor-not-allowed opacity-60 hover:border-gray-300', className || 'w-full')}
       >
         <span className={cn('truncate', !current && 'text-gray-400')}>
           {current ? current.label : placeholder}
