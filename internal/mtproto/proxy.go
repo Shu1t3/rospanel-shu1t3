@@ -3,6 +3,7 @@ package mtproto
 import (
 	"fmt"
 	"net"
+	"sync"
 
 	"github.com/9seconds/mtg/v2/antireplay"
 	"github.com/9seconds/mtg/v2/ipblocklist"
@@ -13,7 +14,12 @@ import (
 
 // Proxy wraps mtglib.Proxy with our memory-constrained configuration.
 type Proxy struct {
-	raw *mtglib.Proxy
+	raw       *mtglib.Proxy
+	mu        sync.Mutex
+	listener  net.Listener
+	started   bool
+	serveDone chan struct{}
+	closeOnce sync.Once
 }
 
 // NewProxy constructs an optimized mtglib.Proxy instance.
@@ -61,7 +67,10 @@ func NewProxy(cfg Config, stream mtglib.EventStream) (*Proxy, error) {
 		return nil, fmt.Errorf("init mtglib proxy: %w", err)
 	}
 
-	return &Proxy{raw: raw}, nil
+	return &Proxy{
+		raw:       raw,
+		serveDone: make(chan struct{}),
+	}, nil
 }
 
 // Serve accepts incoming connections on the listener and delegates them to mtglib.
@@ -69,12 +78,31 @@ func (p *Proxy) Serve(l net.Listener) error {
 	if p.raw == nil {
 		return fmt.Errorf("proxy not initialized")
 	}
+	p.mu.Lock()
+	p.listener = l
+	p.started = true
+	p.mu.Unlock()
+
+	defer p.closeOnce.Do(func() { close(p.serveDone) })
 	return p.raw.Serve(l)
 }
 
 // Shutdown gracefully terminates all active connections on this proxy instance.
 func (p *Proxy) Shutdown() {
-	if p.raw != nil {
-		p.raw.Shutdown()
+	if p.raw == nil {
+		return
 	}
+	p.mu.Lock()
+	started := p.started
+	ln := p.listener
+	p.mu.Unlock()
+
+	if started {
+		if ln != nil {
+			_ = ln.Close()
+		}
+		<-p.serveDone
+	}
+
+	p.raw.Shutdown()
 }
