@@ -91,12 +91,21 @@ func (m *Manager) nodeWatchLoop() {
 	t := time.NewTicker(nodeWatchInterval)
 	defer t.Stop()
 	for {
+		select {
+		case <-m.done:
+			return
+		default:
+		}
 		m.SweepNodeAlerts()
 		// Per-server traffic caps ride the same tick: the question is the same shape
 		// (compare a server against a threshold, tell admins once per crossing) and the
 		// answer is a SUM the subscription path must not be paying for per request.
 		m.refreshNodeTraffic()
-		<-t.C
+		select {
+		case <-m.done:
+			return
+		case <-t.C:
+		}
 		// The status page's history rides this tick: it needs the same "is each server
 		// up" question the sweep just answered, on the same cadence, and a second timer
 		// asking it again would only add writes.
@@ -111,9 +120,14 @@ func (m *Manager) nodeWatchLoop() {
 // SweepNodeAlerts compares every node's current state against what admins were last
 // told and sends the differences.
 func (m *Manager) SweepNodeAlerts() {
+	if m.isClosed() {
+		return
+	}
 	nodes, err := m.store.ListNodes()
 	if err != nil {
-		logErr("node alerts: cannot list nodes", "err", err)
+		if !m.isClosed() {
+			logErr("node alerts: cannot list nodes", "err", err)
+		}
 		return
 	}
 	// The master's own figures are read here rather than deep inside: Sampler reports

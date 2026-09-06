@@ -25,12 +25,24 @@ func (m *Manager) healthLoop() {
 	t := time.NewTicker(laneHealthInterval)
 	defer t.Stop()
 	for {
+		select {
+		case <-m.done:
+			return
+		default:
+		}
 		m.probeLanes()
-		<-t.C
+		select {
+		case <-m.done:
+			return
+		case <-t.C:
+		}
 	}
 }
 
 func (m *Manager) probeLanes() {
+	if m.isClosed() {
+		return
+	}
 	set, err := m.store.GetSettings()
 	if err != nil {
 		return

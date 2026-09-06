@@ -27,6 +27,7 @@ func nodeAPITestServer(t *testing.T) (http.Handler, *core.Manager, *store.Store)
 	t.Cleanup(func() { st.Close() })
 	sup := xray.NewSupervisor("", filepath.Join(dir, "config.json"), dir)
 	mgr := core.New(st, sup, xray.Options{PanelDest: "127.0.0.1:8080"}, core.TLSPaths{}, dir)
+	t.Cleanup(func() { mgr.Close() })
 	h, err := New(mgr, "secretpath", "nginx", dir)
 	if err != nil {
 		t.Fatalf("router: %v", err)

@@ -165,6 +165,9 @@ func (m *Manager) seedNodeProxies() {
 // the same timer as RefreshProxies. Nodes with no lanes (disabled, or lanes removed)
 // have their cache dropped and are woken so their config loses the stale endpoints.
 func (m *Manager) RefreshNodeProxies() {
+	if m.isClosed() {
+		return
+	}
 	nodes, err := m.store.ListNodes()
 	if err != nil {
 		return
@@ -231,6 +234,9 @@ func (m *Manager) SeedProxies() {
 // RefreshProxies reloads the pool from current settings and reconciles if it
 // changed. Runs on a timer and right after the routing config is saved.
 func (m *Manager) RefreshProxies() {
+	if m.isClosed() {
+		return
+	}
 	set, err := m.store.GetSettings()
 	if err != nil {
 		return
@@ -252,10 +258,18 @@ func (m *Manager) proxyLoop() {
 	for {
 		d := m.currentProxyRefresh()
 		if d <= 0 {
-			time.Sleep(defaultProxyRefresh)
-			continue
+			d = defaultProxyRefresh
 		}
-		time.Sleep(d)
+		timer := time.NewTimer(d)
+		select {
+		case <-m.done:
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		if m.isClosed() {
+			return
+		}
 		if m.currentProxyRefresh() > 0 {
 			m.RefreshProxies()
 			m.RefreshNodeProxies()

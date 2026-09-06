@@ -30,6 +30,11 @@ func (m *Manager) shaperLoop() {
 	t := time.NewTicker(shaperInterval)
 	defer t.Stop()
 	for {
+		select {
+		case <-m.done:
+			return
+		default:
+		}
 		m.ApplyShaping()
 		select {
 		case <-m.done:
@@ -53,12 +58,14 @@ func (m *Manager) shaperLoop() {
 // the machine it runs on — nor crash for lack of one, which is what a nil applier
 // does on Linux, where Apply gets past its non-Linux early return.
 func (m *Manager) ApplyShaping() {
-	if m.shaper == nil {
+	if m.shaper == nil || m.isClosed() {
 		return
 	}
 	targets, err := m.store.ShapedUsers(time.Now().Add(-shaperWindow).Unix())
 	if err != nil {
-		logErr("shaper: cannot read capped users", "err", err)
+		if !m.isClosed() {
+			logErr("shaper: cannot read capped users", "err", err)
+		}
 		return
 	}
 	rules := make([]shaper.Rule, 0, len(targets))
@@ -107,7 +114,7 @@ func (m *Manager) SetUserSpeedLimit(ctx context.Context, id int64, kbps int) err
 	m.audit(ctx, id, model.EventSpeedLimit, map[string]any{"speed_limit": kbps, "was": u.SpeedLimit})
 	// A speed set by hand replaces the panel's throttle rather than layering on it.
 	m.overruleAbuseMeasure(ctx, u, model.AbuseActionThrottle)
-	go m.ApplyShaping()
+	m.runAsync(m.ApplyShaping)
 	// Nodes shape their own traffic from the limits in their sync payload, so the
 	// change has to reach them too.
 	m.TriggerUserSync()

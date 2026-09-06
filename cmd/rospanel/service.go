@@ -418,10 +418,10 @@ func runServer(dataDir string) {
 	_ = httpSrv.Shutdown(ctx)
 
 	// Wait for background workers to exit cleanly before flushing data and closing the store
+	mgr.Close()
 	bgDone := make(chan struct{})
 	go func() {
 		bgWg.Wait()
-		mgr.Wait()
 		close(bgDone)
 	}()
 	select {

@@ -33,6 +33,7 @@ func apiTestRouter(t *testing.T) (*Router, *store.Store) {
 	t.Cleanup(func() { st.Close() })
 	sup := xray.NewSupervisor("", filepath.Join(dir, "config.json"), dir)
 	mgr := core.New(st, sup, xray.Options{PanelDest: "127.0.0.1:8080"}, core.TLSPaths{}, dir)
+	t.Cleanup(func() { mgr.Close() })
 	return &Router{mgr: mgr, dataDir: dir}, st
 }
 

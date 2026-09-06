@@ -19,7 +19,7 @@ func TestSaveSubSettingsCollisionValidation(t *testing.T) {
 
 	sup := xray.NewSupervisor("", filepath.Join(dir, "config.json"), dir)
 	mgr := New(st, sup, xray.Options{}, TLSPaths{}, dir)
-	t.Cleanup(func() { close(mgr.done) })
+	t.Cleanup(func() { mgr.Close() })
 
 	// Seed settings with distinct paths
 	cur, err := st.GetSettings()

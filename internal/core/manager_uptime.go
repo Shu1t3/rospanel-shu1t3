@@ -18,11 +18,16 @@ import (
 // self-evident (nothing serves the page), while Xray being down is the outage a
 // customer would notice and the operator would be asked about.
 func (m *Manager) SampleUptime() {
+	if m.isClosed() {
+		return
+	}
 	day := time.Now().In(m.loc()).Format("2006-01-02")
 	masterComps := m.NodeComponents(model.LocalNodeID)
 	masterUp := AggregateComponentStatus(masterComps) != "unhealthy"
 	if err := m.store.RecordUptimeSample(model.LocalNodeID, day, masterUp); err != nil {
-		logErr("uptime: sample failed", "node", model.LocalNodeID, "err", err)
+		if !m.isClosed() {
+			logErr("uptime: sample failed", "node", model.LocalNodeID, "err", err)
+		}
 		return // a failing write will fail for every node too; don't repeat it N times
 	}
 	nodes, err := m.store.ListNodes()

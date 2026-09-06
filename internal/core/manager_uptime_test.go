@@ -20,7 +20,7 @@ func uptimeManager(t *testing.T) (*Manager, *store.Store) {
 	t.Cleanup(func() { st.Close() })
 	sup := xray.NewSupervisor("", filepath.Join(dir, "config.json"), dir)
 	m := New(st, sup, xray.Options{}, TLSPaths{}, dir)
-	t.Cleanup(func() { close(m.done) })
+	t.Cleanup(func() { m.Close() })
 	return m, st
 }
 

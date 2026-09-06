@@ -183,7 +183,8 @@ type Manager struct {
 
 	// done is closed to stop background goroutines (shaperLoop, etc.) so tests that
 	// build a Manager through New can drain them before the store is closed.
-	done chan struct{}
+	done      chan struct{}
+	closeOnce sync.Once
 
 	// shaper installs the per-user speed caps on this machine; wan is the interface
 	// it acts on, resolved once (see manager_shaper.go).
@@ -305,8 +306,9 @@ type nodeLogEntry struct {
 // panel's loopback fallback dest); tls carries the managed cert paths; operaDir
 // is where the opera-proxy helper binary is downloaded/run from.
 func New(st *store.Store, sup *xray.Supervisor, opts xray.Options, tls TLSPaths, operaDir string) *Manager {
+	done := make(chan struct{})
 	m := &Manager{
-		done:             make(chan struct{}),
+		done:             done,
 		store:            st,
 		sup:              sup,
 		opts:             opts,
@@ -318,7 +320,7 @@ func New(st *store.Store, sup *xray.Supervisor, opts xray.Options, tls TLSPaths,
 		abuseAlerted:     make(map[abuseAlertKey]struct{}),
 		applied:          make(map[int64]struct{}),
 		tz:               time.Local,
-		guard:            newBruteGuard(),
+		guard:            newBruteGuard(done),
 		shaper:           shaper.New(),
 		devNotice:        newDeviceNotice(),
 		payNotice:        newNotice(6 * time.Hour),
@@ -369,17 +371,17 @@ func New(st *store.Store, sup *xray.Supervisor, opts xray.Options, tls TLSPaths,
 	m.sup.StartWatchdog() // auto-restart a wedged (alive-but-not-serving) Xray
 	// The same two alerts for the remote nodes. They have no bot of their own, and a
 	// node that stops syncing altogether can only be noticed on a timer.
-	go m.nodeWatchLoop()
-	go m.reconcileLoop()
-	go m.proxyLoop()
-	go m.geoLoop()         // auto-refresh geo databases on the operator's cadence
-	go m.ipListLoop()      // ...and the iplist lists on their own, separate cadence
-	go m.probeDigestLoop() // once-a-day summary of new secret-path scanners (opt-in)
-	go m.bruteGuardLoop()
-	go m.shaperLoop()              // per-user speed caps follow the addresses users connect from
-	go m.healthLoop()              // probe Opera/Hola lane liveness for the UI
-	m.startWebhookWorkers()        // drain the outbound-webhook delivery queue
-	go m.prewarmRoutingTemplates() // warm the routing-template cache so the first
+	m.runAsync(m.nodeWatchLoop)
+	m.runAsync(m.reconcileLoop)
+	m.runAsync(m.proxyLoop)
+	m.runAsync(m.geoLoop)         // auto-refresh geo databases on the operator's cadence
+	m.runAsync(m.ipListLoop)      // ...and the iplist lists on their own, separate cadence
+	m.runAsync(m.probeDigestLoop) // once-a-day summary of new secret-path scanners (opt-in)
+	m.runAsync(m.bruteGuardLoop)
+	m.runAsync(m.shaperLoop)              // per-user speed caps follow the addresses users connect from
+	m.runAsync(m.healthLoop)              // probe Opera/Hola lane liveness for the UI
+	m.startWebhookWorkers()               // drain the outbound-webhook delivery queue
+	m.runAsync(m.prewarmRoutingTemplates) // warm the routing-template cache so the first
 	//                                  Happ/INCY sub pull after a restart doesn't block
 	// NOTE: telegram-web-app.js is deliberately NOT prewarmed here. The cold path in
 	// TelegramWebAppSDK fetches it inline and serves it, so a warm-up would only save
@@ -572,9 +574,23 @@ func (m *Manager) signalReload() {
 }
 
 func (m *Manager) reconcileLoop() {
-	for range m.reconcileCh {
-		time.Sleep(reconcileDebounce) // let the response flush + coalesce bursts
+	for {
+		select {
+		case <-m.done:
+			return
+		case <-m.reconcileCh:
+		}
+		timer := time.NewTimer(reconcileDebounce) // let the response flush + coalesce bursts
+		select {
+		case <-m.done:
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
 		drain(m.reconcileCh)
+		if m.isClosed() {
+			return
+		}
 		// A structural change queued in this window upgrades the batch to a full
 		// reload; otherwise a live user-sync suffices.
 		if m.structuralPending.Swap(false) {
@@ -591,12 +607,18 @@ func (m *Manager) reconcileLoop() {
 // syncUsersOnce runs one live user-sync, falling back to a full reconcile on any
 // error so Xray never drifts from the DB.
 func (m *Manager) syncUsersOnce() {
+	if m.isClosed() {
+		return
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			logErr("user sync: panic recovered", "panic", r)
 		}
 	}()
 	if err := m.syncUsers(); err != nil {
+		if m.isClosed() {
+			return
+		}
 		logWarn("user sync failed, falling back to full reconcile", "err", err)
 		m.reconcileOnce()
 	}
@@ -705,12 +727,18 @@ func (m *Manager) syncUsers() error {
 // config (or store error) can't kill the loop and silently freeze all future
 // config updates.
 func (m *Manager) reconcileOnce() {
+	if m.isClosed() {
+		return
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			logErr("reconcile: panic recovered", "panic", r)
 		}
 	}()
 	if err := m.Reconcile(); err != nil {
+		if m.isClosed() {
+			return
+		}
 		logErr("reconcile failed", "err", err)
 	}
 }
@@ -732,6 +760,9 @@ func (m *Manager) Store() *store.Store { return m.store }
 // Failures are recorded in settings.last_config_error and returned. It serializes
 // with the live user-sync via applyMu.
 func (m *Manager) Reconcile() error {
+	if m.isClosed() {
+		return nil
+	}
 	m.applyMu.Lock()
 	defer m.applyMu.Unlock()
 	return m.reconcileLocked()
@@ -809,4 +840,28 @@ func (m *Manager) runAsync(fn func()) {
 // Wait blocks until all asynchronous tasks spawned via runAsync complete.
 func (m *Manager) Wait() {
 	m.bgWg.Wait()
+}
+
+// isClosed reports whether the manager has begun stopping or is already closed.
+func (m *Manager) isClosed() bool {
+	if m == nil || m.done == nil {
+		return false
+	}
+	select {
+	case <-m.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// Close stops all background loops and waits for active background tasks to finish.
+func (m *Manager) Close() {
+	if m == nil || m.done == nil {
+		return
+	}
+	m.closeOnce.Do(func() {
+		close(m.done)
+	})
+	m.Wait()
 }

@@ -163,13 +163,21 @@ func (m *Manager) enqueueWebhook(job webhookJob) {
 // startWebhookWorkers launches the delivery worker pool.
 func (m *Manager) startWebhookWorkers() {
 	for i := 0; i < webhookWorkers; i++ {
-		go m.webhookWorker()
+		m.runAsync(m.webhookWorker)
 	}
 }
 
 func (m *Manager) webhookWorker() {
-	for job := range m.webhookCh {
-		m.deliverWebhook(job)
+	for {
+		select {
+		case <-m.done:
+			return
+		case job, ok := <-m.webhookCh:
+			if !ok {
+				return
+			}
+			m.deliverWebhook(job)
+		}
 	}
 }
 
@@ -177,13 +185,18 @@ func (m *Manager) webhookWorker() {
 // next attempt after a backoff (until webhookMaxAttempts). The outcome of every
 // attempt is recorded on the endpoint for the settings UI.
 func (m *Manager) deliverWebhook(job webhookJob) {
+	if m.isClosed() {
+		return
+	}
 	status, err := m.postWebhook(job)
 	errStr := ""
 	if err != nil {
 		errStr = err.Error()
 	}
 	if e := m.store.MarkWebhookResult(job.hookID, status, errStr); e != nil {
-		logErr("webhook: record result failed", "hook", job.hookID, "err", e)
+		if !m.isClosed() {
+			logErr("webhook: record result failed", "hook", job.hookID, "err", e)
+		}
 	}
 	if err == nil {
 		return

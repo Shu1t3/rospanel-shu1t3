@@ -38,12 +38,12 @@ type bruteGuard struct {
 	ensureFailedAt time.Time
 }
 
-func newBruteGuard() *bruteGuard {
+func newBruteGuard(done <-chan struct{}) *bruteGuard {
 	g := &bruteGuard{
 		attempts: make(map[string][]time.Time),
 		banned:   make(map[string]time.Time),
 	}
-	go g.cleanupLoop()
+	go g.cleanupLoop(done)
 	return g
 }
 
@@ -161,10 +161,15 @@ func (g *bruteGuard) unban(ip string) {
 }
 
 // cleanupLoop checks every minute for expired bans and removes them.
-func (g *bruteGuard) cleanupLoop() {
+func (g *bruteGuard) cleanupLoop(done <-chan struct{}) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
-	for range ticker.C {
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+		}
 		now := time.Now()
 		cutoff := now.Add(-bruteWindow)
 		var expired []string
@@ -197,13 +202,21 @@ func (g *bruteGuard) cleanupLoop() {
 func (m *Manager) bruteGuardLoop() {
 	ch, unsub := m.sup.SubscribeLogs()
 	defer unsub()
-	for line := range ch {
-		ip := parseRejectIP(line)
-		if ip == "" {
-			continue
-		}
-		if m.guard.record(ip) {
-			go m.guard.ban(ip)
+	for {
+		select {
+		case <-m.done:
+			return
+		case line, ok := <-ch:
+			if !ok {
+				return
+			}
+			ip := parseRejectIP(line)
+			if ip == "" {
+				continue
+			}
+			if m.guard.record(ip) {
+				m.runAsync(func() { m.guard.ban(ip) })
+			}
 		}
 	}
 }

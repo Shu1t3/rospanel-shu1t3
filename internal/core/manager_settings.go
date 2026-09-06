@@ -367,7 +367,7 @@ func (m *Manager) ipListStale(maxAge time.Duration) bool { return stale(m.IPList
 // restart and a reboot doesn't reset a long timer. Sleeps first so boot stays quiet;
 // enabling the cadence refreshes promptly via SetGeoRefresh.
 func (m *Manager) geoLoop() {
-	refreshLoop("geo", m.currentGeoRefresh, m.geoStale, func() error {
+	m.refreshLoop("geo", m.currentGeoRefresh, m.geoStale, func() error {
 		_, err := m.RefreshGeo()
 		return err
 	})
@@ -378,28 +378,41 @@ func (m *Manager) geoLoop() {
 // to the geo schedule would either poll the lists too rarely or drag ~28 MB of
 // .dat files down far too often.
 func (m *Manager) ipListLoop() {
-	refreshLoop("iplist", m.currentIPListRefresh, m.ipListStale, func() error {
+	m.refreshLoop("iplist", m.currentIPListRefresh, m.ipListStale, func() error {
 		_, err := m.RefreshIPLists()
 		// The IP→ASN table is panel-only on a similar clock; refresh it on the same tick
 		// rather than giving it a cadence of its own. Best-effort — a stale ASN table
 		// still resolves, it just misses recently-reassigned ranges.
 		if e := geo.RefreshASN(m.assetDir()); e != nil {
-			logWarn("asn: auto-refresh failed", "err", e)
+			if !m.isClosed() {
+				logWarn("asn: auto-refresh failed", "err", e)
+			}
 		}
 		return err
 	})
 }
 
 // refreshLoop is the shared hourly staleness poll behind geoLoop/ipListLoop.
-func refreshLoop(what string, cadence func() time.Duration, isStale func(time.Duration) bool, refresh func() error) {
+func (m *Manager) refreshLoop(what string, cadence func() time.Duration, isStale func(time.Duration) bool, refresh func() error) {
 	for {
-		time.Sleep(time.Hour)
+		timer := time.NewTimer(time.Hour)
+		select {
+		case <-m.done:
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		if m.isClosed() {
+			return
+		}
 		d := cadence()
 		if d <= 0 || !isStale(d) {
 			continue
 		}
 		if err := refresh(); err != nil {
-			logWarn(what+": auto-refresh failed", "err", err)
+			if !m.isClosed() {
+				logWarn(what+": auto-refresh failed", "err", err)
+			}
 		} else {
 			logInfo(what+": auto-refreshed", "cadence_hours", int(d/time.Hour))
 		}
@@ -634,7 +647,7 @@ func (m *Manager) ApplyRouting(cfg model.RoutingConfig, warpEnabled, operaEnable
 	m.TriggerReconcile()
 	// Probe the helper lanes now (off the request path) so their alive/fallback
 	// status is fresh when the UI re-fetches after the Xray restart.
-	go m.probeLanes()
+	m.runAsync(m.probeLanes)
 	return nil
 }
 
@@ -1010,7 +1023,7 @@ func (m *Manager) FetchRoutingTemplate(url string) (string, error) {
 	m.tmplMu.Unlock()
 	if ok {
 		if time.Since(e.at) >= routingTmplTTL {
-			go func() { _, _ = m.fetchRoutingTemplate(url) }() // refresh in the background; serve stale now
+			m.runAsync(func() { _, _ = m.fetchRoutingTemplate(url) }) // refresh in the background; serve stale now
 		}
 		return e.body, nil
 	}
@@ -1050,11 +1063,17 @@ func (m *Manager) fetchRoutingTemplate(url string) (string, error) {
 // restart — otherwise the first Happ/INCY subscription pull would fetch
 // synchronously and could time out on a slow GitHub.
 func (m *Manager) prewarmRoutingTemplates() {
+	if m.isClosed() {
+		return
+	}
 	set, err := m.store.GetSettings()
 	if err != nil || !set.SubRouting {
 		return
 	}
 	for _, url := range []string{set.SubRoutingHapp, set.SubRoutingIncy, set.SubRoutingMihomo} {
+		if m.isClosed() {
+			return
+		}
 		if strings.TrimSpace(url) != "" {
 			_, _ = m.fetchRoutingTemplate(url)
 		}
@@ -1101,7 +1120,7 @@ func (m *Manager) TelegramWebAppSDK() ([]byte, bool) {
 		stale := time.Since(m.tgSDKAt) >= telegramSDKTTL
 		m.tgSDKMu.Unlock()
 		if stale {
-			go m.refreshTelegramSDK() // serve what we have now, refresh behind it
+			m.runAsync(m.refreshTelegramSDK) // serve what we have now, refresh behind it
 		}
 		return body, true
 	}

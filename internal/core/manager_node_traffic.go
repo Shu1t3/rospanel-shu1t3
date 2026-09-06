@@ -86,14 +86,21 @@ func (m *Manager) ServersOverTrafficLimit() map[int64]bool { return m.nodeTraffi
 // watch loop, and once at startup so the first subscription after a restart is not
 // answered from an empty cache.
 func (m *Manager) refreshNodeTraffic() {
+	if m.isClosed() {
+		return
+	}
 	set, err := m.store.GetSettings()
 	if err != nil {
-		logErr("node traffic: cannot read settings", "err", err)
+		if !m.isClosed() {
+			logErr("node traffic: cannot read settings", "err", err)
+		}
 		return
 	}
 	nodes, err := m.store.ListNodes()
 	if err != nil {
-		logErr("node traffic: cannot list nodes", "err", err)
+		if !m.isClosed() {
+			logErr("node traffic: cannot list nodes", "err", err)
+		}
 		return
 	}
 	now := time.Now().In(m.loc())

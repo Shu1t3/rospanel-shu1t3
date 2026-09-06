@@ -18,10 +18,11 @@ func TestLoginSemaphoreBlocksWhenSaturated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	defer st.Close()
+	t.Cleanup(func() { st.Close() })
 
 	sup := xray.NewSupervisor("", filepath.Join(dir, "config.json"), dir)
 	mgr := core.New(st, sup, xray.Options{}, core.TLSPaths{}, dir)
+	t.Cleanup(func() { mgr.Close() })
 
 	sem := make(chan struct{}, 1)
 	rt := &Router{

@@ -18,5 +18,7 @@ func newTestManager(t *testing.T) *Manager {
 	t.Cleanup(func() { st.Close() })
 
 	sup := xray.NewSupervisor("", filepath.Join(dir, "config.json"), dir)
-	return New(st, sup, xray.Options{}, TLSPaths{}, dir)
+	m := New(st, sup, xray.Options{}, TLSPaths{}, dir)
+	t.Cleanup(func() { m.Close() })
+	return m
 }

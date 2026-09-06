@@ -21,7 +21,7 @@ func planSpeedManager(t *testing.T) (*Manager, *store.Store) {
 	t.Cleanup(func() { st.Close() })
 	sup := xray.NewSupervisor("", filepath.Join(dir, "config.json"), dir)
 	m := New(st, sup, xray.Options{}, TLSPaths{}, dir)
-	t.Cleanup(func() { close(m.done) }) // stops background goroutines before the store is closed
+	t.Cleanup(func() { m.Close() }) // stops background goroutines before the store is closed
 	return m, st
 }
 
