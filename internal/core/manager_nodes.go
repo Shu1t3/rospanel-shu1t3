@@ -16,6 +16,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/decoy"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/logbuf"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/mtproto"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/nodeapi"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/tlsmgr"
@@ -347,6 +348,11 @@ func computeNodeFingerprint(
 	h = fnvString(h, n.ACMEProvider)
 	h = fnvString(h, n.ZeroSSLEABKID)
 	h = fnvString(h, n.ZeroSSLEABHMAC)
+	h = fnvBool(h, n.MTProto.Enabled)
+	h = fnvInt(h, n.MTProto.Port)
+	h = fnvString(h, n.MTProto.Secret)
+	h = fnvString(h, n.MTProto.Domain)
+	h = fnvInt(h, n.MTProto.MaxConns)
 	if n.Routing != nil {
 		h = fnvInt(h, len(n.Routing.Lanes))
 		for _, l := range n.Routing.Lanes {
@@ -880,6 +886,7 @@ func (m *Manager) UpdateNode(id int64, e store.NodeEdit) error {
 	if n, err := m.store.GetNode(id); err == nil && n != nil {
 		m.resolveNodeProxies(n)
 	}
+	m.InvalidateNodeDesiredCache(id)
 	m.nodes.wakeOne(id)
 	return nil
 }
@@ -1890,6 +1897,12 @@ func (m *Manager) IngestNodeSync(n *model.Node, req nodeapi.SyncRequest) (*nodea
 	m.nodeAWGRunning[n.ID] = req.AWGRunning
 	m.nodeAWGErr[n.ID] = req.AWGError
 	m.nodeComponents[n.ID] = req.NormalizedComponents(n.AWGEnabled != nil && *n.AWGEnabled)
+	if req.MTProtoSnapshot != nil {
+		if m.nodeMTProtoStats == nil {
+			m.nodeMTProtoStats = map[int64]mtproto.Snapshot{}
+		}
+		m.nodeMTProtoStats[n.ID] = *req.MTProtoSnapshot
+	}
 	m.nodeGeoMu.Unlock()
 	// The node's own TLS state, for the fleet-wide "TLS certificate" alert. Recorded
 	// here, raised by the node sweep — see manager_nodes_notify.go.

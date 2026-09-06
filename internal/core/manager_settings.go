@@ -506,12 +506,15 @@ func (m *Manager) SetMTProtoProxy(serverID int64, cfg model.MTProtoConfig) error
 		if err := m.store.SetMasterMTProto(cfg); err != nil {
 			return err
 		}
+		_ = m.syncMasterMTProto(cfg)
+		_ = EnsureHostFirewall(m.store)
 		m.TriggerReconcile()
 		return nil
 	}
 	if err := m.store.SetNodeMTProto(serverID, cfg); err != nil {
 		return err
 	}
+	m.InvalidateNodeDesiredCache(serverID)
 	m.nodes.wakeOne(serverID)
 	return nil
 }

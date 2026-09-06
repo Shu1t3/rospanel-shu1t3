@@ -232,6 +232,49 @@ func TestNodeDesiredStateHashStable(t *testing.T) {
 	}
 }
 
+func TestNodeDesiredStateMTProtoChangesHash(t *testing.T) {
+	m := nodeTestManager(t)
+	n, err := m.store.CreateNode("mt-node", "mt.example.com", "default")
+	if err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+
+	s1, err := m.NodeDesiredState(n)
+	if err != nil {
+		t.Fatalf("desired state 1: %v", err)
+	}
+	if s1.Meta.MTProtoEnabled {
+		t.Fatal("expected MTProto to be disabled initially")
+	}
+
+	cfg := model.MTProtoConfig{
+		Enabled:  true,
+		Port:     8443,
+		Secret:   "ee00112233445566778899aabbccddeeff636c6f7564666c6172652e636f6d",
+		Domain:   "cloudflare.com",
+		MaxConns: 512,
+	}
+	if err := m.SetMTProtoProxy(n.ID, cfg); err != nil {
+		t.Fatalf("SetMTProtoProxy: %v", err)
+	}
+
+	freshNode, err := m.store.GetNode(n.ID)
+	if err != nil || freshNode == nil {
+		t.Fatalf("GetNode: %v", err)
+	}
+
+	s2, err := m.NodeDesiredState(freshNode)
+	if err != nil {
+		t.Fatalf("desired state 2: %v", err)
+	}
+	if !s2.Meta.MTProtoEnabled || s2.Meta.MTProtoPort != 8443 {
+		t.Fatalf("expected MTProtoEnabled true and port 8443, got %+v", s2.Meta)
+	}
+	if s2.Hash == s1.Hash {
+		t.Fatalf("expected hash to change after enabling MTProto, got same hash %q", s1.Hash)
+	}
+}
+
 func TestIngestNodeSyncIdempotent(t *testing.T) {
 	m := nodeTestManager(t)
 	u, _ := m.store.CreateUser("u1", "uuid-u1", "pw", "tok-u1", 0, 0, 0)

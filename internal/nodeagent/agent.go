@@ -993,6 +993,11 @@ func (a *Agent) buildSyncRequest() nodeapi.SyncRequest {
 	a.mtprotoMu.Lock()
 	mtprotoOn := a.mtprotoOn
 	mtprotoSup := a.mtprotoSup
+	var mtprotoSnap *mtproto.Snapshot
+	if mtprotoOn && mtprotoSup != nil {
+		s := mtprotoSup.Snapshot()
+		mtprotoSnap = &s
+	}
 	a.mtprotoMu.Unlock()
 
 	mtprotoSt := nodeapi.StatusDisabled
@@ -1012,9 +1017,10 @@ func (a *Agent) buildSyncRequest() nodeapi.SyncRequest {
 	})
 
 	req := nodeapi.SyncRequest{
-		ConfigHash:  hash,
-		NodeVersion: version.Version,
-		XrayVersion: xrayVersion,
+		ConfigHash:      hash,
+		NodeVersion:     version.Version,
+		XrayVersion:     xrayVersion,
+		MTProtoSnapshot: mtprotoSnap,
 		// Serving, not Running: a sync that happens to land during a deliberate
 		// restart (cert renewal, config push, operator bounce) must not report the
 		// node as down for a whole poll cycle over a one-second gap.
@@ -1136,6 +1142,9 @@ func (a *Agent) applyState(st *nodeapi.NodeState) error {
 	}
 	if m.AWG != nil && m.AWG.Port > 0 {
 		nodeFWRules = append(nodeFWRules, firewall.UDPRule(m.AWG.Port, "awg"))
+	}
+	if m.MTProtoEnabled && m.MTProtoPort > 0 {
+		nodeFWRules = append(nodeFWRules, firewall.TCPRule(m.MTProtoPort, "mtproto"))
 	}
 	for _, r := range hopRanges(m) {
 		start := r.Start

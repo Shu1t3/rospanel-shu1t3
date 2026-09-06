@@ -3,6 +3,7 @@
 package core
 
 import (
+	"context"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -15,6 +16,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/ipblock"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/logbuf"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/mtproto"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/nodeapi"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/opera"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/shaper"
@@ -220,6 +222,10 @@ type Manager struct {
 	operaDir string            // dir holding the opera-proxy helper binary
 	operaSup *opera.Supervisor // runs/restarts the opera-proxy helper
 
+	mtprotoMu     sync.Mutex
+	mtprotoSup    *mtproto.Lifecycle
+	mtprotoCancel context.CancelFunc
+
 	health laneHealth // liveness of the Opera lane (probed in healthLoop)
 
 	// nodes tracks per-node wake channels so a config change wakes any held node
@@ -251,10 +257,11 @@ type Manager struct {
 	// nodeHostStats is each node's last-reported machine state (disk/RAM/guards) for
 	// its diagnostics page, under nodeGeoMu with the other "last reported" caches.
 	// Bounded by the node count; a deleted node's entry is dead weight of one struct.
-	nodeHostStats  map[int64]nodeapi.HostStats
-	nodeAWGRunning map[int64]bool
-	nodeAWGErr     map[int64]string
-	nodeComponents map[int64][]nodeapi.ComponentStatus
+	nodeHostStats    map[int64]nodeapi.HostStats
+	nodeAWGRunning   map[int64]bool
+	nodeAWGErr       map[int64]string
+	nodeComponents   map[int64][]nodeapi.ComponentStatus
+	nodeMTProtoStats map[int64]mtproto.Snapshot
 	// online is who is connected to which server right now (see manager_online.go).
 	online onlineGauge
 
@@ -337,6 +344,7 @@ func New(st *store.Store, sup *xray.Supervisor, opts xray.Options, tls TLSPaths,
 		nodeAWGRunning:   map[int64]bool{},
 		nodeAWGErr:       map[int64]string{},
 		nodeComponents:   map[int64][]nodeapi.ComponentStatus{},
+		nodeMTProtoStats: map[int64]mtproto.Snapshot{},
 		awg:              awg.New(),
 		probeBlock:       ipblock.New(ipblock.TableProbes),
 		policyBlock:      ipblock.New(ipblock.TablePolicy),
@@ -359,6 +367,9 @@ func New(st *store.Store, sup *xray.Supervisor, opts xray.Options, tls TLSPaths,
 			// Bring the helper up in the background so a cold-cache download can't
 			// stall startup; the "opera" lane falls back to direct until it's ready.
 			m.runAsync(func() { _ = m.syncOpera(true, set.OperaCountryOr(), set.OperaPortOr()) })
+		}
+		if set.MTProto.Enabled {
+			m.runAsync(func() { _ = m.syncMasterMTProto(set.MTProto) })
 		}
 	}
 	m.sup.SetOnCrash(m.onXrayCrash)             // alert admins when Xray exits unexpectedly
@@ -798,6 +809,8 @@ func (m *Manager) reconcileLocked() error {
 	m.setApplied(users)
 	logInfo("reconcile: config applied", "users", len(users))
 	m.syncAWGLocked(set, users)
+	_ = m.syncMasterMTProto(set.MTProto)
+	_ = EnsureHostFirewall(m.store)
 	return m.store.MarkConfigApplied()
 }
 
@@ -862,6 +875,16 @@ func (m *Manager) Close() {
 	}
 	m.closeOnce.Do(func() {
 		close(m.done)
+		m.mtprotoMu.Lock()
+		if m.mtprotoCancel != nil {
+			m.mtprotoCancel()
+			m.mtprotoCancel = nil
+		}
+		if m.mtprotoSup != nil {
+			_ = m.mtprotoSup.Close()
+			m.mtprotoSup = nil
+		}
+		m.mtprotoMu.Unlock()
 	})
 	m.Wait()
 }

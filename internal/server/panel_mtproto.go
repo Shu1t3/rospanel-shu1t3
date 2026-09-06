@@ -25,7 +25,7 @@ func toMTProtoProxyItem(p model.MTProtoProxy) mtprotoProxyItem {
 
 // listMTProto returns all MTProto proxies: standalone proxies plus mixed-mode nodes.
 func (rt *Router) listMTProto(w http.ResponseWriter, _ *http.Request) {
-	proxies, err := rt.mgr.Store().ListAllMTProtoProxies()
+	proxies, err := rt.mgr.ListAllMTProtoProxies()
 	if err != nil {
 		writeManagerErr(w, err)
 		return
@@ -173,6 +173,22 @@ func (rt *Router) toggleMTProto(w http.ResponseWriter, r *http.Request, id int64
 		Enabled bool `json:"enabled"`
 	}
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	if id == 0 {
+		set, err := rt.mgr.Store().GetSettings()
+		if err != nil {
+			writeManagerErr(w, err)
+			return
+		}
+		cfg := set.MTProto
+		cfg.Enabled = req.Enabled
+		if err := rt.mgr.SetMTProtoProxy(0, cfg); err != nil {
+			writeManagerErr(w, err)
+			return
+		}
+		writeOK(w)
 		return
 	}
 

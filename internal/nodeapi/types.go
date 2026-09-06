@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/awg"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/mtproto"
 )
 
 // PathPrefix is the fixed sub-path under the panel's random node-API segment, so
@@ -162,6 +163,9 @@ type SyncRequest struct {
 	// old to know the request simply omits this, which the panel reads as "couldn't
 	// check" rather than as a failure.
 	ProbeResults []PortProbeResult `json:"probe_results,omitempty"`
+
+	// MTProtoSnapshot reports live statistics from the embedded MTProto-proxy on the node.
+	MTProtoSnapshot *mtproto.Snapshot `json:"mtproto_snapshot,omitempty"`
 
 	// SyncFails is how many sync attempts failed in the last hour, as the node counts
 	// them. The panel never sees these directly — a failed long-poll still lands the

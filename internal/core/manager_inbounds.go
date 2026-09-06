@@ -725,6 +725,9 @@ func HostFirewallRules(st *store.Store) ([]firewall.Rule, error) {
 	if set.AWGEnabled && set.AWGPort > 0 {
 		rules = append(rules, firewall.UDPRule(set.AWGPort, "awg"))
 	}
+	if set.MTProto.Enabled && set.MTProto.Port > 0 {
+		rules = append(rules, firewall.TCPRule(set.MTProto.Port, "mtproto"))
+	}
 	list, err := st.EnabledInbounds(model.LocalNodeID)
 	if err != nil {
 		return nil, err

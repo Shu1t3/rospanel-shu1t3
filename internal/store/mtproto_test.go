@@ -181,7 +181,7 @@ func TestMTProtoSettingsAndNode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListAllMTProtoProxies: %v", err)
 	}
-	if len(all) != 2 {
-		t.Fatalf("expected 2 proxies (1 standalone + 1 node), got %d", len(all))
+	if len(all) != 3 {
+		t.Fatalf("expected 3 proxies (1 standalone + 1 master + 1 node), got %d", len(all))
 	}
 }

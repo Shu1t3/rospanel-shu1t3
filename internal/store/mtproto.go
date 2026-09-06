@@ -212,8 +212,39 @@ func (s *Store) ListAllMTProtoProxies() ([]model.MTProtoProxy, error) {
 		return nil, fmt.Errorf("list nodes for mtproto: %w", err)
 	}
 
+	set, err := s.GetSettings()
+	if err != nil {
+		return nil, fmt.Errorf("get settings for mtproto: %w", err)
+	}
+
 	out := make([]model.MTProtoProxy, 0, len(standalone)+len(nodes)+1)
 	out = append(out, standalone...)
+
+	if set.MTProto.Enabled {
+		host := set.Host
+		if host == "" {
+			host = set.SNI
+		}
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		var localID int64 = model.LocalNodeID
+		out = append(out, model.MTProtoProxy{
+			ID:        0,
+			NodeID:    &localID,
+			NodeName:  "Основной сервер",
+			Name:      "Основной сервер (MTProto)",
+			Host:      host,
+			Port:      set.MTProto.Port,
+			Secret:    set.MTProto.Secret,
+			Domain:    set.MTProto.Domain,
+			MaxConns:  set.MTProto.MaxConns,
+			Enabled:   set.MTProto.Enabled,
+			CreatedAt: 0,
+			LastSeen:  time.Now().Unix(),
+			Running:   true,
+		})
+	}
 
 	now := time.Now().Unix()
 	for i := range nodes {
