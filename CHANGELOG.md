@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.25.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.25.0...v2.25.1) (2026-09-06)
+
+
+### Bug Fixes
+
+* integrate embedded MTProto proxy management into core and node APIs with runtime statistics ([5efba4e](https://github.com/Shu1t3/rospanel-shu1t3/commit/5efba4e5f6842037560ec44476c712f146994154))
+
 ## [2.25.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.24.1...v2.25.0) (2026-09-06)
 
 
