@@ -27,7 +27,7 @@ func (s *Store) GetSettings() (*model.Settings, error) {
 	var abuseEn int
 	var hwidEn, hwidRequire int
 	var subShowConfigs, statusEn, maintenanceMode, probeDetect, watchdogEnabled int
-	var probeBlock int
+	var probeBlock, mtprotoEn int
 	var routingCfg, subRulesJSON, subDPIJSON string
 	var masterHideFull, masterHideOver, awgEn, hideOffline int
 	var awgParamsJSON, connPolicyJSON string
@@ -76,7 +76,8 @@ func (s *Store) GetSettings() (*model.Settings, error) {
 		       master_traffic_limit, master_traffic_period, master_hide_when_over,
 		       sub_hide_offline, conn_policy,
 		       sub_tpl_clash, sub_tpl_singbox, sub_tpl_xray,
-		       awg_enabled, awg_port, awg_private_key, awg_public_key, awg_params, awg_name, awg_dns
+		       awg_enabled, awg_port, awg_private_key, awg_public_key, awg_params, awg_name, awg_dns,
+		       mtproto_enabled, mtproto_port, mtproto_secret, mtproto_domain, mtproto_max_conns
 		FROM settings WHERE id = 1`,
 	).Scan(
 		&st.ID, &st.Host, &st.SNI, &st.TLSMode, &st.ACMEEmail, &st.CertPath, &st.KeyPath,
@@ -126,11 +127,14 @@ func (s *Store) GetSettings() (*model.Settings, error) {
 		&hideOffline, &connPolicyJSON,
 		&st.SubTplClash, &st.SubTplSingBox, &st.SubTplXray,
 		&awgEn, &st.AWGPort, &st.AWGPrivateKey, &st.AWGPublicKey, &awgParamsJSON, &st.AWGName, &st.AWGDNS,
+		&mtprotoEn, &st.MTProto.Port, &st.MTProto.Secret, &st.MTProto.Domain, &st.MTProto.MaxConns,
 	)
 
 	if err != nil {
 		return nil, err
 	}
+	st.MTProto.Enabled = mtprotoEn != 0
+	st.MTProto.Normalize()
 	if subRulesJSON != "" {
 		_ = json.Unmarshal([]byte(subRulesJSON), &st.SubRules)
 	}
@@ -764,5 +768,17 @@ func (s *Store) SaveAWGKeys(priv, pub string, params model.AWGParams) error {
 	}
 	_, err = s.db.Exec(`UPDATE settings SET awg_private_key = ?, awg_public_key = ?, awg_params = ?,
 		updated_at = unixepoch() WHERE id = 1`, encField(priv), pub, string(b))
+	return err
+}
+
+// SetMasterMTProto persists the master's embedded MTProto configuration.
+func (s *Store) SetMasterMTProto(cfg model.MTProtoConfig) error {
+	defer s.invalidateSettingsCache()
+	cfg.Normalize()
+	_, err := s.db.Exec(`
+		UPDATE settings SET mtproto_enabled = ?, mtproto_port = ?, mtproto_secret = ?,
+			mtproto_domain = ?, mtproto_max_conns = ?, updated_at = unixepoch() WHERE id = 1`,
+		boolToInt(cfg.Enabled), cfg.Port, cfg.Secret, cfg.Domain, cfg.MaxConns,
+	)
 	return err
 }

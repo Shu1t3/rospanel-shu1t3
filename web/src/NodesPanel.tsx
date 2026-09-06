@@ -31,6 +31,9 @@ import {
   type Placement,
   setNodeDNS,
   setServerProxy,
+  setServerMTProto,
+  generateMTProtoSecret,
+  type MTProtoConfig,
   setNodeEnabled,
   setNodeRouting,
   setXrayDNS,
@@ -56,6 +59,7 @@ import { InboundsEditor } from "./InboundsEditor";
 import { ServerSnapshots } from "./ServerSnapshots";
 import { canonicalDns, DnsEditor } from "./DnsEditor";
 import { ExternalServers } from "./ExternalServers";
+import { MTProtoServers } from "./MTProtoServers";
 import { helperStatus } from "./egress";
 import { fmtBytes } from "./format";
 import { decoyLabel } from "./GeneralSettings";
@@ -429,6 +433,182 @@ function ProxyListenerRow({
         </div>
         <Switch checked={enabled} onChange={onToggle} />
       </div>
+    </div>
+  );
+}
+
+function defaultMTProto(m?: MTProtoConfig): MTProtoConfig {
+  return {
+    enabled: m?.enabled ?? false,
+    port: m?.port || 8443,
+    secret: m?.secret || "",
+    domain: m?.domain || "cloudflare.com",
+    max_conns: m?.max_conns || 512,
+  };
+}
+
+function mtprotoIssue(m: MTProtoConfig): string {
+  if (!m.enabled) return "";
+  if (!m.port || m.port < 1 || m.port > 65535) return i18n.t("err.invalidPort", "Неверный порт");
+  if (!m.secret || !m.secret.trim()) return i18n.t("err.fieldRequired", "Заполните обязательные поля");
+  if (!m.domain || !m.domain.trim()) return i18n.t("err.fieldRequired", "Заполните обязательные поля");
+  return "";
+}
+
+function MTProtoEditor({
+  host,
+  value,
+  saved,
+  onChange,
+}: {
+  host: string;
+  value: MTProtoConfig;
+  saved: MTProtoConfig;
+  onChange: (cfg: MTProtoConfig) => void;
+}) {
+  const { t } = useTranslation();
+  const cur = value;
+  const base = saved;
+  const patch = (p: Partial<MTProtoConfig>) => onChange({ ...cur, ...p });
+  const [generating, setGenerating] = useState(false);
+
+  const handleGenSecret = async () => {
+    setGenerating(true);
+    try {
+      const res = await generateMTProtoSecret(cur.domain || "cloudflare.com");
+      patch({ secret: res.secret });
+    } catch (e) {
+      notifyError(errMessage(e));
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const enable = (v: boolean) => {
+    const next: Partial<MTProtoConfig> = { enabled: v };
+    if (v) {
+      if (!cur.port) next.port = 8443;
+      if (!cur.domain) next.domain = "cloudflare.com";
+      if (!cur.max_conns) next.max_conns = 512;
+      if (!cur.secret) {
+        generateMTProtoSecret(cur.domain || "cloudflare.com")
+          .then((r) =>
+            patch({
+              enabled: true,
+              port: cur.port || 8443,
+              domain: cur.domain || "cloudflare.com",
+              secret: r.secret,
+              max_conns: cur.max_conns || 512,
+            }),
+          )
+          .catch(() =>
+            patch({
+              enabled: true,
+              port: cur.port || 8443,
+              domain: cur.domain || "cloudflare.com",
+              max_conns: cur.max_conns || 512,
+            }),
+          );
+        return;
+      }
+    }
+    patch(next);
+  };
+
+  const isSavedOn = base.enabled && !!base.secret && !!base.port;
+  const readyHost = host || window.location.hostname;
+  const link = isSavedOn
+    ? `tg://proxy?server=${readyHost}&port=${base.port}&secret=${base.secret}`
+    : "";
+
+  return (
+    <div className="flex flex-col gap-3 border-t border-gray-200/70 pt-4">
+      <div>
+        <div className="flex items-center gap-2">
+          <p className="font-medium text-ink">{t("mtproto.title")}</p>
+          <Badge color="gray" size="xs">
+            {t("mtproto.mixedMode")}
+          </Badge>
+        </div>
+        <p className="mt-0.5 text-sm text-ink-muted">{t("mtproto.hint")}</p>
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-200/80 bg-white/60 px-3 py-2.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="font-medium text-ink">{t("mtproto.title")}</span>
+          {!cur.enabled && <Badge color="gray">{t("conn.off")}</Badge>}
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="text-sm text-ink-muted">{t("conn.port")}</span>
+          <div className="w-24">
+            <TextInput
+              type="number"
+              value={cur.port ? String(cur.port) : cur.enabled ? "" : "8443"}
+              onChange={(v) => patch({ port: Number(v) || 0 })}
+              placeholder="8443"
+              disabled={!cur.enabled}
+            />
+          </div>
+          <Switch checked={cur.enabled} onChange={enable} />
+        </div>
+      </div>
+
+      {cur.enabled && (
+        <div className="flex flex-col gap-3 rounded-xl border border-gray-200/80 bg-white/60 p-3">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+            <div className="min-w-0 flex-1">
+              <TextInput
+                label={t("mtproto.domain")}
+                value={cur.domain}
+                onChange={(v) => patch({ domain: v.trim() })}
+                placeholder="cloudflare.com"
+              />
+            </div>
+            <div className="w-full sm:w-36">
+              <TextInput
+                label={t("mtproto.maxConns")}
+                type="number"
+                value={cur.max_conns ? String(cur.max_conns) : "512"}
+                onChange={(v) => patch({ max_conns: Number(v) || 512 })}
+                placeholder="512"
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <div className="flex items-end gap-2">
+              <div className="min-w-0 flex-1">
+                <TextInput
+                  label={t("mtproto.secret")}
+                  mono
+                  value={cur.secret}
+                  onChange={(v) => patch({ secret: v.trim() })}
+                  placeholder="ee... или dd..."
+                />
+              </div>
+              <Button
+                size="sm"
+                variant="light"
+                color="gray"
+                loading={generating}
+                onClick={handleGenSecret}
+                className="mb-0.5 whitespace-nowrap"
+              >
+                {t("mtproto.genSecret")}
+              </Button>
+            </div>
+          </div>
+
+          {link && (
+            <div className="mt-1 flex flex-col gap-1.5">
+              <span className="text-xs font-medium text-ink-muted">{t("mtproto.copyLink")}:</span>
+              <Code block copy>
+                {link}
+              </Code>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -1080,6 +1260,10 @@ function NodeSettingsDialog({
   const [proxyBase, setProxyBase] = useState<SystemProxy>(node.proxy);
   const proxyDirty = JSON.stringify(proxy) !== JSON.stringify(proxyBase);
   const proxyIssue = systemProxyIssue(proxy);
+  const [mtproto, setMTProto] = useState<MTProtoConfig>(defaultMTProto(node.mtproto));
+  const [mtprotoBase, setMTProtoBase] = useState<MTProtoConfig>(defaultMTProto(node.mtproto));
+  const mtprotoDirty = JSON.stringify(mtproto) !== JSON.stringify(mtprotoBase);
+  const mtprotoErr = mtprotoIssue(mtproto);
   const r = useServerRouting({
     cfg: node.routing ? hydrateRouting(node.routing) : nodeDefaultRouting(),
     warp: node.warp_enabled,
@@ -1091,7 +1275,7 @@ function NodeSettingsDialog({
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState("general");
   const genDirty =
-    name !== genBase.name || decoy !== genBase.decoy || coef !== genBase.coef || proxyDirty || plDirty;
+    name !== genBase.name || decoy !== genBase.decoy || coef !== genBase.coef || proxyDirty || plDirty || mtprotoDirty;
   const dnsDirty = dns !== dnsBase;
 
   const warpBadge: StatusBadge = !r.warpEnabled
@@ -1117,6 +1301,10 @@ function NodeSettingsDialog({
       if (proxyDirty) {
         await setServerProxy(node.id, proxy);
         setProxyBase(proxy);
+      }
+      if (mtprotoDirty) {
+        await setServerMTProto(node.id, mtproto);
+        setMTProtoBase(mtproto);
       }
       setGenBase({ name, decoy, coef });
       setPlBase(pl);
@@ -1212,6 +1400,12 @@ function NodeSettingsDialog({
               saved={proxyBase}
               onChange={setProxy}
             />
+            <MTProtoEditor
+              host={node.host}
+              value={mtproto}
+              saved={mtprotoBase}
+              onChange={setMTProto}
+            />
           </Section>
           <TabSaveBar
             onSave={saveGeneral}
@@ -1221,10 +1415,11 @@ function NodeSettingsDialog({
               setCoef(genBase.coef);
               setPl(plBase);
               setProxy(proxyBase);
+              setMTProto(mtprotoBase);
             }}
             dirty={genDirty}
             busy={saving}
-            invalid={proxyIssue !== ""}
+            invalid={proxyIssue !== "" || mtprotoErr !== ""}
           />
         </div>
       )}
@@ -1339,9 +1534,13 @@ function MasterSettingsDialog({
   const [proxyBase, setProxyBase] = useState<SystemProxy>(node.proxy);
   const proxyDirty = JSON.stringify(proxy) !== JSON.stringify(proxyBase);
   const proxyIssue = systemProxyIssue(proxy);
+  const [mtproto, setMTProto] = useState<MTProtoConfig>(defaultMTProto(node.mtproto));
+  const [mtprotoBase, setMTProtoBase] = useState<MTProtoConfig>(defaultMTProto(node.mtproto));
+  const mtprotoDirty = JSON.stringify(mtproto) !== JSON.stringify(mtprotoBase);
+  const mtprotoErr = mtprotoIssue(mtproto);
   const [dns, setDns] = useState(canonicalDns(node.xray_dns ?? ""));
   const [dnsBase, setDnsBase] = useState(canonicalDns(node.xray_dns ?? ""));
-  const genDirty = name !== genBase.name || decoy !== genBase.decoy || proxyDirty || plDirty;
+  const genDirty = name !== genBase.name || decoy !== genBase.decoy || proxyDirty || plDirty || mtprotoDirty;
   const dnsDirty = dns !== dnsBase;
   // Live egress status for the badges (master's egress runs locally, so the panel
   // knows the real state — unlike a node).
@@ -1473,6 +1672,10 @@ function MasterSettingsDialog({
         await setServerProxy(0, proxy);
         setProxyBase(proxy);
       }
+      if (mtprotoDirty) {
+        await setServerMTProto(0, mtproto);
+        setMTProtoBase(mtproto);
+      }
       setGenBase({ name, decoy });
       notifySuccess(t("nodes.generalSaved"));
       onRefresh();
@@ -1552,6 +1755,12 @@ function MasterSettingsDialog({
                   saved={proxyBase}
                   onChange={setProxy}
                 />
+                <MTProtoEditor
+                  host={node.host}
+                  value={mtproto}
+                  saved={mtprotoBase}
+                  onChange={setMTProto}
+                />
               </Section>
               <TabSaveBar
                 onSave={saveGeneral}
@@ -1560,10 +1769,11 @@ function MasterSettingsDialog({
                   setDecoy(genBase.decoy);
                   setPl(plBase);
                   setProxy(proxyBase);
+                  setMTProto(mtprotoBase);
                 }}
                 dirty={genDirty}
                 busy={savingGeneral}
-                invalid={proxyIssue !== ""}
+                invalid={proxyIssue !== "" || mtprotoErr !== ""}
               />
             </div>
           )}
@@ -2118,6 +2328,8 @@ export function NodesPanel() {
       </Card>
 
       <ExternalServers />
+
+      <MTProtoServers />
 
       {adding && (
         <AddNodeDialog

@@ -358,6 +358,7 @@ enabled node automatically, and each server can be edited independently.
 | `POST` | `/v1/nodes/{id}/update` | Ask a node to self-update to the latest release. |
 | `POST` | `/v1/nodes/update-all` | Ask every connected node to self-update (sequentially). |
 | `POST` | `/v1/nodes/{id}/proxy` | Configure that server's system proxy (`id` 0 = the master). |
+| `POST` | `/v1/nodes/{id}/mtproto` | Configure that server's MTProto proxy (`id` 0 = the master). |
 | `GET` | `/v1/nodes/{id}/health` | One server's self-diagnostics. |
 | `GET` | `/v1/nodes/{id}/logs` | A node's recent log lines. |
 
@@ -368,9 +369,9 @@ command for a fresh Ubuntu server:
 ```json
 {
   "data": {
-    "id": 3,
-    "join_token": "rpn_…",
-    "install_command": "curl -Ls https://.../install.sh | sudo bash -s -- --join '…#rpn_…'"
+    "node_id": 2,
+    "join_token": "rp_join_…",
+    "install_cmd": "curl -fsSL https://… | sudo bash -s -- --join 'https://…'"
   }
 }
 ```
@@ -399,6 +400,39 @@ enabled without a port gets 1080 (SOCKS) / 3128 (HTTP). Each server has its OWN
 accounts and ports — a node never inherits the master's, so a leaked login opens one
 machine. The response is the stored configuration, so a caller that sent only
 `{"socks_enabled": true}` learns which port it got.
+
+**MTProto proxy** — an embedded Telegram forward proxy (`mtglib`) on that server with
+FakeTLS masquerading and zero child processes:
+
+```json
+{
+  "enabled": true,
+  "port": 8443,
+  "domain": "cloudflare.com",
+  "secret": "ee...",
+  "max_conns": 512
+}
+```
+
+The node agent automatically supervises the proxy in-process and reports live
+telemetry (active connections, memory RSS, bytes in/out, uptime) back to the panel.
+
+### MTProto Proxy (Telegram)
+
+Standalone and mixed-mode MTProto proxy management. Standalone instances run via
+`rospanel mtproto run` in an ultra-low memory profile (< 30 MB RSS, suitable for 96 MB
+Pterodactyl containers).
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/api/mtproto` | List all MTProto proxies (standalone instances and mixed-mode nodes). |
+| `POST` | `/api/mtproto` | Register a new standalone MTProto proxy (returns install & run commands). |
+| `GET` | `/api/mtproto/{id}` | Get details of a standalone proxy. |
+| `PUT` | `/api/mtproto/{id}` | Update configuration of a standalone proxy. |
+| `DELETE` | `/api/mtproto/{id}` | Delete a standalone proxy. |
+| `POST` | `/api/mtproto/{id}/toggle` | Toggle enabled/disabled state. |
+| `POST` | `/api/mtproto/gen-secret` | Generate a new FakeTLS secret. |
+| `POST` | `/api/nodes/{id}/mtproto` | Configure mixed-mode proxy on a node (`id` 0 = the master). |
 
 ### Custom inbounds
 

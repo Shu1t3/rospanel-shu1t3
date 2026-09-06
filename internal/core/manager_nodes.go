@@ -241,6 +241,13 @@ func (m *Manager) NodeDesiredState(n *model.Node) (*nodeapi.NodeState, error) {
 		meta.OperaCountry = ns.OperaCountryOr()
 		meta.OperaPort = ns.OperaPortOr()
 	}
+	if n.MTProto.Enabled {
+		meta.MTProtoEnabled = true
+		meta.MTProtoPort = n.MTProto.Port
+		meta.MTProtoSecret = n.MTProto.Secret
+		meta.MTProtoDomain = n.MTProto.Domain
+		meta.MTProtoMaxConns = n.MTProto.MaxConns
+	}
 	metaRaw, err := json.Marshal(meta)
 	if err != nil {
 		return nil, err
@@ -567,6 +574,8 @@ type NodeView struct {
 	// Carries the account so the page can show a ready-to-paste address — it is an
 	// operator screen, and the password is the point of the feature.
 	Proxy model.SystemProxy `json:"proxy"`
+	// MTProto is this server's embedded Telegram proxy configuration (mixed mode).
+	MTProto model.MTProtoConfig `json:"mtproto"`
 	// Egress backends (node's own, independent of the master; all off by default).
 	// WARP is native to Xray once registered; Opera runs a helper on the node.
 	WarpEnabled    bool   `json:"warp_enabled"`
@@ -652,6 +661,7 @@ func (m *Manager) NodeViews() ([]NodeView, error) {
 			HTTPEnabled: set.ProxyHTTPEnabled, HTTPPort: set.ProxyHTTPPort,
 			Accounts: set.ProxyAccounts,
 		},
+		MTProto: set.MTProto,
 	}
 	if m.awg != nil {
 		local.AWGError = m.awg.LastError()
@@ -718,6 +728,7 @@ func (m *Manager) NodeViews() ([]NodeView, error) {
 			RealityShortID:   n.RealityShortID,
 			RealityPath:      n.RealityPath,
 			Proxy:            n.Proxy,
+			MTProto:          n.MTProto,
 		}
 		if t, ok := traffic[n.ID]; ok {
 			v.TrafficUp, v.TrafficDown = t[0], t[1]

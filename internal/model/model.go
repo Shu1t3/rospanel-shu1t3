@@ -716,6 +716,7 @@ type Settings struct {
 	ProxyHTTPEnabled  bool                 `json:"-"`
 	ProxyHTTPPort     int                  `json:"-"`
 	ProxyAccounts     []SystemProxyAccount `json:"-"` // passwords encrypted at rest
+	MTProto           MTProtoConfig        `json:"-"` // master server MTProto proxy (mixed mode)
 
 	// First-run wizard state. SetupDone gates the wizard; Timezone is the IANA
 	// zone anchoring the local-day boundary for stats (empty ⇒ server local).

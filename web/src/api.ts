@@ -2023,6 +2023,7 @@ export interface NodeView {
   reality_path: string
   master_label?: string // config-label name of the master (local node only)
   proxy: SystemProxy // this server's system proxy (SOCKS/HTTP forward listeners)
+  mtproto?: MTProtoConfig // this server's embedded MTProto proxy
 }
 
 // SystemProxy is one server's forward proxy: SOCKS5 and/or HTTP listeners for
@@ -2718,5 +2719,79 @@ export interface Release {
 }
 // The history this binary was built with, newest first, and the version it is.
 export const getChangelog = () => api<{ version: string; releases: Release[] }>('api/changelog')
+
+// ---- MTProto Proxy ----------------------------------------------------------
+
+export interface MTProtoConfig {
+  enabled: boolean
+  port: number
+  secret: string
+  domain: string
+  max_conns: number
+}
+
+export interface MTProtoProxy {
+  id: number
+  node_id?: number
+  node_name?: string
+  name: string
+  host: string
+  port: number
+  secret: string
+  domain: string
+  max_conns: number
+  enabled: boolean
+  token?: string
+  created_at: number
+
+  running?: boolean
+  active_conns?: number
+  bytes_read?: number
+  bytes_written?: number
+  last_seen?: number
+  uptime_sec?: number
+  mem_alloc?: number
+  rss?: number
+  last_error?: string
+
+  link?: string
+  https_link?: string
+}
+
+export const getMTProto = () =>
+  api<{ proxies: MTProtoProxy[] }>('api/mtproto')
+
+export const createMTProto = (p: Partial<MTProtoProxy>) =>
+  api<{ proxy: MTProtoProxy; install_command: string; cli_command: string; token: string }>('api/mtproto', {
+    method: 'POST',
+    body: JSON.stringify(p),
+  })
+
+export const updateMTProto = (id: number, p: Partial<MTProtoProxy>) =>
+  api<MTProtoProxy>(`api/mtproto/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(p),
+  })
+
+export const deleteMTProto = (id: number) =>
+  api<{ ok: boolean }>(`api/mtproto/${id}`, { method: 'DELETE' })
+
+export const setMTProtoEnabled = (id: number, enabled: boolean) =>
+  api<{ ok: boolean }>(`api/mtproto/${id}/toggle`, {
+    method: 'POST',
+    body: JSON.stringify({ enabled }),
+  })
+
+export const generateMTProtoSecret = (domain?: string) =>
+  api<{ secret: string; domain: string }>(`api/mtproto/gen-secret${domain ? `?domain=${encodeURIComponent(domain)}` : ''}`, {
+    method: 'POST',
+  })
+
+export const setServerMTProto = (id: number, cfg: MTProtoConfig) =>
+  api<{ ok: boolean }>(`api/nodes/${id}/mtproto`, {
+    method: 'POST',
+    body: JSON.stringify(cfg),
+  })
+
 
 

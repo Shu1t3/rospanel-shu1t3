@@ -47,8 +47,9 @@ type JoinResponse struct {
 
 // ComponentName constants for supported node services.
 const (
-	ComponentXray = "xray"
-	ComponentAWG  = "awg"
+	ComponentXray    = "xray"
+	ComponentAWG     = "awg"
+	ComponentMTProto = "mtproto"
 )
 
 // ComponentHealth status constants.
@@ -417,6 +418,13 @@ type NodeMeta struct {
 	OperaEnabled bool   `json:"opera_enabled,omitempty"`
 	OperaCountry string `json:"opera_country,omitempty"`
 	OperaPort    int    `json:"opera_port,omitempty"`
+
+	// MTProto proxy (mixed node mode).
+	MTProtoEnabled  bool   `json:"mtproto_enabled,omitempty"`
+	MTProtoPort     int    `json:"mtproto_port,omitempty"`
+	MTProtoSecret   string `json:"mtproto_secret,omitempty"`
+	MTProtoDomain   string `json:"mtproto_domain,omitempty"`
+	MTProtoMaxConns int    `json:"mtproto_max_conns,omitempty"`
 
 	// GeoRefreshHours is how often the node should auto-refresh its geo databases
 	// (hours; 0 ⇒ never). Pushed from the panel so the fleet shares one cadence.

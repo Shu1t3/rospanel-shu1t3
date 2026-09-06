@@ -3,6 +3,7 @@ module github.com/Shu1t3/rospanel-shu1t3
 go 1.27.1
 
 require (
+	github.com/9seconds/mtg/v2 v2.2.8
 	github.com/amnezia-vpn/amneziawg-go/v3 v3.1.20260828
 	github.com/go-acme/lego/v4 v4.35.2
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
@@ -11,14 +12,25 @@ require (
 )
 
 require (
+	github.com/OneOfOne/xxhash v1.2.8 // indirect
+	github.com/babolivier/go-doh-client v0.0.0-20201028162107-a76cff4cb8b6 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/miekg/dns v1.1.72 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
+	github.com/panjf2000/ants/v2 v2.12.0 // indirect
+	github.com/patrickmn/go-cache v2.1.0+incompatible // indirect
+	github.com/pires/go-proxyproto v0.11.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	github.com/rs/zerolog v1.35.0 // indirect
+	github.com/txthinking/runnergroup v0.0.0-20250224021307-5864ffeb65ae // indirect
+	github.com/txthinking/socks5 v0.0.0-20251011041537-5c31f201a10e // indirect
+	github.com/tylertreat/BoomFilters v0.0.0-20251117164519-53813c36cc1b // indirect
+	github.com/yl2chen/cidranger v1.0.2 // indirect
 	golang.org/x/mod v0.38.0 // indirect
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect

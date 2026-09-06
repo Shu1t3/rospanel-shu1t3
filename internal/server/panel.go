@@ -362,6 +362,15 @@ func (rt *Router) panelMux() http.Handler {
 	authedID("POST /api/external/{id}/enabled", rt.setExternalEnabled)
 	authedID("POST /api/external/{id}/servers", rt.setExternalServersEnabled)
 	authedID("POST /api/external/servers/{id}/enabled", rt.setExternalServerEnabled)
+	// MTProto Proxy: standalone proxies and mixed-mode node proxies on Servers tab.
+	authed("GET /api/mtproto", rt.listMTProto)
+	authed("POST /api/mtproto", rt.createMTProto)
+	authedID("GET /api/mtproto/{id}", rt.getMTProto)
+	authedID("PUT /api/mtproto/{id}", rt.updateMTProto)
+	authedID("DELETE /api/mtproto/{id}", rt.deleteMTProto)
+	authedID("POST /api/mtproto/{id}/toggle", rt.toggleMTProto)
+	authed("POST /api/mtproto/gen-secret", rt.generateMTProtoSecret)
+	mux.HandleFunc("POST /api/mtproto/sync", rt.syncMTProtoStandalone)
 	authed("GET /api/settings/abuse", rt.getAbuseSettings)
 	authed("POST /api/settings/abuse", rt.saveAbuseSettings)
 	authed("POST /api/settings/abuse/refresh", rt.refreshAbuse)
@@ -474,6 +483,8 @@ func (rt *Router) panelMux() http.Handler {
 	authedID("POST /api/nodes/{id}/dns", rt.setNodeDNS)
 	// System proxy, per server: {id} 0 is the master, anything else a node.
 	authedID("POST /api/nodes/{id}/proxy", rt.setServerProxy)
+	// MTProto proxy, per server: {id} 0 is the master, anything else a node.
+	authedID("POST /api/nodes/{id}/mtproto", rt.setServerMTProto)
 	authedID("POST /api/nodes/{id}/reality", rt.setNodeReality)
 	authedID("GET /api/nodes/{id}/connections", rt.nodeConnections)
 	authedID("POST /api/nodes/{id}/connections", rt.applyNodeConnections)

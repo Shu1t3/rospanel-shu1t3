@@ -479,6 +479,30 @@ func (m *Manager) SetSystemProxy(serverID int64, p model.SystemProxy) error {
 	return nil
 }
 
+// SetMTProtoProxy configures one server's embedded MTProto proxy (serverID 0 is the master).
+func (m *Manager) SetMTProtoProxy(serverID int64, cfg model.MTProtoConfig) error {
+	cfg.Normalize()
+	if cfg.Port < 1 || cfg.Port > 65535 {
+		return invalidCode("err.invalidPort", "некорректный порт")
+	}
+	if cfg.Enabled && cfg.Secret == "" {
+		return invalidCode("err.secretRequired", "секрет MTProto обязателен")
+	}
+
+	if serverID == model.LocalNodeID {
+		if err := m.store.SetMasterMTProto(cfg); err != nil {
+			return err
+		}
+		m.TriggerReconcile()
+		return nil
+	}
+	if err := m.store.SetNodeMTProto(serverID, cfg); err != nil {
+		return err
+	}
+	m.nodes.wakeOne(serverID)
+	return nil
+}
+
 // serverSettings materializes one server's effective settings (the master's own, or a
 // node's after nodeSettings), so callers can reason about a single server uniformly.
 func (m *Manager) serverSettings(serverID int64) (*model.Settings, error) {

@@ -86,6 +86,8 @@ func main() {
 			runUpdate(os.Args[2:])
 		case "node":
 			runNode(os.Args[2:])
+		case "mtproto":
+			runMTProto(os.Args[2:])
 		case "reset":
 			runReset(os.Args[2:])
 		case "version", "--version", "-v":

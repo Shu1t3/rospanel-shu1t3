@@ -50,7 +50,8 @@ const nodeColumns = `id, name, host, enabled,
 	proxy_accounts, traffic_coefficient,
 	country, sort_weight, capacity, hide_when_full,
 	traffic_limit, traffic_period, hide_when_over,
-	awg_enabled, awg_private_key, awg_public_key, awg_params`
+	awg_enabled, awg_private_key, awg_public_key, awg_params,
+	mtproto_enabled, mtproto_port, mtproto_secret, mtproto_domain, mtproto_max_conns`
 
 // generateNodeToken mints a raw token ("rpn_<43 url-safe chars>", 256 bits).
 func generateNodeToken() (string, error) {
@@ -67,6 +68,7 @@ func scanNode(sc interface{ Scan(...any) error }) (*model.Node, error) {
 	var n model.Node
 	var enabled, xrayRunning, certSelfSigned, warpEn, operaEn int
 	var proxySocksEn, proxyHTTPEn, hideFull, hideOver int
+	var mtprotoEn int
 	var proxyAccounts string
 	var vlessEn, hysteriaEn, realityEn, awgEn sql.NullBool
 	var awgParamsJSON string
@@ -90,12 +92,15 @@ func scanNode(sc interface{ Scan(...any) error }) (*model.Node, error) {
 		&n.Country, &n.Weight, &n.Capacity, &hideFull,
 		&n.TrafficLimit, &n.TrafficPeriod, &hideOver,
 		&awgEn, &n.AWGPrivateKey, &n.AWGPublicKey, &awgParamsJSON,
+		&mtprotoEn, &n.MTProto.Port, &n.MTProto.Secret, &n.MTProto.Domain, &n.MTProto.MaxConns,
 	); err != nil {
 		return nil, err
 	}
 	n.Enabled = enabled != 0
 	n.HideWhenFull = hideFull != 0
 	n.HideWhenOver = hideOver != 0
+	n.MTProto.Enabled = mtprotoEn != 0
+	n.MTProto.Normalize()
 	n.XrayRunning = xrayRunning != 0
 	n.CertSelfSigned = certSelfSigned != 0
 	n.WarpEnabled = warpEn != 0
@@ -672,5 +677,16 @@ func (s *Store) SaveNodeAWGKeys(id int64, priv, pub string, params model.AWGPara
 	}
 	_, err = s.db.Exec(`UPDATE nodes SET awg_private_key = ?, awg_public_key = ?, awg_params = ? WHERE id = ?`,
 		encField(priv), pub, string(b), id)
+	return err
+}
+
+// SetNodeMTProto persists a node's MTProto-proxy configuration (port, secret, domain, max_conns, enabled).
+func (s *Store) SetNodeMTProto(id int64, cfg model.MTProtoConfig) error {
+	cfg.Normalize()
+	_, err := s.db.Exec(`
+		UPDATE nodes SET mtproto_enabled = ?, mtproto_port = ?, mtproto_secret = ?,
+			mtproto_domain = ?, mtproto_max_conns = ? WHERE id = ?`,
+		boolToInt(cfg.Enabled), cfg.Port, cfg.Secret, cfg.Domain, cfg.MaxConns, id,
+	)
 	return err
 }

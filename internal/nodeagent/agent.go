@@ -33,6 +33,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/ipblock"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/logbuf"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/mtproto"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/nodeapi"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/opera"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/proxyproto"
@@ -144,6 +145,16 @@ type Agent struct {
 	operaOn      bool
 	operaCountry string
 	operaPort    int
+
+	// MTProto proxy (mixed mode).
+	mtprotoSup      *mtproto.Lifecycle
+	mtprotoCancel   context.CancelFunc
+	mtprotoMu       sync.Mutex
+	mtprotoOn       bool
+	mtprotoPort     int
+	mtprotoSecret   string
+	mtprotoDomain   string
+	mtprotoMaxConns int
 
 	// Port 80. A node runs the same masquerade as the panel — a decoy behind Xray on
 	// 443 — so it has the same tell if 80 is closed, and the same reason to answer it.
@@ -979,6 +990,27 @@ func (a *Agent) buildSyncRequest() nodeapi.SyncRequest {
 		Error:   awgErr,
 	})
 
+	a.mtprotoMu.Lock()
+	mtprotoOn := a.mtprotoOn
+	mtprotoSup := a.mtprotoSup
+	a.mtprotoMu.Unlock()
+
+	mtprotoSt := nodeapi.StatusDisabled
+	mtprotoRunning := false
+	if mtprotoOn && mtprotoSup != nil {
+		mtprotoRunning = mtprotoSup.IsRunning()
+		if mtprotoRunning {
+			mtprotoSt = nodeapi.StatusHealthy
+		} else {
+			mtprotoSt = nodeapi.StatusUnhealthy
+		}
+	}
+	components = append(components, nodeapi.ComponentStatus{
+		Name:    nodeapi.ComponentMTProto,
+		Running: mtprotoRunning,
+		Status:  mtprotoSt,
+	})
+
 	req := nodeapi.SyncRequest{
 		ConfigHash:  hash,
 		NodeVersion: version.Version,
@@ -1128,6 +1160,7 @@ func (a *Agent) applyState(st *nodeapi.NodeState) error {
 	// generated config's "opera" outbound already points at 127.0.0.1:OperaPort.
 	a.syncOpera(m.OperaEnabled, m.OperaCountry, m.OperaPort)
 	a.syncAWG(m.AWG)
+	a.syncMTProto(m)
 	// The addresses the panel's source policy refused. Sync, not add: a lifted block
 	// has to come out of the kernel here too.
 	if m.BlockTTLHours > 0 {
@@ -1321,6 +1354,16 @@ func (a *Agent) shutdown() {
 		a.awg.Close()
 	}
 	a.operaSup.Stop()
+	a.mtprotoMu.Lock()
+	if a.mtprotoCancel != nil {
+		a.mtprotoCancel()
+		a.mtprotoCancel = nil
+	}
+	if a.mtprotoSup != nil {
+		_ = a.mtprotoSup.Close()
+		a.mtprotoSup = nil
+	}
+	a.mtprotoMu.Unlock()
 	if a.redirectSrv != nil {
 		_ = a.redirectSrv.Close()
 	}

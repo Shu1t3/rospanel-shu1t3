@@ -43,6 +43,8 @@ Commands:
   update [-y]        Update to the latest GitHub release and restart.
   node <sub>         Node mode: install --join '<url>', run, set-panel, status,
                      uninstall (see rospanel node help).
+  mtproto <sub>      MTProto proxy mode: run (standalone proxy, <30MB RAM),
+                     gen-secret (see rospanel mtproto help).
   backup [file]      Create a .tar.gz backup (DB + certificates + Xray config).
                      Without an argument the file is named after the current time.
   restore [-y] <file>
