@@ -2,6 +2,7 @@ package mtproto
 
 import (
 	"context"
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -98,3 +99,66 @@ func TestLifecycleRunAndAtomicReload(t *testing.T) {
 		t.Fatal("timed out waiting for proxy shutdown")
 	}
 }
+
+func TestProxyAcceptsConnectionsWithoutAllowlistDrop(t *testing.T) {
+	sec, err := GenerateSecret("cloudflare.com")
+	if err != nil {
+		t.Fatalf("generate secret: %v", err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.BindAddr = "127.0.0.1:0"
+	cfg.Port = 0
+	cfg.Secret = sec
+	cfg.MaxConns = 100
+
+	lifecycle, err := NewLifecycle(cfg)
+	if err != nil {
+		t.Fatalf("new lifecycle: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		_ = lifecycle.Run(ctx)
+	}()
+
+	var addr string
+	for i := 0; i < 50; i++ {
+		lifecycle.mu.Lock()
+		if lifecycle.realListener != nil {
+			addr = lifecycle.realListener.Addr().String()
+			lifecycle.mu.Unlock()
+			break
+		}
+		lifecycle.mu.Unlock()
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if addr == "" {
+		t.Fatal("proxy failed to start listening in time")
+	}
+
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Prior to the fix, opts.IPAllowlist was set to ipblocklist.NewNoop() whose Contains()
+	// always returned false, causing Proxy.Serve to immediately close the connection with EOF
+	// before reading any bytes.
+	buf := make([]byte, 1024)
+	_ = conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	_, err = conn.Read(buf)
+	if err == io.EOF {
+		t.Fatalf("regression: server closed connection immediately with EOF (IP rejected by allowlist)")
+	}
+
+	// Writing data (e.g. HTTP probe for domain fronting) should succeed and not error with broken pipe.
+	if _, err := conn.Write([]byte("GET / HTTP/1.1\r\nHost: cloudflare.com\r\n\r\n")); err != nil {
+		t.Fatalf("write to connection failed: %v", err)
+	}
+}
+

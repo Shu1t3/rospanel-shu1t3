@@ -501,6 +501,16 @@ func (m *Manager) SetMTProtoProxy(serverID int64, cfg model.MTProtoConfig) error
 	if cfg.Enabled && cfg.Secret == "" {
 		return invalidCode("err.secretRequired", "секрет MTProto обязателен")
 	}
+	if cfg.Enabled && cfg.Port > 0 {
+		set, err := m.serverSettings(serverID)
+		if err != nil {
+			return err
+		}
+		custom := m.serverInbounds(serverID)
+		if err := m.checkMTProtoPort(cfg.Port, set, custom); err != nil {
+			return err
+		}
+	}
 
 	if serverID == model.LocalNodeID {
 		if err := m.store.SetMasterMTProto(cfg); err != nil {
@@ -516,6 +526,28 @@ func (m *Manager) SetMTProtoProxy(serverID int64, cfg model.MTProtoConfig) error
 	}
 	m.InvalidateNodeDesiredCache(serverID)
 	m.nodes.wakeOne(serverID)
+	return nil
+}
+
+// checkMTProtoPort rejects an MTProto port already held by one of this server's other listeners.
+func (m *Manager) checkMTProtoPort(port int, set *model.Settings, custom []model.Inbound) error {
+	stripped := *set
+	stripped.MTProto.Port = 0
+	r := reservedPorts(&stripped)
+	for _, in := range custom {
+		if in.Port > 0 {
+			if in.Protocol == model.InbHysteria {
+				r.HoldUDP(in.Port, in.Name)
+			} else {
+				r.HoldTCP(in.Port, in.Name)
+			}
+		}
+	}
+	m.holdPanelPort(r)
+	if who, taken := r.TCP[port]; taken {
+		return invalidCode("err.portTaken", "порт {{port}} уже занят: {{who}}",
+			map[string]any{"port": port, "who": who})
+	}
 	return nil
 }
 

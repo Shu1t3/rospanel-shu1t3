@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -124,5 +125,100 @@ func TestManagerListAllMTProtoProxies(t *testing.T) {
 
 	if !foundMaster || !foundNode || !foundStandalone {
 		t.Fatalf("missing proxies: master=%v, node=%v, standalone=%v", foundMaster, foundNode, foundStandalone)
+	}
+}
+
+func TestSetMTProtoProxyPortCollision(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "mtproto_collision.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	mgr := &Manager{
+		store:            st,
+		nodes:            newNodeRegistry(),
+		opts:             xray.Options{PanelDest: "127.0.0.1:8080"},
+		tz:               time.Local,
+		applied:          map[int64]struct{}{},
+		nodeGeoFiles:     map[int64][]nodeapi.GeoFile{},
+		nodeHostStats:    map[int64]nodeapi.HostStats{},
+		nodeSyncFails:    map[int64]int{},
+		nodeAWGRunning:   map[int64]bool{},
+		nodeAWGErr:       map[int64]string{},
+		nodeComponents:   map[int64][]nodeapi.ComponentStatus{},
+		nodeMTProtoStats: map[int64]mtproto.Snapshot{},
+	}
+
+	// 1. Try to set MTProto port to 443 (which is held by VLESS-Vision)
+	err = mgr.SetMTProtoProxy(model.LocalNodeID, model.MTProtoConfig{
+		Enabled: true,
+		Port:    443,
+		Secret:  "ee00112233445566778899aabbccddeeff636c6f7564666c6172652e636f6d",
+	})
+	if err == nil {
+		t.Fatal("expected port collision error for port 443, got nil")
+	}
+
+	// 2. Set MTProto port to 8443 (free port) -> should succeed
+	err = mgr.SetMTProtoProxy(model.LocalNodeID, model.MTProtoConfig{
+		Enabled: true,
+		Port:    8443,
+		Secret:  "ee00112233445566778899aabbccddeeff636c6f7564666c6172652e636f6d",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error setting MTProto on free port 8443: %v", err)
+	}
+
+	// 3. Verify reservedPorts holds 8443
+	set, err := st.GetSettings()
+	if err != nil {
+		t.Fatalf("get settings: %v", err)
+	}
+	res := reservedPorts(set)
+	if who, taken := res.TCP[8443]; !taken || who != "MTProto-Proxy" {
+		t.Fatalf("expected port 8443 to be held by 'MTProto-Proxy', got taken=%v, who=%s", taken, who)
+	}
+
+	// 4. Verify custom inbound cannot bind on MTProto port 8443
+	_, err = mgr.CreateInbound(context.Background(), model.Inbound{
+		ServerID: model.LocalNodeID,
+		Name:     "colliding-inbound",
+		Port:     8443,
+		Protocol: model.InbVLESS,
+		Opts: model.InboundOpts{
+			Transport: model.TrTCP,
+			Security:  model.SecNone,
+		},
+	})
+	if err == nil {
+		t.Fatal("expected CreateInbound on MTProto port 8443 to fail with collision, got nil")
+	}
+
+	// 5. Test on a Node: nodeSettings must carry n.MTProto
+	node, err := st.CreateNode("node-1", "node-1.example.com", "default")
+	if err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+	err = mgr.SetMTProtoProxy(node.ID, model.MTProtoConfig{
+		Enabled: true,
+		Port:    8444,
+		Secret:  "ee00112233445566778899aabbccddeeff636c6f7564666c6172652e636f6d",
+	})
+	if err != nil {
+		t.Fatalf("SetMTProtoProxy on node: %v", err)
+	}
+
+	nodeLoaded, err := st.GetNode(node.ID)
+	if err != nil {
+		t.Fatalf("GetNode: %v", err)
+	}
+	effSet := nodeSettings(set, nodeLoaded)
+	if !effSet.MTProto.Enabled || effSet.MTProto.Port != 8444 {
+		t.Fatalf("expected nodeSettings to carry MTProto port 8444, got %+v", effSet.MTProto)
+	}
+	nodeRes := reservedPorts(effSet)
+	if who, taken := nodeRes.TCP[8444]; !taken || who != "MTProto-Proxy" {
+		t.Fatalf("expected node port 8444 to be held by 'MTProto-Proxy', got taken=%v, who=%s", taken, who)
 	}
 }

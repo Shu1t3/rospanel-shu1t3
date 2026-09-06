@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/9seconds/mtg/v2/antireplay"
 	"github.com/9seconds/mtg/v2/ipblocklist"
@@ -11,6 +12,13 @@ import (
 	"github.com/9seconds/mtg/v2/mtglib"
 	"github.com/9seconds/mtg/v2/network"
 )
+
+// allowAllIPs implements mtglib.IPBlocklist as an all-permissive allowlist.
+type allowAllIPs struct{}
+
+func (allowAllIPs) Contains(net.IP) bool      { return true }
+func (allowAllIPs) Run(time.Duration)         {}
+func (allowAllIPs) Shutdown()                 {}
 
 // Proxy wraps mtglib.Proxy with our memory-constrained configuration.
 type Proxy struct {
@@ -50,16 +58,18 @@ func NewProxy(cfg Config, stream mtglib.EventStream) (*Proxy, error) {
 	}
 
 	opts := mtglib.ProxyOpts{
-		Secret:           secret,
-		Network:          ntw,
-		AntiReplayCache:  antiReplay,
-		IPBlocklist:      ipblocklist.NewNoop(),
-		IPAllowlist:      ipblocklist.NewNoop(),
-		EventStream:      stream,
-		Logger:           logger.NewNoopLogger(), // zero-alloc, disable verbose trace/debug logs
-		Concurrency:      cfg.MaxConns,
-		IdleTimeout:      cfg.IdleTimeout,
-		HandshakeTimeout: cfg.HandshakeTimeout,
+		Secret:                   secret,
+		Network:                  ntw,
+		AntiReplayCache:          antiReplay,
+		IPBlocklist:              ipblocklist.NewNoop(),
+		IPAllowlist:              allowAllIPs{},
+		EventStream:              stream,
+		Logger:                   logger.NewNoopLogger(), // zero-alloc, disable verbose trace/debug logs
+		Concurrency:              cfg.MaxConns,
+		IdleTimeout:              cfg.IdleTimeout,
+		HandshakeTimeout:         cfg.HandshakeTimeout,
+		AllowFallbackOnUnknownDC: true,
+		PreferIP:                 "prefer-ipv4",
 	}
 
 	raw, err := mtglib.NewProxy(opts)

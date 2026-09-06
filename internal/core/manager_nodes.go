@@ -98,6 +98,10 @@ func nodeSettings(set *model.Settings, n *model.Node) *model.Settings {
 	ns.ProxyHTTPPort = n.Proxy.HTTPPort
 	ns.ProxyAccounts = n.Proxy.Accounts
 
+	// MTProto proxy: the node's OWN, never the master's: inheriting would open a
+	// listener on every node the moment the master enabled one.
+	ns.MTProto = n.MTProto
+
 	// DNS: the node's OWN (no inheritance). Unset ⇒ Xray's default resolver.
 	if n.XrayDNS != nil {
 		ns.XrayDNS = *n.XrayDNS

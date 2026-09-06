@@ -162,6 +162,9 @@ func reservedPorts(set *model.Settings) model.ReservedPorts {
 	if set.WarpEnabled && set.WarpRegistered() {
 		r.HoldTCP(model.PanelEgressPort, "WARP local entrance")
 	}
+	if set.MTProto.Enabled && set.MTProto.Port > 0 {
+		r.HoldTCP(set.MTProto.Port, "MTProto-Proxy")
+	}
 	return r
 }
 
