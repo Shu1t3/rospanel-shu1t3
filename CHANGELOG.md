@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.25.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.24.1...v2.25.0) (2026-09-06)
+
+
+### Features
+
+* нативная интеграция встроенного MTProto-прокси (mtglib) с FakeTLS ([09eedbc](https://github.com/Shu1t3/rospanel-shu1t3/commit/09eedbc02ab0db33c49d6dd227759f58f68a2cc5))
+
+
+### Bug Fixes
+
+* **core:** корректная остановка фоновых воркеров и синхронизация закрытия БД в тестах ([7185e15](https://github.com/Shu1t3/rospanel-shu1t3/commit/7185e156f40d830ca820489b8735f2ebc22adfa1))
+* **mtproto:** синхронизация Serve и Shutdown для предотвращения race condition ([cb02472](https://github.com/Shu1t3/rospanel-shu1t3/commit/cb02472bf0c3d56c6022377022e8b79fa4bc2d01))
+
 ## [2.24.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.24.0...v2.24.1) (2026-09-05)
 
 
