@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.25.2](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.25.1...v2.25.2) (2026-09-06)
+
+
+### Bug Fixes
+
+* implement MTProto port collision checks and allow-all IP policy for proxy connections ([a0fd3e3](https://github.com/Shu1t3/rospanel-shu1t3/commit/a0fd3e3012ef5ae98ff88cace0cf4a357b65a045))
+
 ## [2.25.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.25.0...v2.25.1) (2026-09-06)
 
 
