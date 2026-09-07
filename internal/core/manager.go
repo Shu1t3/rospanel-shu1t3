@@ -145,7 +145,8 @@ type Manager struct {
 	nodeDesiredMu    sync.RWMutex
 	nodeDesiredCache map[int64]cachedNodeState
 
-	bgWg sync.WaitGroup
+	bgWg      sync.WaitGroup
+	closeOnce sync.Once
 
 	vpnMu       sync.Mutex
 	vpnUp       int64 // current VPN throughput (bytes/sec), from Xray stats deltas
@@ -369,17 +370,17 @@ func New(st *store.Store, sup *xray.Supervisor, opts xray.Options, tls TLSPaths,
 	m.sup.StartWatchdog() // auto-restart a wedged (alive-but-not-serving) Xray
 	// The same two alerts for the remote nodes. They have no bot of their own, and a
 	// node that stops syncing altogether can only be noticed on a timer.
-	go m.nodeWatchLoop()
-	go m.reconcileLoop()
-	go m.proxyLoop()
-	go m.geoLoop()         // auto-refresh geo databases on the operator's cadence
-	go m.ipListLoop()      // ...and the iplist lists on their own, separate cadence
-	go m.probeDigestLoop() // once-a-day summary of new secret-path scanners (opt-in)
-	go m.bruteGuardLoop()
-	go m.shaperLoop()              // per-user speed caps follow the addresses users connect from
-	go m.healthLoop()              // probe Opera/Hola lane liveness for the UI
-	m.startWebhookWorkers()        // drain the outbound-webhook delivery queue
-	go m.prewarmRoutingTemplates() // warm the routing-template cache so the first
+	m.runAsync(m.nodeWatchLoop)
+	m.runAsync(m.reconcileLoop)
+	m.runAsync(m.proxyLoop)
+	m.runAsync(m.geoLoop)         // auto-refresh geo databases on the operator's cadence
+	m.runAsync(m.ipListLoop)      // ...and the iplist lists on their own, separate cadence
+	m.runAsync(m.probeDigestLoop) // once-a-day summary of new secret-path scanners (opt-in)
+	m.runAsync(m.bruteGuardLoop)
+	m.runAsync(m.shaperLoop)              // per-user speed caps follow the addresses users connect from
+	m.runAsync(m.healthLoop)              // probe Opera/Hola lane liveness for the UI
+	m.startWebhookWorkers()               // drain the outbound-webhook delivery queue
+	m.runAsync(m.prewarmRoutingTemplates) // warm the routing-template cache so the first
 	//                                  Happ/INCY sub pull after a restart doesn't block
 	// NOTE: telegram-web-app.js is deliberately NOT prewarmed here. The cold path in
 	// TelegramWebAppSDK fetches it inline and serves it, so a warm-up would only save
@@ -572,8 +573,15 @@ func (m *Manager) signalReload() {
 }
 
 func (m *Manager) reconcileLoop() {
-	for range m.reconcileCh {
-		time.Sleep(reconcileDebounce) // let the response flush + coalesce bursts
+	for {
+		select {
+		case <-m.done:
+			return
+		case <-m.reconcileCh:
+		}
+		if !m.wait(reconcileDebounce) { // let the response flush + coalesce bursts
+			return
+		}
 		drain(m.reconcileCh)
 		// A structural change queued in this window upgrades the batch to a full
 		// reload; otherwise a live user-sync suffices.
@@ -805,6 +813,51 @@ func (m *Manager) runAsync(fn func()) {
 		fn()
 	}()
 }
+
+func (m *Manager) wait(d time.Duration) bool {
+	if d <= 0 {
+		return !m.stopped()
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-m.done:
+		return false
+	}
+}
+
+func (m *Manager) stopped() bool {
+	select {
+	case <-m.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// Close stops the manager-owned background work and waits for it. The bounded
+// wait prevents shutdown from hanging indefinitely on an in-flight network call.
+func (m *Manager) Close() {
+	m.closeOnce.Do(func() {
+		if m.done != nil {
+			close(m.done)
+		}
+	})
+	stopped := make(chan struct{})
+	go func() {
+		m.bgWg.Wait()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(closeGrace):
+		logWarn("shutdown: manager background work did not finish in time", "grace", closeGrace)
+	}
+}
+
+const closeGrace = 5 * time.Second
 
 // Wait blocks until all asynchronous tasks spawned via runAsync complete.
 func (m *Manager) Wait() {

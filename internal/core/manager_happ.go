@@ -184,5 +184,5 @@ func (m *Manager) RunHappScheduler(ctx context.Context) {
 // StartHappScheduler launches the 59-minute auto-sync goroutine.
 // It stops when ctx is cancelled (graceful shutdown).
 func (m *Manager) StartHappScheduler(ctx context.Context) {
-	go m.RunHappScheduler(ctx)
+	m.runAsync(func() { m.RunHappScheduler(ctx) })
 }

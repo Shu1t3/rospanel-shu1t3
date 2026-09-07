@@ -331,7 +331,11 @@ func (m *Manager) probeDigestLoop() {
 	defer ticker.Stop()
 	lastSent := "" // calendar day of the last digest, so it fires once per day
 	for {
-		<-ticker.C
+		select {
+		case <-ticker.C:
+		case <-m.done:
+			return
+		}
 		set, err := m.store.GetSettings()
 		if err != nil || !set.AdminEventEnabled(model.AdminEventProbe) {
 			continue // the digest rides the "Path scanners" alert category

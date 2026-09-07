@@ -253,7 +253,7 @@ func singboxProxiesAll(req Request) ([]any, []string) {
 func GenerateXrayJSON(req Request) string {
 	configs := make([]map[string]any, 0, 8)
 	for _, l := range GenerateShareLinks(req) {
-		if cfg, ok := xrayConfigFromLink(l, req.DPI); ok {
+		if cfg, _, ok := xrayConfigFromLink(l, req.DPI); ok {
 			configs = append(configs, cfg)
 		}
 	}
@@ -274,20 +274,20 @@ func GenerateXrayJSONWithTemplate(req Request, template string) (string, error) 
 	}
 	configs := make([]any, 0, 8)
 	for _, l := range GenerateShareLinks(req) {
-		cfg, ok := xrayConfigFromLink(l, req.DPI)
+		cfg, remarks, ok := xrayConfigFromLink(l, req.DPI)
 		if !ok {
 			continue
 		}
 		outbounds, ok := cfg["outbounds"].([]map[string]any)
 		if !ok || len(outbounds) == 0 {
-			return GenerateXrayJSON(req), fmt.Errorf("lane %q produced no outbound chain", cfg["remarks"])
+			return GenerateXrayJSON(req), fmt.Errorf("lane %q produced no outbound chain", remarks)
 		}
 		chain := make([]any, len(outbounds))
 		for i, o := range outbounds {
 			chain[i] = o
 		}
 		rendered, err := renderJSONTemplate(template,
-			map[string]any{TplRemarks: cfg["remarks"]},
+			map[string]any{TplRemarks: remarks},
 			map[string][]any{TplOutbounds: chain},
 		)
 		if err != nil {

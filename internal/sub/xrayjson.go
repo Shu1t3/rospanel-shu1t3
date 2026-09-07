@@ -42,15 +42,16 @@ func XrayJSONWithTemplate(u model.User, servers []Server, dpi model.SubDPI, temp
 // xrayConfigFromLink turns one share link into a complete client config: local
 // SOCKS/HTTP inbounds on the ports every Xray app expects, the proxy outbound, the
 // optional fragment/noise dialer, direct and block, and a routing block that keeps
-// private ranges local. Returns false for a scheme the format cannot carry.
-func xrayConfigFromLink(raw string, dpi model.SubDPI) (map[string]any, bool) {
+// private ranges local. It returns the display name separately from the configuration
+// map, which also contains outbound credentials; false means the scheme is unsupported.
+func xrayConfigFromLink(raw string, dpi model.SubDPI) (map[string]any, string, bool) {
 	parsed, err := url.Parse(raw)
 	if err != nil {
-		return nil, false
+		return nil, "", false
 	}
 	proxy, ok := xrayOutbound(parsed)
 	if !ok {
-		return nil, false
+		return nil, "", false
 	}
 	outbounds := []map[string]any{proxy}
 	// Fragment only where there is a ClientHello with our real SNI to hide — a
@@ -101,7 +102,7 @@ func xrayConfigFromLink(raw string, dpi model.SubDPI) (map[string]any, bool) {
 				{"type": "field", "outboundTag": "direct", "ip": privateRanges()},
 			},
 		},
-	}, true
+	}, remarks, true
 }
 
 // privateRanges is what "geoip:private" expands to: the loopback, link-local and

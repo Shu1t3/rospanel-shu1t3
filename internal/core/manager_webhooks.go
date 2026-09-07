@@ -163,13 +163,21 @@ func (m *Manager) enqueueWebhook(job webhookJob) {
 // startWebhookWorkers launches the delivery worker pool.
 func (m *Manager) startWebhookWorkers() {
 	for i := 0; i < webhookWorkers; i++ {
-		go m.webhookWorker()
+		m.runAsync(m.webhookWorker)
 	}
 }
 
 func (m *Manager) webhookWorker() {
-	for job := range m.webhookCh {
-		m.deliverWebhook(job)
+	for {
+		select {
+		case <-m.done:
+			return
+		case job, ok := <-m.webhookCh:
+			if !ok {
+				return
+			}
+			m.deliverWebhook(job)
+		}
 	}
 }
 
