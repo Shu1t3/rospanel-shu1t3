@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.25.4](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.25.3...v2.25.4) (2026-09-07)
+
+
+### Refactoring
+
+* **xray:** прямой in-process gRPC-клиент для StatsService ([8eab61a](https://github.com/Shu1t3/rospanel-shu1t3/commit/8eab61a6c405cd041e0deef61093bde6541d4876))
+
 ## [2.25.3](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.24.1...v2.25.3) (2026-09-07)
 
 
