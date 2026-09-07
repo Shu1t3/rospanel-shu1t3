@@ -21,13 +21,18 @@ import (
 	"syscall"
 	"time"
 
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+
 	"github.com/Shu1t3/rospanel-shu1t3/internal/logbuf"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/xray/statsrpc"
 )
 
 // Process supervision tuning.
 const (
 	validateTimeout = 30 * time.Second // `xray -test` config validation (geosite.dat parse ~7-8s on 1 vCPU)
-	statsTimeout    = 10 * time.Second // `xray api statsquery`
+	statsTimeout    = 10 * time.Second // `xray api adu/rmu/adi/rmi`
+	statsRPCTimeout = 3 * time.Second  // in-process gRPC StatsService query timeout
 	restartBackoff  = time.Second      // base crash-restart delay (doubles, capped)
 	maxBackoff      = 30 * time.Second
 	healthyUptime   = 30 * time.Second // a run longer than this resets the backoff
@@ -126,6 +131,11 @@ type Supervisor struct {
 	lastStatsTime time.Time
 	lastStatsAddr string
 	lastStatsVal  map[string]Traffic
+
+	grpcMu   sync.Mutex
+	grpcConn *grpc.ClientConn
+	grpcCli  statsrpc.StatsServiceClient
+	grpcAddr string
 
 	logs *logbuf.Hub // recent Xray log lines + live subscribers
 }
@@ -319,9 +329,19 @@ func (s *Supervisor) apiResponsive() bool {
 	return s.PingAPI(s.APIAddr()) == nil
 }
 
-// PingAPI performs a lightweight liveness check on Xray's API without querying heavy per-user stats.
+// PingAPI performs a lightweight liveness check on Xray's API without querying heavy per-user stats
+// via the in-process gRPC client.
 func (s *Supervisor) PingAPI(apiAddr string) error {
-	_, err := s.runXray(statsTimeout, "api", "statsquery", "--server="+apiAddr, "inbound>>>")
+	cli, err := s.getStatsClient(apiAddr)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), statsRPCTimeout)
+	defer cancel()
+	_, err = cli.QueryStats(ctx, &statsrpc.QueryStatsRequest{Pattern: "inbound>>>"})
+	if err != nil {
+		s.closeGRPC()
+	}
 	return err
 }
 
@@ -986,6 +1006,7 @@ func (s *Supervisor) stopProc() {
 	s.cur = nil
 	s.restarts = 0
 	s.mu.Unlock()
+	s.closeGRPC()
 
 	// Graceful termination: send SIGTERM first, fallback to SIGKILL if not reaped in time.
 	if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil {
@@ -1295,6 +1316,7 @@ func (s *Supervisor) Stop() {
 	s.statsMu.Lock()
 	s.lastStatsVal = nil
 	s.statsMu.Unlock()
+	s.closeGRPC()
 	s.stopProc()
 }
 
@@ -1318,6 +1340,7 @@ func (s *Supervisor) Suspend() {
 	s.statsMu.Lock()
 	s.lastStatsVal = nil
 	s.statsMu.Unlock()
+	s.closeGRPC()
 	s.stopProc()
 }
 
@@ -1345,7 +1368,7 @@ type Traffic struct {
 }
 
 // QueryStats reads per-user traffic counters from the running Xray StatsService
-// (via `xray api statsquery`). Keyed by user email (we use "u<id>").
+// via direct in-process gRPC. Keyed by user email (we use "u<id>").
 func (s *Supervisor) QueryStats(apiAddr string) (map[string]Traffic, error) {
 	s.statsMu.Lock()
 	defer s.statsMu.Unlock()
@@ -1356,16 +1379,102 @@ func (s *Supervisor) QueryStats(apiAddr string) (map[string]Traffic, error) {
 		return s.lastStatsVal, nil
 	}
 
-	// Timeout so a wedged API port can't hang the stats poller forever.
-	out, err := s.runXray(statsTimeout, "api", "statsquery", "--server="+apiAddr, "user>>>")
-	if err != nil {
-		return nil, fmt.Errorf("statsquery: %w", err)
+	s.mu.Lock()
+	closed, suspended := s.closed, s.suspended
+	s.mu.Unlock()
+	if closed || suspended {
+		return nil, fmt.Errorf("xray is not serving")
 	}
-	st := parseStats(out)
+
+	cli, err := s.getStatsClient(apiAddr)
+	if err != nil {
+		return nil, fmt.Errorf("stats client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), statsRPCTimeout)
+	defer cancel()
+
+	resp, err := cli.QueryStats(ctx, &statsrpc.QueryStatsRequest{Pattern: "user>>>"})
+	if err != nil {
+		s.closeGRPC()
+		return nil, fmt.Errorf("statsquery rpc: %w", err)
+	}
+
+	st := parseProtoStats(resp.GetStat())
 	s.lastStatsTime = time.Now()
 	s.lastStatsAddr = apiAddr
 	s.lastStatsVal = st
 	return st, nil
+}
+
+func (s *Supervisor) getStatsClient(apiAddr string) (statsrpc.StatsServiceClient, error) {
+	s.grpcMu.Lock()
+	defer s.grpcMu.Unlock()
+
+	if s.grpcConn != nil && s.grpcAddr == apiAddr {
+		return s.grpcCli, nil
+	}
+	if s.grpcConn != nil {
+		_ = s.grpcConn.Close()
+		s.grpcConn = nil
+		s.grpcCli = nil
+		s.grpcAddr = ""
+	}
+	conn, err := grpc.NewClient(apiAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return nil, fmt.Errorf("grpc client: %w", err)
+	}
+	s.grpcConn = conn
+	s.grpcCli = statsrpc.NewStatsServiceClient(conn)
+	s.grpcAddr = apiAddr
+	return s.grpcCli, nil
+}
+
+func (s *Supervisor) closeGRPC() {
+	s.grpcMu.Lock()
+	defer s.grpcMu.Unlock()
+	if s.grpcConn != nil {
+		_ = s.grpcConn.Close()
+		s.grpcConn = nil
+		s.grpcCli = nil
+		s.grpcAddr = ""
+	}
+}
+
+// parseProtoStats converts gRPC StatsService response into per-email Traffic.
+// Stat names look like "user>>>u1>>>traffic>>>uplink".
+func parseProtoStats(stats []*statsrpc.Stat) map[string]Traffic {
+	out := make(map[string]Traffic, len(stats)/2)
+	const userPrefix = "user>>>"
+	const trafficPrefix = "traffic>>>"
+	for _, st := range stats {
+		if st == nil || !strings.HasPrefix(st.Name, userPrefix) {
+			continue
+		}
+		rest := st.Name[len(userPrefix):]
+		idx := strings.Index(rest, ">>>")
+		if idx <= 0 {
+			continue
+		}
+		email := rest[:idx]
+		rest = rest[idx+3:]
+		if !strings.HasPrefix(rest, trafficPrefix) {
+			continue
+		}
+		dir := rest[len(trafficPrefix):]
+		if strings.Contains(dir, ">>>") {
+			continue
+		}
+		t := out[email]
+		switch dir {
+		case "uplink":
+			t.Up = st.Value
+		case "downlink":
+			t.Down = st.Value
+		}
+		out[email] = t
+	}
+	return out
 }
 
 // parseStats turns the StatsService JSON into per-email Traffic. Stat names look

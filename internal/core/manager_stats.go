@@ -147,7 +147,7 @@ func (m *Manager) StartSysstat(diskPath string) {
 
 // TrackVPNViewer marks one active dashboard-stream subscriber for the life of the
 // returned release func — call `defer mgr.TrackVPNViewer()()`. vpnSpeedLoop only
-// samples Xray (forking `api statsquery` every 3s) while at least one viewer is
+// samples Xray (via in-process gRPC StatsService every 3s) while at least one viewer is
 // connected, so an unattended panel costs nothing extra.
 func (m *Manager) TrackVPNViewer() func() {
 	m.vpnViewers.Add(1)

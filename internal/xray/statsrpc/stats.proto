@@ -1,0 +1,25 @@
+// Source-compatible subset of Xray-core's app/stats/command/command.proto.
+// Keep the package and field numbers unchanged: they are the on-wire API contract.
+syntax = "proto3";
+
+package xray.app.stats.command;
+
+option go_package = "github.com/Shu1t3/rospanel-shu1t3/internal/xray/statsrpc";
+
+message Stat {
+  string name = 1;
+  int64 value = 2;
+}
+
+message QueryStatsRequest {
+  string pattern = 1;
+  bool reset = 2;
+}
+
+message QueryStatsResponse {
+  repeated Stat stat = 1;
+}
+
+service StatsService {
+  rpc QueryStats(QueryStatsRequest) returns (QueryStatsResponse) {}
+}
