@@ -1,5 +1,40 @@
 # Changelog
 
+## [2.25.3](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.24.1...v2.25.3) (2026-09-07)
+
+
+### chore
+
+* release 2.25.3 ([9bb733f](https://github.com/Shu1t3/rospanel-shu1t3/commit/9bb733fa25301f074d0f148443ff1a285e271aff))
+
+
+### Features
+
+* **external:** present a device when reading somebody else's subscription ([cab6a0f](https://github.com/Shu1t3/rospanel-shu1t3/commit/cab6a0f9cfa07f728df880de828244ab1025a450))
+* **nodes:** the AmneziaWG tunnel is watched on nodes, not just on the master ([4bbf73f](https://github.com/Shu1t3/rospanel-shu1t3/commit/4bbf73fe56903d83bbaf9cc191977c36b184e705))
+* synchronize features with upstream (external device identity, node AWG monitoring, UI stream resilience) ([80ed643](https://github.com/Shu1t3/rospanel-shu1t3/commit/80ed6430657314f7d703ab452f49c2f964c18343))
+
+
+### Bug Fixes
+
+* add operational rule sets for reasoning, editing, terminal use, and token optimization while cleaning up existing rule files ([affbd91](https://github.com/Shu1t3/rospanel-shu1t3/commit/affbd91dda7efb232bd043311ae616a6826683f3))
+* **core:** the manager's background loops stop when it does ([3d3d20a](https://github.com/Shu1t3/rospanel-shu1t3/commit/3d3d20aa9caf7750a49b5dfa05de1e1adef6f682))
+* **health:** the AmneziaWG row sits under Xray config, not at the end ([ed6fd75](https://github.com/Shu1t3/rospanel-shu1t3/commit/ed6fd751d8d4cc46887c0d8e60ae8d9adeb78e36))
+* **health:** the master's own AmneziaWG tunnel is in its diagnostics too ([a02b4b2](https://github.com/Shu1t3/rospanel-shu1t3/commit/a02b4b2a405bb13042c75be0829736c2bc5dd859))
+* **sub:** the lane name comes back typed, not read out of the config map ([1c12158](https://github.com/Shu1t3/rospanel-shu1t3/commit/1c12158a18e3eaa1bc99b68845760bef9d5fee9c))
+* **web:** five defects the fork's frontend audit pointed at, done our way ([74e3035](https://github.com/Shu1t3/rospanel-shu1t3/commit/74e30354ab916e39db1fe60d640449937805af63))
+
+
+### Performance Improvements
+
+* batch firewall rules, tune singbox generation, generic page envelope and memory limit ([f3ebc06](https://github.com/Shu1t3/rospanel-shu1t3/commit/f3ebc06cb4e37ae72f332a26f38e9196e64d9ee3))
+* optimize database access, log buffer, subprocess query and serialization ([4105104](https://github.com/Shu1t3/rospanel-shu1t3/commit/4105104288498866586fb0c97036285e4f8408f4))
+
+
+### Refactoring
+
+* migrate agent skills to rules and workflows, and update gitignore configuration ([e25fe4a](https://github.com/Shu1t3/rospanel-shu1t3/commit/e25fe4a9d530a07d3a48da26526da64082df9c2b))
+
 ## [2.24.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.24.0...v2.24.1) (2026-09-05)
 
 
