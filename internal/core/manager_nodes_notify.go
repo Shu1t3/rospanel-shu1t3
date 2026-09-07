@@ -56,10 +56,9 @@ type nodeAlertState struct {
 	xrayDownAt     time.Time
 	lastXrayNotify time.Time
 
-	awgUp         bool
-	awgAlerted    bool
-	awgDownAt     time.Time
-	lastAWGNotify time.Time
+	// awgDownAlerted is the same for the AmneziaWG tunnel: once when it stops being
+	// up, once when it comes back.
+	awgDownAlerted bool
 
 	// certErr is the last TLS error this node reported (empty ⇒ its cert is fine),
 	// recorded on sync and acted on by the sweep.
@@ -193,9 +192,7 @@ func (m *Manager) nodeAlertsFor(n *model.Node, now time.Time, diskUsed, diskTota
 	lang := m.botLang()
 
 	if !st.known {
-		awgRunning, _ := m.NodeAWGStatus(n.ID)
 		st.known, st.online, st.xrayUp = true, online, n.XrayRunning
-		st.awgUp = awgRunning
 		st.certSHA, st.certSelf = n.CertSHA256, n.CertSelfSigned
 		return nil // baseline: report changes from here on, never the starting state
 	}
@@ -256,29 +253,34 @@ func (m *Manager) nodeAlertsFor(n *model.Node, now time.Time, diskUsed, diskTota
 	}
 	st.xrayUp = n.XrayRunning
 
-	if n.AWGEnabled != nil && *n.AWGEnabled {
-		awgRunning, awgErr := m.NodeAWGStatus(n.ID)
-		awgUp := awgRunning && awgErr == ""
-		switch {
-		case st.awgUp && !awgUp:
-			if now.Sub(st.lastAWGNotify) >= nodeXrayNotifyThrottle {
-				st.lastAWGNotify, st.awgAlerted, st.awgDownAt = now, true, now
-				errDetail := awgErr
-				if errDetail == "" {
-					errDetail = "stopped"
+	// The AmneziaWG tunnel, when the operator switched the lane on for this server.
+	// Nothing else watched it: the agent applies the tunnel and a failure went into
+	// the node's own log and no further, so the panel kept the server green and kept
+	// issuing keys for a lane nobody could connect through.
+	//
+	// Only for a node that actually reports the state. An agent older than the feature
+	// says nothing, and reading silence as "down" would alert on every node in the
+	// fleet the moment this ships.
+	if awgEnabledOn(n) {
+		if awg, ok := m.NodeAWG(n.ID); ok {
+			switch {
+			case !awg.Running && !st.awgDownAlerted:
+				st.awgDownAlerted = true
+				msg := fmt.Sprintf(i18n.T(lang, "notify.nodeAWGDown"), nodeLabel(n))
+				if awg.Err != "" {
+					msg += "\n" + escHTML(awg.Err)
 				}
-				out = append(out, nodeAlertMsg{model.AdminEventXrayDown, fmt.Sprintf(
-					"AmneziaWG offline: %s (%s)", nodeLabel(n), errDetail)})
+				out = append(out, nodeAlertMsg{model.AdminEventXrayDown, msg})
+			case awg.Running && st.awgDownAlerted:
+				st.awgDownAlerted = false
+				out = append(out, nodeAlertMsg{model.AdminEventXrayDown,
+					fmt.Sprintf(i18n.T(lang, "notify.nodeAWGBack"), nodeLabel(n))})
 			}
-		case !st.awgUp && awgUp && st.awgAlerted:
-			st.awgAlerted = false
-			msg := fmt.Sprintf("AmneziaWG online: %s", nodeLabel(n))
-			if down := now.Sub(st.awgDownAt); down > time.Second {
-				msg += "\n" + i18n.T(lang, "notify.downtime", fmtDowntime(down, lang))
-			}
-			out = append(out, nodeAlertMsg{model.AdminEventXrayDown, msg})
 		}
-		st.awgUp = awgUp
+	} else {
+		// The lane was switched off. Forget the alarm so switching it back on later
+		// starts clean rather than believing the operator was already told.
+		st.awgDownAlerted = false
 	}
 
 	// A changed fingerprint on a CA-signed cert is a renewal that landed. Self-signed

@@ -48,12 +48,14 @@ func (m *Manager) NodeHealth(id int64) (*HealthReport, error) {
 	// Everything below describes the node's last report. When it has never
 	// connected there is nothing to describe, so the link check stands alone.
 	if n.Joined() {
-		comps := m.NodeComponents(n.ID)
-		checks = append(checks, m.nodeComponentsHealth(n, comps)...)
-		checks = append(checks,
-			m.nodeConfigHealth(n, online),
-			nodeCertHealth(n),
-		)
+		checks = append(checks, nodeXrayHealth(n), m.nodeConfigHealth(n, online))
+		// With the config it is part of, matching the master's own report — the two
+		// views are read by the same person and should not order the same facts
+		// differently.
+		if awgEnabledOn(n) {
+			checks = append(checks, m.nodeAWGHealth(n))
+		}
+		checks = append(checks, nodeCertHealth(n))
 		// The machine itself, as the node reported it. An agent older than this
 		// feature sends nothing, so the rows are omitted rather than shown as zeros.
 		if h, ok := m.NodeHostStats(n.ID); ok {
@@ -93,56 +95,13 @@ func (m *Manager) nodeLinkHealth(n *model.Node, now int64, online bool) HealthCh
 	}
 }
 
-func (m *Manager) nodeComponentsHealth(n *model.Node, comps []nodeapi.ComponentStatus) []HealthCheck {
-	out := make([]HealthCheck, 0, len(comps))
-	for _, c := range comps {
-		switch c.Name {
-		case nodeapi.ComponentXray:
-			out = append(out, nodeXrayHealth(n, c))
-		case nodeapi.ComponentAWG:
-			if c.Status == nodeapi.StatusDisabled {
-				continue
-			}
-			out = append(out, nodeAWGHealth(c))
-		default:
-			if c.Status == nodeapi.StatusDisabled {
-				continue
-			}
-			label := "health." + c.Name
-			if c.Status == nodeapi.StatusHealthy || (c.Running && c.Error == "") {
-				out = append(out, HealthCheck{
-					Key:       c.Name,
-					LabelKey:  label,
-					Status:    healthOK,
-					DetailKey: "health.componentOK",
-					Args:      map[string]any{"name": c.Name},
-				})
-			} else {
-				out = append(out, HealthCheck{
-					Key:       c.Name,
-					LabelKey:  label,
-					Status:    healthError,
-					DetailKey: "health.componentDown",
-					Detail:    c.Error,
-					HintKey:   "health.componentDownHint",
-					Args:      map[string]any{"name": c.Name},
-				})
-			}
-		}
-	}
-	return out
-}
-
-func nodeXrayHealth(n *model.Node, c nodeapi.ComponentStatus) HealthCheck {
+func nodeXrayHealth(n *model.Node) HealthCheck {
 	const label = "health.xray"
-	if !c.Running || c.Status == nodeapi.StatusUnhealthy {
+	if !n.XrayRunning {
 		return HealthCheck{Key: "xray", LabelKey: label, Status: healthError,
 			DetailKey: "health.nodeXrayDown", HintKey: "health.nodeXrayDownHint"}
 	}
-	ver := c.Version
-	if ver == "" {
-		ver = n.XrayVersion
-	}
+	ver := n.XrayVersion
 	if ver == "" {
 		ver = "?"
 	}
@@ -155,28 +114,39 @@ func nodeXrayHealth(n *model.Node, c nodeapi.ComponentStatus) HealthCheck {
 		DetailKey: "health.nodeXrayOK", Args: map[string]any{"version": ver}}
 }
 
-func nodeAWGHealth(c nodeapi.ComponentStatus) HealthCheck {
+// awgEnabledOn reports whether the AmneziaWG lane is on for this node — its own
+// answer when it has one, otherwise the master's, which is the same inheritance the
+// config generator applies.
+func awgEnabledOn(n *model.Node) bool {
+	return n.AWGEnabled != nil && *n.AWGEnabled
+}
+
+// nodeAWGHealth reports what the node last said about its tunnel.
+//
+// The gap this closes: the agent applies the tunnel, and a failure went into the
+// node's own log and no further. The panel kept the server green, kept handing out
+// AWG keys and configs for it, and the operator found out from the users.
+func (m *Manager) nodeAWGHealth(n *model.Node) HealthCheck {
 	const label = "health.awg"
-	if c.Status == nodeapi.StatusUnhealthy || !c.Running || c.Error != "" {
-		detail := c.Error
-		if detail == "" {
-			detail = "tunnel inactive"
-		}
-		return HealthCheck{
-			Key:       "awg",
-			LabelKey:  label,
-			Status:    healthError,
-			DetailKey: "health.awgDown",
-			Detail:    detail,
-			HintKey:   "health.awgHint",
-		}
+	st, ok := m.NodeAWG(n.ID)
+	if !ok {
+		// The node has never mentioned AWG: an agent older than this feature. Say so
+		// rather than guessing — "unknown" is honest and "down" would be a false alarm
+		// on every node mid-upgrade.
+		return HealthCheck{Key: "awg", LabelKey: label, Status: healthWarn,
+			DetailKey: "health.awgUnknown", HintKey: "health.nodeUpdateHint"}
 	}
-	return HealthCheck{
-		Key:       "awg",
-		LabelKey:  label,
-		Status:    healthOK,
-		DetailKey: "health.awgOK",
+	if st.Running {
+		return HealthCheck{Key: "awg", LabelKey: label, Status: healthOK,
+			DetailKey: "health.awgOK"}
 	}
+	if st.Err != "" {
+		return HealthCheck{Key: "awg", LabelKey: label, Status: healthError,
+			DetailKey: "health.awgFailed", HintKey: "health.nodeAWGHint",
+			Args: map[string]any{"err": st.Err}}
+	}
+	return HealthCheck{Key: "awg", LabelKey: label, Status: healthError,
+		DetailKey: "health.awgDown", HintKey: "health.nodeAWGHint"}
 }
 
 // nodeConfigHealth compares what the node last applied against what the panel

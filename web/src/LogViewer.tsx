@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { openStream } from "./livestream";
 import { cn, SegmentedControl, ToolDialog } from "./ui";
 
 // LogViewer is the live-tailing log dialog shared by the panel and Xray log views.
@@ -24,62 +25,24 @@ export function LogViewer({
   const [lines, setLines] = useState<string[]>([]);
   const [level, setLevel] = useState("all");
   const [atBottom, setAtBottom] = useState(true);
-  const [reconnecting, setReconnecting] = useState(false);
+  const [live, setLive] = useState(true);
   const boxRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
 
   useEffect(() => {
-    let es: EventSource | null = null;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let attempt = 0;
-    let unmounted = false;
-
-    const connect = () => {
-      if (unmounted) return;
-      try {
-        es = new EventSource(streamUrl, { withCredentials: true });
-      } catch {
-        handleError();
-        return;
-      }
-
-      es.onopen = () => {
-        attempt = 0;
-        setReconnecting(false);
-      };
-
-      es.onmessage = (e) => {
-        setReconnecting(false);
+    // openStream, not a bare EventSource: a 429 from the per-IP stream gate is an
+    // HTTP error, and a bare EventSource gives up on those for good — the log would
+    // simply stop scrolling, with no way to tell that from a quiet server.
+    const stream = openStream(
+      streamUrl,
+      (data) =>
         setLines((prev) => {
-          const next = [...prev, e.data];
+          const next = [...prev, data];
           return next.length > 2000 ? next.slice(-2000) : next;
-        });
-      };
-
-      es.onerror = () => {
-        handleError();
-      };
-    };
-
-    const handleError = () => {
-      if (unmounted) return;
-      if (es) {
-        es.close();
-        es = null;
-      }
-      attempt++;
-      setReconnecting(true);
-      const delay = Math.min(2000 * Math.pow(1.5, attempt - 1), 10000);
-      timer = setTimeout(connect, delay);
-    };
-
-    connect();
-
-    return () => {
-      unmounted = true;
-      if (es) es.close();
-      if (timer) clearTimeout(timer);
-    };
+        }),
+      setLive,
+    );
+    return () => stream.close();
   }, [streamUrl]);
 
   const shown =
@@ -116,17 +79,16 @@ export function LogViewer({
         <SegmentedControl data={filters} value={level} onChange={setLevel} />
       }
     >
-      {reconnecting && (
-        <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-800">
-          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />
-          <span>{t("logs.reconnecting", "Соединение прервано. Переподключение...")}</span>
-        </div>
-      )}
       <div
         ref={boxRef}
         onScroll={onScroll}
         className="flex-1 overflow-auto bg-gray-50 p-3 font-mono text-xs leading-relaxed"
       >
+        {!live && (
+          <p className="mb-2 rounded border border-orange-200 bg-orange-50 px-2 py-1 text-orange-800">
+            {t("logs.reconnecting")}
+          </p>
+        )}
         {shown.length === 0 ? (
           <p className="text-gray-400">
             {lines.length === 0

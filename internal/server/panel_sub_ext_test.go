@@ -62,7 +62,7 @@ func TestSubServersExternalAttachedWhenMasterFull(t *testing.T) {
 	}
 
 	// Add external subscription with enabled servers
-	subID, err := st.CreateExtSubscription("https://example.com/sub", "test-sub")
+	subID, err := st.CreateExtSubscription("https://example.com/sub", "test-sub", model.ExtIdentity{})
 	if err != nil {
 		t.Fatalf("create extsub: %v", err)
 	}

@@ -14,9 +14,9 @@ func TestSubscriptionHeaders(t *testing.T) {
 	hdr1Repeat := SubscriptionHeaders(url1)
 	hdr2 := SubscriptionHeaders(url2)
 
-	hwid1 := hdr1.Get(model.HeaderHWID)
-	hwid1Repeat := hdr1Repeat.Get(model.HeaderHWID)
-	hwid2 := hdr2.Get(model.HeaderHWID)
+	hwid1 := hdr1[model.HeaderHWID]
+	hwid1Repeat := hdr1Repeat[model.HeaderHWID]
+	hwid2 := hdr2[model.HeaderHWID]
 
 	if hwid1 == "" {
 		t.Fatal("expected non-empty x-hwid")
@@ -28,13 +28,13 @@ func TestSubscriptionHeaders(t *testing.T) {
 		t.Fatalf("different URLs must produce different x-hwid: %q == %q", hwid1, hwid2)
 	}
 
-	if got := hdr1.Get("User-Agent"); got != "RosPanel-Happ/1.0" {
+	if got := hdr1["User-Agent"]; got != "RosPanel-Happ/1.0" {
 		t.Errorf("User-Agent = %q, want RosPanel-Happ/1.0", got)
 	}
-	if got := hdr1.Get("Accept"); got != "text/plain, */*" {
+	if got := hdr1["Accept"]; got != "text/plain, */*" {
 		t.Errorf("Accept = %q, want text/plain, */*", got)
 	}
-	if got := hdr1.Get(model.HeaderDeviceOS); got != "RosPanel" {
+	if got := hdr1[model.HeaderDeviceOS]; got != "RosPanel" {
 		t.Errorf("x-device-os = %q, want RosPanel", got)
 	}
 }

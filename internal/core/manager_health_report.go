@@ -57,7 +57,15 @@ type HealthReport struct {
 // calls — so the page is cheap to poll.
 func (m *Manager) Health() *HealthReport {
 	set, _ := m.store.GetSettings()
-	checks := []HealthCheck{m.xrayHealth(), m.configHealth(set), m.tlsHealth()}
+	checks := []HealthCheck{m.xrayHealth(), m.configHealth(set)}
+	// The tunnel sits with the config it is part of, not at the end of the list: it is
+	// a lane this server serves, and reading it next to Xray is what makes the pair
+	// legible. Only when the lane is switched on — a lane nobody enabled is not a
+	// health question, and a green row for it would be noise.
+	if set != nil && set.AWGEnabled {
+		checks = append(checks, m.awgHealth())
+	}
+	checks = append(checks, m.tlsHealth())
 
 	if m.sys != nil {
 		s := m.sys.Read()
@@ -301,6 +309,25 @@ func memHealth(used, total int64) HealthCheck {
 	}
 	return HealthCheck{Key: "mem", LabelKey: label, Status: healthOK,
 		DetailKey: "health.memUsage", Args: args}
+}
+
+// awgHealth reports the master's own tunnel. Same detail keys a node's check uses —
+// the facts are identical on either side and only the hint differs, which is one for
+// a remote machine and one for this one.
+func (m *Manager) awgHealth() HealthCheck {
+	const label = "health.awg"
+	running, lastErr := m.AWGStatus()
+	switch {
+	case running:
+		return HealthCheck{Key: "awg", LabelKey: label, Status: healthOK, DetailKey: "health.awgOK"}
+	case lastErr != "":
+		return HealthCheck{Key: "awg", LabelKey: label, Status: healthError,
+			DetailKey: "health.awgFailed", HintKey: "health.awgHint",
+			Args: map[string]any{"err": lastErr}}
+	default:
+		return HealthCheck{Key: "awg", LabelKey: label, Status: healthError,
+			DetailKey: "health.awgDown", HintKey: "health.awgHint"}
+	}
 }
 
 // worstStatus returns the most severe status among the checks (error > warn > ok),

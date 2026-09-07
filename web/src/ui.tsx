@@ -882,6 +882,7 @@ export function PasswordInput(
           type={show ? "text" : "password"}
           placeholder={props.placeholder}
           autoFocus={props.autoFocus}
+          autoComplete={props.autoComplete}
           onChange={(e) => props.onChange(e.currentTarget.value)}
         />
         <button

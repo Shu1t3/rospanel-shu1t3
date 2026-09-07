@@ -161,7 +161,7 @@ func ProxyTransport(raw string) *http.Transport {
 }
 
 // GetViaWithHeaders is GetWithHeaders, optionally routed through an operator-configured proxy.
-func GetViaWithHeaders(ctx context.Context, rawURL string, maxBody int64, proxy string, headers http.Header) ([]byte, error) {
+func GetViaWithHeaders(ctx context.Context, rawURL string, maxBody int64, proxy string, headers map[string]string) ([]byte, error) {
 	if strings.TrimSpace(proxy) == "" {
 		return GetWithHeaders(ctx, rawURL, maxBody, headers)
 	}
@@ -172,10 +172,8 @@ func GetViaWithHeaders(ctx context.Context, rawURL string, maxBody int64, proxy 
 	if err != nil {
 		return nil, err
 	}
-	for k, vv := range headers {
-		for _, v := range vv {
-			req.Header.Add(k, v)
-		}
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 	client := &http.Client{Timeout: defaultFetchTimeout, Transport: ProxyTransport(proxy)}
 	if deadline, ok := ctx.Deadline(); ok {

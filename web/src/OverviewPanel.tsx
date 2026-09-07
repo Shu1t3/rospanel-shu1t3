@@ -4,6 +4,7 @@ import { listNodes, type NodeView, type SystemStatus } from "./api";
 import { cssVar } from "./charts";
 import { fmtBytes, fmtDuration } from "./format";
 import { serverName, statusDot } from "./NodesPanel";
+import { openStream } from "./livestream";
 import { useIsAdmin } from "./role";
 import { navigate } from "./router";
 import { Badge, Button, Card, Skeleton } from "./ui";
@@ -270,68 +271,28 @@ export function OverviewPanel() {
   const isAdmin = useIsAdmin();
   const [s, setS] = useState<SystemStatus | null>(null);
   const [loaded, setLoaded] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [reconnecting, setReconnecting] = useState(false);
   const [nodes, setNodes] = useState<NodeView[]>([]);
+  const [live, setLive] = useState(true);
 
   useEffect(() => {
-    let es: EventSource | null = null;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let attempt = 0;
-    let unmounted = false;
-
-    const connect = () => {
-      if (unmounted) return;
-      try {
-        es = new EventSource("api/system/stream", { withCredentials: true });
-      } catch {
-        handleError();
-        return;
-      }
-
-      es.onopen = () => {
-        attempt = 0;
-        setError(null);
-        setReconnecting(false);
-      };
-
-      es.onmessage = (e) => {
+    // Live push via Server-Sent Events, through openStream rather than a bare
+    // EventSource: the panel refuses a stream with 429 once the per-IP gate is full,
+    // and a bare EventSource treats that as fatal and never comes back — the dashboard
+    // would sit frozen on stale numbers with nothing to say so.
+    const stream = openStream(
+      "api/system/stream",
+      (data) => {
         try {
-          setS(JSON.parse(e.data));
+          setS(JSON.parse(data));
           setLoaded(true);
-          setError(null);
-          setReconnecting(false);
         } catch {
           /* ignore malformed frame */
         }
-      };
-
-      es.onerror = () => {
-        handleError();
-      };
-    };
-
-    const handleError = () => {
-      if (unmounted) return;
-      if (es) {
-        es.close();
-        es = null;
-      }
-      attempt++;
-      const delay = Math.min(2000 * Math.pow(1.5, attempt - 1), 15000);
-      setReconnecting(true);
-      setError(t("common.reconnecting", "Потеряно соединение с сервером. Переподключение..."));
-      timer = setTimeout(connect, delay);
-    };
-
-    connect();
-
-    return () => {
-      unmounted = true;
-      if (es) es.close();
-      if (timer) clearTimeout(timer);
-    };
-  }, [t]);
+      },
+      setLive,
+    );
+    return () => stream.close();
+  }, []);
 
   // The node list is an admin-only route, so an operator never asks for it (and never
   // sees a strip that would answer 403). It polls on a slow timer of its own rather
@@ -348,14 +309,6 @@ export function OverviewPanel() {
     return () => clearInterval(id);
   }, [isAdmin]);
 
-  if (!loaded && error && !s) {
-    return (
-      <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-red-200 bg-red-50 p-8 text-center">
-        <p className="text-sm font-medium text-danger">{error}</p>
-        <Button onClick={() => window.location.reload()}>{t("common.retry", "Повторить")}</Button>
-      </div>
-    );
-  }
   if (!loaded) return <OverviewSkeleton />;
   if (!s) return null;
 
@@ -364,10 +317,11 @@ export function OverviewPanel() {
 
   return (
     <div className="flex flex-col gap-4">
-      {reconnecting && (
-        <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-          <span className="h-2 w-2 animate-pulse rounded-full bg-amber-500" />
-          <span>{t("common.reconnecting", "Соединение с сервером прервано. Переподключение...")}</span>
+      {/* Stale numbers must say so. Without this the dashboard is indistinguishable
+          from a quiet server: the same figures, forever. */}
+      {!live && (
+        <div className="rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-orange-800">
+          {t("overview.reconnecting")}
         </div>
       )}
 

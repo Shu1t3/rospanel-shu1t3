@@ -531,15 +531,16 @@ func toAdminAuditEntryDTOs(entries []model.AdminAuditEntry) []adminAuditEntryDTO
 // --- External Subscription & Server DTOs ---
 
 type extSubscriptionDTO struct {
-	ID          int64  `json:"id"`
-	Name        string `json:"name"`
-	Source      string `json:"source"`
-	Enabled     bool   `json:"enabled"`
-	LastFetchAt int64  `json:"last_fetch_at"`
-	LastOKAt    int64  `json:"last_ok_at"`
-	LastError   string `json:"last_error,omitempty"`
-	ServerCount int    `json:"server_count"`
-	CreatedAt   int64  `json:"created_at"`
+	ID          int64             `json:"id"`
+	Name        string            `json:"name"`
+	Source      string            `json:"source"`
+	Identity    model.ExtIdentity `json:"identity"`
+	Enabled     bool              `json:"enabled"`
+	LastFetchAt int64             `json:"last_fetch_at"`
+	LastOKAt    int64             `json:"last_ok_at"`
+	LastError   string            `json:"last_error,omitempty"`
+	ServerCount int               `json:"server_count"`
+	CreatedAt   int64             `json:"created_at"`
 }
 
 func toExtSubscriptionDTO(s *model.ExtSubscription) extSubscriptionDTO {
@@ -550,6 +551,7 @@ func toExtSubscriptionDTO(s *model.ExtSubscription) extSubscriptionDTO {
 		ID:          s.ID,
 		Name:        s.Name,
 		Source:      s.Source,
+		Identity:    s.Identity,
 		Enabled:     s.Enabled,
 		LastFetchAt: s.LastFetchAt,
 		LastOKAt:    s.LastOKAt,

@@ -177,7 +177,7 @@ func formatHTTPError(resp *http.Response) error {
 }
 
 // GetWithHeaders performs a bounded GET after SSRF validation, applying custom headers.
-func GetWithHeaders(ctx context.Context, rawURL string, maxBody int64, headers http.Header) ([]byte, error) {
+func GetWithHeaders(ctx context.Context, rawURL string, maxBody int64, headers map[string]string) ([]byte, error) {
 	if err := ValidateFetchURL(rawURL); err != nil {
 		return nil, err
 	}
@@ -185,10 +185,8 @@ func GetWithHeaders(ctx context.Context, rawURL string, maxBody int64, headers h
 	if err != nil {
 		return nil, err
 	}
-	for k, vv := range headers {
-		for _, v := range vv {
-			req.Header.Add(k, v)
-		}
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 	client := Client(0)
 	if deadline, ok := ctx.Deadline(); ok {

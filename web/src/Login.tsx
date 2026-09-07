@@ -71,6 +71,7 @@ export function Login({
             label={t('login.username')}
             value={username}
             onChange={setUsername}
+            autoComplete="username"
             autoFocus
           />
           <PasswordInput
@@ -79,6 +80,7 @@ export function Login({
             label={t('login.password')}
             value={password}
             onChange={setPassword}
+            autoComplete="current-password"
           />
           {needCode && (
             <TextInput
@@ -88,6 +90,8 @@ export function Login({
               value={code}
               onChange={(v) => setCode(v.replace(/\D/g, '').slice(0, 6))}
               placeholder="000000"
+              autoComplete="one-time-code"
+              inputMode="numeric"
               autoFocus
               mono
             />

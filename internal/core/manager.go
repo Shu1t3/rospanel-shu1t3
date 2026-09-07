@@ -252,6 +252,7 @@ type Manager struct {
 	// its diagnostics page, under nodeGeoMu with the other "last reported" caches.
 	// Bounded by the node count; a deleted node's entry is dead weight of one struct.
 	nodeHostStats  map[int64]nodeapi.HostStats
+	nodeAWG        map[int64]nodeAWGState
 	nodeAWGRunning map[int64]bool
 	nodeAWGErr     map[int64]string
 	nodeComponents map[int64][]nodeapi.ComponentStatus
@@ -333,6 +334,7 @@ func New(st *store.Store, sup *xray.Supervisor, opts xray.Options, tls TLSPaths,
 		nodeLogs:         map[int64]nodeLogEntry{},
 		nodeGeoFiles:     map[int64][]nodeapi.GeoFile{},
 		nodeHostStats:    map[int64]nodeapi.HostStats{},
+		nodeAWG:          map[int64]nodeAWGState{},
 		nodeAWGRunning:   map[int64]bool{},
 		nodeAWGErr:       map[int64]string{},
 		nodeComponents:   map[int64][]nodeapi.ComponentStatus{},

@@ -231,14 +231,12 @@ func TestSubscriptionAcceptsExtSubHeaders(t *testing.T) {
 		t.Fatalf("bare request: status %d, want 403", bareRec.Code)
 	}
 
-	// A request with extsub.SubscriptionHeaders must succeed with 200 OK.
-	headers := extsub.SubscriptionHeaders(subURL)
+	// A request with extsub.Headers must succeed with 200 OK.
+	headers := extsub.Headers(subURL, model.ExtIdentity{})
 	req := httptest.NewRequest(http.MethodGet, "/sub/"+u.SubToken, nil)
 	req.RemoteAddr = testClientIP + ":40000"
-	for k, vv := range headers {
-		for _, v := range vv {
-			req.Header.Add(k, v)
-		}
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -254,20 +252,18 @@ func TestSubscriptionAcceptsExtSubHeaders(t *testing.T) {
 	if len(devices) != 1 {
 		t.Fatalf("expected 1 bound device, got %d", len(devices))
 	}
-	if devices[0].App != "RosPanel-ExtSub/1.0" {
-		t.Errorf("device App = %q, want RosPanel-ExtSub/1.0", devices[0].App)
+	if devices[0].App != extsub.DefaultUserAgent() {
+		t.Errorf("device App = %q, want %q", devices[0].App, extsub.DefaultUserAgent())
 	}
-	if devices[0].Model != "RosPanel Server" {
-		t.Errorf("device Model = %q, want RosPanel Server", devices[0].Model)
+	if devices[0].Model != extsub.DefaultDeviceModel {
+		t.Errorf("device Model = %q, want %q", devices[0].Model, extsub.DefaultDeviceModel)
 	}
 
 	// Repeated fetch with the same URL must reuse the same device and NOT exceed capacity 1.
 	repeatReq := httptest.NewRequest(http.MethodGet, "/sub/"+u.SubToken, nil)
 	repeatReq.RemoteAddr = testClientIP + ":40000"
-	for k, vv := range headers {
-		for _, v := range vv {
-			repeatReq.Header.Add(k, v)
-		}
+	for k, v := range headers {
+		repeatReq.Header.Set(k, v)
 	}
 	repeatRec := httptest.NewRecorder()
 	h.ServeHTTP(repeatRec, repeatReq)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"net/http"
 	"time"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
@@ -24,18 +23,18 @@ type FetchResult struct {
 
 // SubscriptionHeaders builds client headers including a deterministic x-hwid for
 // fetching subscriptions from panels requiring device registration.
-func SubscriptionHeaders(rawURL string) http.Header {
+func SubscriptionHeaders(rawURL string) map[string]string {
 	h := sha256.Sum256([]byte("rospanel-happ:" + rawURL))
 	hwid := fmt.Sprintf("rospanel-happ-%x", h[:16])
 
-	hdr := make(http.Header)
-	hdr.Set("User-Agent", "RosPanel-Happ/1.0")
-	hdr.Set("Accept", "text/plain, */*")
-	hdr.Set(model.HeaderHWID, hwid)
-	hdr.Set(model.HeaderDeviceOS, "RosPanel")
-	hdr.Set(model.HeaderOSVersion, "1.0")
-	hdr.Set(model.HeaderDeviceModel, "Happ Subscription")
-	return hdr
+	return map[string]string{
+		"User-Agent":            "RosPanel-Happ/1.0",
+		"Accept":                "text/plain, */*",
+		model.HeaderHWID:        hwid,
+		model.HeaderDeviceOS:    "RosPanel",
+		model.HeaderOSVersion:   "1.0",
+		model.HeaderDeviceModel: "Happ Subscription",
+	}
 }
 
 // Fetch downloads a subscription URL, decodes its body, and parses all proxy
