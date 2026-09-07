@@ -101,6 +101,17 @@ func GenerateClashWithTemplate(req Request, template string) string {
 	return strings.Replace(out, clashNamesMarker, strings.TrimRight(names.String(), "\n"), 1)
 }
 
+const emptySingBoxJSON = "{\n  \"log\": {\n    \"level\": \"warn\"\n  },\n  \"outbounds\": [\n    {\n      \"tag\": \"direct\",\n      \"type\": \"direct\"\n    }\n  ],\n  \"route\": {\n    \"final\": \"direct\"\n  }\n}"
+
+var defaultTunInbounds = []any{
+	map[string]any{
+		"type": "tun", "tag": "tun-in",
+		"address":      []string{"172.19.0.1/30"},
+		"auto_route":   true,
+		"strict_route": true,
+	},
+}
+
 // GenerateSingBox produces a sing-box JSON configuration spanning physical and external servers.
 func GenerateSingBox(req Request) string {
 	set := req.ensureSettings()
@@ -112,22 +123,19 @@ func GenerateSingBox(req Request) string {
 
 	group := SubTitle(req.User, set)
 	if len(tags) == 0 {
-		out, err := json.MarshalIndent(map[string]any{
-			"log":       map[string]any{"level": "warn"},
-			"outbounds": []any{map[string]any{"type": "direct", "tag": "direct"}},
-			"route":     map[string]any{"final": "direct"},
-		}, "", "  ")
-		if err != nil {
-			return "{}"
-		}
-		return string(out)
+		return emptySingBoxJSON
 	}
 
-	outbounds := []any{
-		map[string]any{"type": "selector", "tag": group, "outbounds": append([]string{"auto"}, tags...), "default": "auto"},
+	selectorOutbounds := make([]string, 0, len(tags)+1)
+	selectorOutbounds = append(selectorOutbounds, "auto")
+	selectorOutbounds = append(selectorOutbounds, tags...)
+
+	outbounds := make([]any, 0, len(proxies)+3)
+	outbounds = append(outbounds,
+		map[string]any{"type": "selector", "tag": group, "outbounds": selectorOutbounds, "default": "auto"},
 		map[string]any{"type": "urltest", "tag": "auto", "outbounds": tags,
 			"url": "https://www.gstatic.com/generate_204", "interval": "5m"},
-	}
+	)
 	outbounds = append(outbounds, proxies...)
 	outbounds = append(outbounds, map[string]any{"type": "direct", "tag": "direct"})
 
@@ -137,7 +145,7 @@ func GenerateSingBox(req Request) string {
 	dns := map[string]any{"servers": dnsServers, "final": "remote", "strategy": "prefer_ipv4"}
 	var bootstrapHosts []string
 	for _, srv := range req.Servers {
-		if net.ParseIP(srv.Set.Host) == nil && srv.Set.Host != "" {
+		if srv.Set != nil && net.ParseIP(srv.Set.Host) == nil && srv.Set.Host != "" {
 			bootstrapHosts = append(bootstrapHosts, srv.Set.Host)
 		}
 	}
@@ -152,26 +160,20 @@ func GenerateSingBox(req Request) string {
 		dns["rules"] = []any{map[string]any{"domain": bootstrapHosts, "server": "bootstrap"}}
 	}
 
-	routeRules := []any{
+	routeRules := make([]any, 0, 4)
+	routeRules = append(routeRules,
 		map[string]any{"action": "sniff"},
 		map[string]any{"protocol": "dns", "action": "hijack-dns"},
-	}
+	)
 	if set.BlockQUIC {
 		routeRules = append(routeRules, map[string]any{"network": "udp", "port": 443, "action": "reject"})
 	}
 	routeRules = append(routeRules, map[string]any{"ip_is_private": true, "outbound": "direct"})
 
 	cfg := map[string]any{
-		"log": map[string]any{"level": "warn"},
-		"dns": dns,
-		"inbounds": []any{
-			map[string]any{
-				"type": "tun", "tag": "tun-in",
-				"address":      []string{"172.19.0.1/30"},
-				"auto_route":   true,
-				"strict_route": true,
-			},
-		},
+		"log":       map[string]any{"level": "warn"},
+		"dns":       dns,
+		"inbounds":  defaultTunInbounds,
 		"outbounds": outbounds,
 		"route":     map[string]any{"rules": routeRules, "final": group},
 	}

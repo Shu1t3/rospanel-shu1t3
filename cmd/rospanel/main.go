@@ -17,15 +17,20 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"runtime/debug"
 	"time"
 	_ "time/tzdata" // embed the IANA tz database so LoadLocation works on any host
 
+	"github.com/Shu1t3/rospanel-shu1t3/internal/auth"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/logbuf"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/version"
 )
 
 func main() {
+	auth.Configure()
+	configureMemoryLimit()
+
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("rospanel: ")
 
@@ -205,4 +210,27 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// configureMemoryLimit configures a soft runtime memory limit (GOMEMLIMIT) when the
+// operator hasn't set one explicitly, ensuring Go's GC operates adaptively on small
+// VPS instances (< 2 GiB) shared with Xray.
+func configureMemoryLimit() {
+	if os.Getenv("GOMEMLIMIT") != "" {
+		return
+	}
+	totalKiB := auth.TotalRAMKiB()
+	if totalKiB <= 0 {
+		return
+	}
+	var limitBytes int64
+	switch {
+	case totalKiB <= 1024*1024: // <= 1 GiB host RAM
+		limitBytes = 384 * 1024 * 1024
+	case totalKiB <= 2*1024*1024: // <= 2 GiB host RAM
+		limitBytes = 768 * 1024 * 1024
+	}
+	if limitBytes > 0 {
+		debug.SetMemoryLimit(limitBytes)
+	}
 }

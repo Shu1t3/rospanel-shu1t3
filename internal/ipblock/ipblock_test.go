@@ -32,10 +32,16 @@ func TestBestEffortNoError(t *testing.T) {
 	if err := b.BlockIP("1.2.3.4"); err != nil {
 		t.Errorf("BlockIP no-op returned %v", err)
 	}
+	if err := b.BlockIPs([]string{"1.2.3.4", "2a02:6b8::1"}); err != nil {
+		t.Errorf("BlockIPs no-op returned %v", err)
+	}
 	if err := b.UnblockIP("1.2.3.4"); err != nil {
 		t.Errorf("UnblockIP no-op returned %v", err)
 	}
-	if err := b.Sync([]string{"1.2.3.4"}); err != nil {
+	if err := b.UnblockIPs([]string{"1.2.3.4", "2a02:6b8::1"}); err != nil {
+		t.Errorf("UnblockIPs no-op returned %v", err)
+	}
+	if err := b.Sync([]string{"1.2.3.4", "2a02:6b8::1"}); err != nil {
 		t.Errorf("Sync no-op returned %v", err)
 	}
 	if err := b.Clear(); err != nil {
@@ -50,8 +56,14 @@ func TestNilBlockerIsANoOp(t *testing.T) {
 	if err := b.BlockIP("1.2.3.4"); err != nil {
 		t.Errorf("BlockIP: %v", err)
 	}
+	if err := b.BlockIPs([]string{"1.2.3.4"}); err != nil {
+		t.Errorf("BlockIPs: %v", err)
+	}
 	if err := b.UnblockIP("1.2.3.4"); err != nil {
 		t.Errorf("UnblockIP: %v", err)
+	}
+	if err := b.UnblockIPs([]string{"1.2.3.4"}); err != nil {
+		t.Errorf("UnblockIPs: %v", err)
 	}
 	if err := b.Sync(nil); err != nil {
 		t.Errorf("Sync: %v", err)

@@ -604,7 +604,7 @@ func (rt *Router) apiListUsers(w http.ResponseWriter, r *http.Request) {
 	tag := strings.ToLower(strings.TrimSpace(q.Get("tag")))
 
 	var window []model.User
-	var meta map[string]int
+	var meta PageMeta
 
 	if status == "" && search == "" && tag == "" {
 		offset := clampNonNeg(atoiOr(q.Get("offset"), 0))
@@ -618,7 +618,7 @@ func (rt *Router) apiListUsers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		window = pagedUsers
-		meta = map[string]int{"total": total, "offset": offset, "limit": limit}
+		meta = PageMeta{Total: total, Offset: offset, Limit: limit}
 	} else {
 		users, err := rt.mgr.Store().ListUsers()
 		if err != nil {
@@ -652,7 +652,7 @@ func (rt *Router) apiListUsers(w http.ResponseWriter, r *http.Request) {
 	for _, u := range window {
 		views = append(views, makeUserView(u, set, "", custom, groupsMap[u.ID], model.AccessOf(accessMap, u.ID)))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": views, "meta": meta})
+	writeJSON(w, http.StatusOK, PageEnvelope[userView]{Data: views, Meta: meta})
 }
 
 // atoiOr parses s as an int, returning def on any failure (empty or malformed).

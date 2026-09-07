@@ -138,13 +138,32 @@ func setFor(ip string) (string, netip.Addr, bool) {
 // missing nft, a non-Linux host, or an already-blocked IP are not errors the caller
 // needs to handle.
 func (b *Blocker) BlockIP(ip string) error {
-	if b == nil || !Available() {
+	return b.BlockIPs([]string{ip})
+}
+
+// BlockIPs drops all traffic from a batch of IPs at the firewall in minimal nft commands.
+func (b *Blocker) BlockIPs(ips []string) error {
+	if b == nil || !Available() || len(ips) == 0 {
 		return nil
 	}
-	set, addr, ok := setFor(ip)
-	if !ok {
+	v4 := make([]string, 0, len(ips))
+	v6 := make([]string, 0, len(ips)/4)
+	for _, ip := range ips {
+		set, addr, ok := setFor(ip)
+		if !ok {
+			continue
+		}
+		elem := fmt.Sprintf("%s timeout %s", addr.String(), b.ttl)
+		if set == "blocked4" {
+			v4 = append(v4, elem)
+		} else {
+			v6 = append(v6, elem)
+		}
+	}
+	if len(v4) == 0 && len(v6) == 0 {
 		return nil
 	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if !b.armed {
@@ -157,11 +176,21 @@ func (b *Blocker) BlockIP(ip string) error {
 		b.ensureFailedAt = time.Now()
 		return err
 	}
-	elem := fmt.Sprintf("{ %s timeout %s }", addr.String(), b.ttl)
-	out, err := exec.Command("nft", "add", "element", "inet", b.table, set, elem).CombinedOutput()
+
+	var batchCmds strings.Builder
+	if len(v4) > 0 {
+		fmt.Fprintf(&batchCmds, "add element inet %s blocked4 { %s }\n", b.table, strings.Join(v4, ", "))
+	}
+	if len(v6) > 0 {
+		fmt.Fprintf(&batchCmds, "add element inet %s blocked6 { %s }\n", b.table, strings.Join(v6, ", "))
+	}
+
+	cmd := exec.Command("nft", "-f", "-")
+	cmd.Stdin = strings.NewReader(batchCmds.String())
+	out, err := cmd.CombinedOutput()
 	if err != nil && !strings.Contains(string(out), "File exists") {
 		b.ensureFailedAt = time.Now()
-		return fmt.Errorf("nft add element: %w\n%s", err, out)
+		return fmt.Errorf("nft add elements batch: %w\n%s", err, out)
 	}
 	b.ensureFailedAt = time.Time{} // a successful add proves nft works; clear the backoff
 	return nil
@@ -169,19 +198,46 @@ func (b *Blocker) BlockIP(ip string) error {
 
 // UnblockIP lifts a block. Best-effort; an IP that isn't blocked is not an error.
 func (b *Blocker) UnblockIP(ip string) error {
-	if b == nil || !Available() {
+	return b.UnblockIPs([]string{ip})
+}
+
+// UnblockIPs lifts blocks for a batch of IPs in minimal nft commands.
+func (b *Blocker) UnblockIPs(ips []string) error {
+	if b == nil || !Available() || len(ips) == 0 {
 		return nil
 	}
-	set, addr, ok := setFor(ip)
-	if !ok {
+	v4 := make([]string, 0, len(ips))
+	v6 := make([]string, 0, len(ips)/4)
+	for _, ip := range ips {
+		set, addr, ok := setFor(ip)
+		if !ok {
+			continue
+		}
+		if set == "blocked4" {
+			v4 = append(v4, addr.String())
+		} else {
+			v6 = append(v6, addr.String())
+		}
+	}
+	if len(v4) == 0 && len(v6) == 0 {
 		return nil
 	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	elem := fmt.Sprintf("{ %s }", addr.String())
-	out, err := exec.Command("nft", "delete", "element", "inet", b.table, set, elem).CombinedOutput()
+	var batchCmds strings.Builder
+	if len(v4) > 0 {
+		fmt.Fprintf(&batchCmds, "delete element inet %s blocked4 { %s }\n", b.table, strings.Join(v4, ", "))
+	}
+	if len(v6) > 0 {
+		fmt.Fprintf(&batchCmds, "delete element inet %s blocked6 { %s }\n", b.table, strings.Join(v6, ", "))
+	}
+
+	cmd := exec.Command("nft", "-f", "-")
+	cmd.Stdin = strings.NewReader(batchCmds.String())
+	out, err := cmd.CombinedOutput()
 	if err != nil && !strings.Contains(string(out), "No such file") {
-		return fmt.Errorf("nft delete element: %w\n%s", err, out)
+		return fmt.Errorf("nft delete elements batch: %w\n%s", err, out)
 	}
 	return nil
 }
@@ -242,18 +298,26 @@ func (b *Blocker) Sync(ips []string) error {
 	if err != nil {
 		return err
 	}
+	toDelete := make([]string, 0, len(have))
 	for ip := range have {
 		if _, keep := want[ip]; !keep {
-			if err := b.UnblockIP(ip); err != nil {
-				return err
-			}
+			toDelete = append(toDelete, ip)
 		}
 	}
+	if len(toDelete) > 0 {
+		if err := b.UnblockIPs(toDelete); err != nil {
+			return err
+		}
+	}
+	toAdd := make([]string, 0, len(want))
 	for ip := range want {
 		if _, already := have[ip]; already {
 			continue
 		}
-		if err := b.BlockIP(ip); err != nil {
+		toAdd = append(toAdd, ip)
+	}
+	if len(toAdd) > 0 {
+		if err := b.BlockIPs(toAdd); err != nil {
 			return err
 		}
 	}

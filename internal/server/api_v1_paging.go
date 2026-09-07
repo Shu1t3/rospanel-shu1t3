@@ -29,13 +29,26 @@ const defaultPageLimit = 100
 // through MCP, the context one call can consume.
 const maxPageLimit = 1000
 
+// PageMeta describes the window information for paged API responses.
+type PageMeta struct {
+	Total  int `json:"total"`
+	Offset int `json:"offset"`
+	Limit  int `json:"limit"`
+}
+
+// PageEnvelope is the strongly-typed JSON envelope for paged API endpoints.
+type PageEnvelope[T any] struct {
+	Data []T      `json:"data"`
+	Meta PageMeta `json:"meta"`
+}
+
 // page windows a slice from the request's ?limit/?offset and returns the window
 // with the meta block describing it.
 //
 // limit absent  ⇒ defaultPageLimit
 // limit <= 0    ⇒ everything from offset (an explicit "give me all of it")
 // limit > max   ⇒ clamped to maxPageLimit, and meta says what was actually used
-func page[T any](r *http.Request, items []T) ([]T, map[string]int) {
+func page[T any](r *http.Request, items []T) ([]T, PageMeta) {
 	total := len(items)
 	q := r.URL.Query()
 	offset := clampNonNeg(atoiOr(q.Get("offset"), 0))
@@ -50,7 +63,7 @@ func page[T any](r *http.Request, items []T) ([]T, map[string]int) {
 	if limit > 0 && limit < len(out) {
 		out = out[:limit]
 	}
-	return out, map[string]int{"total": total, "offset": offset, "limit": limit}
+	return out, PageMeta{Total: total, Offset: offset, Limit: limit}
 }
 
 // writeAPIPage writes a windowed list in the envelope the paged endpoints share.
@@ -62,5 +75,5 @@ func writeAPIPage[T any](w http.ResponseWriter, r *http.Request, items []T) {
 	if window == nil {
 		window = []T{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": window, "meta": meta})
+	writeJSON(w, http.StatusOK, PageEnvelope[T]{Data: window, Meta: meta})
 }

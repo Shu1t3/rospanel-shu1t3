@@ -55,7 +55,7 @@ func hashSemSize() int {
 // small VPS, while keeping the strong default on roomy hosts. Call once at startup
 // before any password is hashed. Safe to skip (defaults stand).
 func Configure() {
-	switch total := totalRAMKiB(); {
+	switch total := TotalRAMKiB(); {
 	case total > 0 && total < 1024*1024: // < 1 GiB
 		argonMemory = 32 * 1024
 	case total > 0 && total < 2*1024*1024: // < 2 GiB
@@ -68,9 +68,9 @@ func Configure() {
 	}
 }
 
-// totalRAMKiB reads MemTotal from /proc/meminfo (Linux). Returns 0 elsewhere or on
+// TotalRAMKiB reads MemTotal from /proc/meminfo (Linux). Returns 0 elsewhere or on
 // error, which leaves Configure() on the strong default.
-func totalRAMKiB() int64 {
+func TotalRAMKiB() int64 {
 	data, err := os.ReadFile("/proc/meminfo")
 	if err != nil {
 		return 0
