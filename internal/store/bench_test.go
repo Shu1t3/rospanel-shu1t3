@@ -50,6 +50,34 @@ func BenchmarkWorkingUsers(b *testing.B) {
 	}
 }
 
+func BenchmarkWorkingUserIDs(b *testing.B) {
+	st, err := Open(filepath.Join(b.TempDir(), "bench_working_ids.db"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer st.Close()
+
+	now := time.Now().Unix()
+	for i := 0; i < 200; i++ {
+		_, err := st.CreateUser(fmt.Sprintf("user_%d", i), fmt.Sprintf("uuid_%d", i), "secret_pass", fmt.Sprintf("sub_%d", i), 100<<30, now+86400, 3)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for b.Loop() {
+		ids, err := st.WorkingUserIDs(now)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(ids) != 200 {
+			b.Fatalf("expected 200 user IDs, got %d", len(ids))
+		}
+	}
+}
+
 func BenchmarkListUsers_All(b *testing.B) {
 	st, err := Open(filepath.Join(b.TempDir(), "bench_list_all.db"))
 	if err != nil {

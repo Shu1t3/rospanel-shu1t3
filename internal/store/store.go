@@ -90,7 +90,7 @@ func Open(path string) (*Store, error) {
 	}
 
 	dsn := fmt.Sprintf(
-		"file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)",
+		"file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)",
 		path,
 	)
 	db, err := sql.Open("sqlite", dsn)

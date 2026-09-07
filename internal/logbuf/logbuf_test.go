@@ -50,7 +50,7 @@ func TestHubRingBufferLimit(t *testing.T) {
 
 	// Write bufferSize + 50 lines
 	for i := 0; i < bufferSize+50; i++ {
-		_, _ = h.Write([]byte(fmt.Sprintf("entry-%d\n", i)))
+		_, _ = h.Write(fmt.Appendf(nil, "entry-%d\n", i))
 	}
 
 	tail := h.Tail()
@@ -109,7 +109,7 @@ func TestHubSlowSubscriberNonBlocking(t *testing.T) {
 
 	// Fill subscriber channel capacity (256) + write more without reading
 	for i := 0; i < 300; i++ {
-		_, err := h.Write([]byte(fmt.Sprintf("msg-%d\n", i)))
+		_, err := h.Write(fmt.Appendf(nil, "msg-%d\n", i))
 		if err != nil {
 			t.Fatalf("Write failed on slow subscriber: %v", err)
 		}
@@ -135,7 +135,7 @@ func TestHubConcurrentAccess(t *testing.T) {
 		go func(workerID int) {
 			defer wg.Done()
 			for j := 0; j < 50; j++ {
-				_, _ = h.Write([]byte(fmt.Sprintf("worker-%d-msg-%d\n", workerID, j)))
+				_, _ = h.Write(fmt.Appendf(nil, "worker-%d-msg-%d\n", workerID, j))
 				_ = h.Tail()
 			}
 		}(i)

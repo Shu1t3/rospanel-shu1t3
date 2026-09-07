@@ -122,6 +122,11 @@ type Supervisor struct {
 	verOnce sync.Once
 	version string
 
+	statsMu       sync.Mutex
+	lastStatsTime time.Time
+	lastStatsAddr string
+	lastStatsVal  map[string]Traffic
+
 	logs *logbuf.Hub // recent Xray log lines + live subscribers
 }
 
@@ -1136,17 +1141,21 @@ func backoffFor(n int) time.Duration {
 func (s *Supervisor) tap(r io.Reader, w io.Writer, access bool) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
+	newline := []byte("\n")
+	apiMarker := []byte("[api ")
 	for sc.Scan() {
-		line := sc.Text()
+		b := sc.Bytes()
 		// Drop the panel's own stats-API polling noise ("[api -> api]") — it would
 		// otherwise flood both journald and the log viewer every few seconds.
-		if strings.Contains(line, "[api ") {
+		if bytes.Contains(b, apiMarker) {
 			continue
 		}
-		fmt.Fprintln(w, line)
-		fmt.Fprintln(s.logs, line)
+		_, _ = w.Write(b)
+		_, _ = w.Write(newline)
+		_, _ = s.logs.Write(b)
+		_, _ = s.logs.Write(newline)
 		if access && s.onAccess != nil {
-			if email, ip, dest := parseAccess(line); email != "" && ip != "" {
+			if email, ip, dest := parseAccessBytes(b); email != "" && ip != "" {
 				s.dispatchAccess(email, ip, dest)
 			}
 		}
@@ -1154,6 +1163,18 @@ func (s *Supervisor) tap(r io.Reader, w io.Writer, access bool) {
 	if err := sc.Err(); err != nil && !errors.Is(err, io.ErrClosedPipe) && !errors.Is(err, io.EOF) {
 		slog.Debug("xray log scanner error", "err", err)
 	}
+}
+
+var (
+	accessEmailMarker = []byte("email: ")
+	accessFromMarker  = []byte("from ")
+)
+
+func parseAccessBytes(b []byte) (email, ip, dest string) {
+	if !bytes.Contains(b, accessEmailMarker) || !bytes.Contains(b, accessFromMarker) {
+		return "", "", ""
+	}
+	return parseAccess(string(b))
 }
 
 // dispatchAccess invokes the onAccess callback, recovering from any panic so a
@@ -1271,6 +1292,9 @@ func (s *Supervisor) Stop() {
 	s.mu.Lock()
 	s.closed = true
 	s.mu.Unlock()
+	s.statsMu.Lock()
+	s.lastStatsVal = nil
+	s.statsMu.Unlock()
 	s.stopProc()
 }
 
@@ -1291,6 +1315,9 @@ func (s *Supervisor) Suspend() {
 	s.mu.Lock()
 	s.suspended = true
 	s.mu.Unlock()
+	s.statsMu.Lock()
+	s.lastStatsVal = nil
+	s.statsMu.Unlock()
 	s.stopProc()
 }
 
@@ -1320,12 +1347,25 @@ type Traffic struct {
 // QueryStats reads per-user traffic counters from the running Xray StatsService
 // (via `xray api statsquery`). Keyed by user email (we use "u<id>").
 func (s *Supervisor) QueryStats(apiAddr string) (map[string]Traffic, error) {
+	s.statsMu.Lock()
+	defer s.statsMu.Unlock()
+
+	// Short cache (1.5s) to coalesce concurrent or near-concurrent polls
+	// (e.g. vpnSpeedLoop, PollStats, and admin dashboard refreshes).
+	if time.Since(s.lastStatsTime) < 1500*time.Millisecond && s.lastStatsAddr == apiAddr && s.lastStatsVal != nil {
+		return s.lastStatsVal, nil
+	}
+
 	// Timeout so a wedged API port can't hang the stats poller forever.
 	out, err := s.runXray(statsTimeout, "api", "statsquery", "--server="+apiAddr, "user>>>")
 	if err != nil {
 		return nil, fmt.Errorf("statsquery: %w", err)
 	}
-	return parseStats(out), nil
+	st := parseStats(out)
+	s.lastStatsTime = time.Now()
+	s.lastStatsAddr = apiAddr
+	s.lastStatsVal = st
+	return st, nil
 }
 
 // parseStats turns the StatsService JSON into per-email Traffic. Stat names look
@@ -1342,14 +1382,29 @@ func parseStats(data []byte) map[string]Traffic {
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil
 	}
-	out := map[string]Traffic{}
+	out := make(map[string]Traffic, len(resp.Stat)/2)
+	const userPrefix = "user>>>"
+	const trafficPrefix = "traffic>>>"
 	for _, st := range resp.Stat {
-		parts := strings.Split(st.Name, ">>>")
-		if len(parts) != 4 || parts[0] != "user" || parts[2] != "traffic" {
+		if !strings.HasPrefix(st.Name, userPrefix) {
 			continue
 		}
-		email, dir := parts[1], parts[3]
-		val, _ := strconv.ParseInt(strings.Trim(string(st.Value), `"`), 10, 64)
+		rest := st.Name[len(userPrefix):]
+		idx := strings.Index(rest, ">>>")
+		if idx <= 0 {
+			continue
+		}
+		email := rest[:idx]
+		rest = rest[idx+3:]
+		if !strings.HasPrefix(rest, trafficPrefix) {
+			continue
+		}
+		dir := rest[len(trafficPrefix):]
+		if strings.Contains(dir, ">>>") {
+			continue
+		}
+		trimmed := bytes.Trim(st.Value, "\" \t\r\n")
+		val, _ := strconv.ParseInt(string(trimmed), 10, 64)
 		t := out[email]
 		switch dir {
 		case "uplink":

@@ -48,9 +48,13 @@ func writeErrDetail(w http.ResponseWriter, status int, code, msg, detail string)
 	})
 }
 
+var okJSON = []byte("{\"ok\":true}\n")
+
 // writeOK writes the standard {"ok": true} success body.
 func writeOK(w http.ResponseWriter) {
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(okJSON)
 }
 
 // writeManagerErr maps a manager error to its HTTP status: a core.ValidationError
@@ -101,9 +105,12 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	// fetch wrapper always sets it, and a missing header would otherwise slip past
 	// this check and let the cross-site "<form enctype=text/plain>" trick smuggle a
 	// JSON-shaped body without a CORS preflight.
-	if mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); mt != "application/json" {
-		writeErrCode(w, http.StatusUnsupportedMediaType, "err.expectJSON", "ожидается application/json")
-		return false
+	ct := r.Header.Get("Content-Type")
+	if ct != "application/json" {
+		if mt, _, _ := mime.ParseMediaType(ct); mt != "application/json" {
+			writeErrCode(w, http.StatusUnsupportedMediaType, "err.expectJSON", "ожидается application/json")
+			return false
+		}
 	}
 	// Bound a slow-trickle request body per-handler (these bodies are tiny). Done
 	// here rather than via a server-wide ReadTimeout, which would also kill the

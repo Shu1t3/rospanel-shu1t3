@@ -6,7 +6,7 @@
 package logbuf
 
 import (
-	"strings"
+	"bytes"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,9 +40,11 @@ func Location() *time.Location {
 
 // Hub keeps a ring of recent log lines and broadcasts new ones to subscribers.
 type Hub struct {
-	mu   sync.Mutex
-	buf  []string
-	subs map[chan string]struct{}
+	mu    sync.Mutex
+	ring  [bufferSize]string
+	start int
+	count int
+	subs  map[chan string]struct{}
 }
 
 // Default is the process-wide hub the standard logger tees into.
@@ -54,18 +56,34 @@ func New() *Hub {
 }
 
 // Write implements io.Writer: it splits the written bytes into lines, appends
-// them to the ring, and broadcasts each to live subscribers. It always reports
+// them to the fixed ring, and broadcasts each to live subscribers. It always reports
 // the full length consumed so it composes cleanly inside an io.MultiWriter.
 func (h *Hub) Write(p []byte) (int, error) {
-	text := strings.TrimRight(string(p), "\n")
-	if text == "" {
-		return len(p), nil
+	if len(p) == 0 {
+		return 0, nil
 	}
 	h.mu.Lock()
-	for _, line := range strings.Split(text, "\n") {
-		h.buf = append(h.buf, line)
-		if len(h.buf) > bufferSize {
-			h.buf = h.buf[len(h.buf)-bufferSize:]
+	rem := p
+	for len(rem) > 0 {
+		idx := bytes.IndexByte(rem, '\n')
+		var lineBytes []byte
+		if idx >= 0 {
+			lineBytes = rem[:idx]
+			rem = rem[idx+1:]
+		} else {
+			lineBytes = rem
+			rem = nil
+		}
+		if len(lineBytes) == 0 {
+			continue
+		}
+		line := string(lineBytes)
+		if h.count < bufferSize {
+			h.ring[(h.start+h.count)%bufferSize] = line
+			h.count++
+		} else {
+			h.ring[h.start] = line
+			h.start = (h.start + 1) % bufferSize
 		}
 		for ch := range h.subs {
 			select {
@@ -78,11 +96,15 @@ func (h *Hub) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// Tail returns a copy of the buffered recent log lines.
+// Tail returns a copy of the buffered recent log lines in chronological order.
 func (h *Hub) Tail() []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return append([]string(nil), h.buf...)
+	out := make([]string, h.count)
+	for i := 0; i < h.count; i++ {
+		out[i] = h.ring[(h.start+i)%bufferSize]
+	}
+	return out
 }
 
 // Subscribe returns a channel of new log lines and an unsubscribe func.

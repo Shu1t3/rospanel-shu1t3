@@ -118,3 +118,54 @@ func TestConcurrentApply(t *testing.T) {
 	}
 	s.Stop()
 }
+
+func TestParseStats(t *testing.T) {
+	data := []byte(`{
+		"stat": [
+			{"name": "user>>>u1>>>traffic>>>uplink", "value": "1048576"},
+			{"name": "user>>>u1>>>traffic>>>downlink", "value": 2097152},
+			{"name": "user>>>u2>>>traffic>>>uplink", "value": "512"},
+			{"name": "inbound>>>api>>>traffic>>>downlink", "value": 100},
+			{"name": "user>>>invalid", "value": 0},
+			{"name": "user>>>u3>>>other>>>downlink", "value": 200},
+			{"name": "user>>>u4>>>traffic>>>downlink>>>extra", "value": 300}
+		]
+	}`)
+	res := parseStats(data)
+	if res["u1"].Up != 1048576 || res["u1"].Down != 2097152 {
+		t.Fatalf("unexpected u1 stats: %+v", res["u1"])
+	}
+	if res["u2"].Up != 512 || res["u2"].Down != 0 {
+		t.Fatalf("unexpected u2 stats: %+v", res["u2"])
+	}
+	if _, ok := res["api"]; ok {
+		t.Fatalf("inbound stat included")
+	}
+	if _, ok := res["invalid"]; ok {
+		t.Fatalf("invalid stat included")
+	}
+	if _, ok := res["u3"]; ok {
+		t.Fatalf("u3 non-traffic stat included")
+	}
+	if _, ok := res["u4"]; ok {
+		t.Fatalf("u4 extra-part stat included")
+	}
+}
+
+func BenchmarkParseStats(b *testing.B) {
+	data := []byte(`{
+		"stat": [
+			{"name": "user>>>u1>>>traffic>>>uplink", "value": "1048576"},
+			{"name": "user>>>u1>>>traffic>>>downlink", "value": 2097152},
+			{"name": "user>>>u2>>>traffic>>>uplink", "value": "512"},
+			{"name": "user>>>u2>>>traffic>>>downlink", "value": "1024"},
+			{"name": "inbound>>>api>>>traffic>>>downlink", "value": 100},
+			{"name": "user>>>invalid", "value": 0}
+		]
+	}`)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		_ = parseStats(data)
+	}
+}

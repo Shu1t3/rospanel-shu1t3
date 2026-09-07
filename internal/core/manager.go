@@ -63,8 +63,9 @@ type Manager struct {
 	// changed), vs a cheap live user-sync. Set by TriggerReconcile.
 	structuralPending atomic.Bool
 
-	accMu   sync.Mutex
-	accLast map[accPendingKey]int64 // throttle key {userID, ip} → last recorded unix
+	accMu          sync.Mutex
+	accLast        map[accPendingKey]int64 // throttle key {userID, ip} → last recorded unix
+	accLastCleaned int64                   // unix secs of the last eviction sweep of accLast
 	// accPending buffers sightings between flushes, so the access-log reader never
 	// touches the database on the hot path. Bounded by the throttle above: one entry
 	// per user+IP per flush interval, not per log line.
@@ -457,7 +458,8 @@ func (m *Manager) RecordAccess(email, ip, dest string) {
 		return
 	}
 	m.accLast[pk] = now
-	if len(m.accLast) > accLastMax {
+	if len(m.accLast) > accLastMax && now-m.accLastCleaned >= 60 {
+		m.accLastCleaned = now
 		for k, ts := range m.accLast { // drop pairs not seen within the TTL
 			if now-ts > accLastTTL {
 				delete(m.accLast, k)
@@ -533,7 +535,7 @@ func (m *Manager) FlushAccess() {
 	// A new device (source IP) may push the user over their device cap — re-check
 	// the working set and sync promptly so the over-limit user drops out, instead
 	// of waiting for the next periodic reconcile.
-	if working, err := m.store.WorkingUsers(now); err == nil && m.workingChanged(working) {
+	if workingIDs, err := m.store.WorkingUserIDs(now); err == nil && m.workingIDsChanged(workingIDs) {
 		m.TriggerUserSync()
 	}
 }
@@ -801,6 +803,22 @@ func (m *Manager) workingChanged(users []model.User) bool {
 	}
 	for _, u := range users {
 		if _, ok := m.applied[u.ID]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
+// workingIDsChanged reports whether the given working user IDs differ from what's
+// currently applied, without allocating or decoding model.User objects.
+func (m *Manager) workingIDsChanged(ids []int64) bool {
+	m.appliedMu.Lock()
+	defer m.appliedMu.Unlock()
+	if len(ids) != len(m.applied) {
+		return true
+	}
+	for _, id := range ids {
+		if _, ok := m.applied[id]; !ok {
 			return true
 		}
 	}

@@ -303,6 +303,39 @@ func (s *Store) WorkingUsers(now int64) ([]model.User, error) {
 		ORDER BY id ASC`, now, since, now-model.DeviceLimitGrace)
 }
 
+// WorkingUserIDs returns only the IDs of users that should be in the proxy config
+// right now. It uses the exact same criteria as WorkingUsers but selects only the
+// user IDs, completely avoiding the overhead of reading 34 columns, decoding tags,
+// and decrypting passwords/keys with AES-GCM on every 5s access-flush tick.
+func (s *Store) WorkingUserIDs(now int64) ([]int64, error) {
+	since := now - model.DeviceOnlineWindow
+	rows, err := s.db.Query(`WITH device_count AS (`+deviceCountCTE+`)
+		SELECT id FROM users
+		WHERE enabled = 1
+		  AND (expire_at = 0 OR expire_at > ?)
+		  AND (data_limit = 0 OR used_up + used_down < data_limit)
+		  AND (device_limit = 0 OR NOT (SELECT ip_counts FROM device_count)
+		       OR (SELECT COUNT(DISTINCT c.ip) FROM connections c
+		           WHERE c.user_id = users.id AND c.last_seen > ?) <= device_limit
+		       OR device_over_since = 0
+		       OR device_over_since > ?)
+		ORDER BY id ASC`, now, since, now-model.DeviceLimitGrace)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]int64, 0, 64)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // GetUser returns one user by id.
 func (s *Store) GetUser(id int64) (*model.User, error) {
 	users, err := s.queryUsers(`SELECT `+userCols+` FROM users WHERE id = ?`, id)
