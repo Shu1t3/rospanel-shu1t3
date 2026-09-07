@@ -1,7 +1,3 @@
----
-trigger: always_on
----
-
 # Go Idiomatic Code & Refactoring Rules
 
 ## General Principles

@@ -1,7 +1,3 @@
----
-trigger: always_on
----
-
 # Go Concurrency, Memory & Performance Rules
 
 ## Concurrency & Goroutines
