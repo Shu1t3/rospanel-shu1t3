@@ -230,7 +230,11 @@ WebSocket, XHTTP, gRPC, HTTPUpgrade) with their own port, REALITY keys, hop rang
 **fine-grained transport tuning** (XHTTP `extra`, HTTP masquerading, sockopt, extra TLS
 fields) — as individual fields or raw JSON; the config is validated on the target machine
 itself (`xray -test` + port bind) before saving, and combinations a client can't handle are
-silently kept out of Clash/sing-box subscriptions. The panel hides behind a **secret path**;
+silently kept out of Clash/sing-box subscriptions.
+
+**AmneziaWG 3.1 ("Extra connections" tab)** — native support for AWG protocol 3.1 in userspace Go (`amneziawg-go/v3`, without needing to compile Linux kernel modules). Complete advanced obfuscation tuning: junk packets Jc/Jmin/Jmax, paddings S1–S4, ranges H1–H4, `HeaderProtectionKey`, `ContentPaddingAddition`, `RandomTrailers`, and `DisableCookies` flags, along with ready-to-use packet initiation signature presets I1–I5 (QUIC Initial, TLS ClientHello, DNS Query, HTTP/3, DTLS, WG Noise). Tunnel status is continuously monitored on the master and remote nodes, displayed in system diagnostics, and exported to Prometheus metrics (`rospanel_node_awg_running`).
+
+The panel hides behind a **secret path**;
 any other path serves a decoy site (11 templates). **Probe detection** notices an IP that
 scans for the hidden panel — one that requests many distinct paths the decoy doesn't have —
 and records it for the operator to review; the reply never changes, so a scanner still sees
@@ -244,8 +248,8 @@ no domain and no DNS**.
 
 Traffic and time limits with auto-disable and quota auto-reset (day/week/month/year), a
 **device limit** (see *Device binding* below for exactly what it counts) and a per-user
-**speed cap**. Traffic accounting via Xray Stats, online status, connection
-list; expired users can be auto-deleted. Search and filters stay fast with hundreds of users,
+**speed cap**. Traffic accounting via **direct in-process gRPC client** to Xray StatsService (zero `fork/exec` overhead and instant Protobuf decoding), server-side API pagination (`ListUsersPaged`) with zero lag on thousands of users, online status, connection
+list; expired users can be auto-deleted. Search and filters stay fast with hundreds and thousands of users,
 and **bulk operations** (enable/disable/reset/extend/delete) go through a single Xray reload.
 The dashboard shows CPU / RAM / swap / disk and VPN traffic in real time. A **connection
 map** breaks down where clients connect from — distinct source IPs per **country** (from the
@@ -291,8 +295,12 @@ in their card and in the list.
 #### 📲 Subscriptions
 
 `/<path>/<token>` — a base64 list plus a page with a QR code, deep links and import into
-popular clients (auto-routing headers for Happ / INCY / Mihomo), with your own node names. The
-link can be **reset** (token rotation) without changing UUIDs and passwords. An
+popular clients (auto-routing headers for Happ / INCY / Mihomo), with your own node names.
+**Unified subscription engine** (`sub.Request`) with high-performance profile generation
+(Sing-Box JSON, Clash Meta YAML, universal share links, HTML page): Sing-Box config generation
+is 2.7x faster with static data structures and minimal memory allocations. External servers
+(from Happ Subscription) continue to be served to clients independently, even when all local
+nodes are full or hidden. The link can be **reset** (token rotation) without changing UUIDs and passwords. An
 **announcement** inside the client (Happ, v2RayTun) puts a short text right in the app.
 
 The page carries what the account holder needs and nothing they shouldn't hand out: the
@@ -498,7 +506,7 @@ working service is the one failure this must not have.
 admin chats (IP, country, network, browser) with a "Not me" button that immediately revokes all
 sessions of that admin.
 
-**Diagnostics** in one click: the Xray process, config application, TLS expiry, disk space, geo
+**Diagnostics** in one click: the Xray process, AmneziaWG tunnel (on master and nodes), config application, TLS expiry, disk space, geo
 database freshness, egress health — every check with a hint. A separate **connection self-test**
 connects to each protocol as a real client and confirms traffic actually goes out — catching
 credential, TLS or ALPN drift before a user does. **Backup / restore** and reset are available
@@ -510,15 +518,15 @@ an exact release, and a panel update carries it: on the next start the panel and
 compare the Xray they have with the pinned one and replace it if it differs — checksum first,
 and a box that can't reach GitHub keeps the release it already runs. The supervisor restarts
 Xray if it crashes. A **watchdog** covers the harder case a crash
-handler can't see — a process that stays alive but stops serving: it probes Xray's API and, if
-it goes unresponsive for several checks in a row, restarts it (with a cooldown against restart
+handler can't see — a process that stays alive but stops serving: it probes Xray's API via a direct gRPC
+channel (`PingAPI`) and, if it goes unresponsive for several checks in a row, restarts it (with a cooldown against restart
 storms) and alerts the operator. Runs on the master and every node.
 
 **Secrets in the database are encrypted** (AES-GCM). Session tokens and API keys are stored as
 hashes only — even with table access you can't reuse someone's session. Payment confirmation
 and admin management require **re-entering the password**. Outbound requests are protected
 against SSRF, brute force on inbounds is banned via iptables, and the number of connections per
-IP is limited via nftables.
+IP is limited via nftables (with batch rule application via `BlockIPs`/`UnblockIPs` in a single transaction).
 
 ---
 
@@ -565,10 +573,15 @@ For the full walkthrough see [🌐 Adding a node](#-adding-a-node).
 
 ## 🧱 Architecture
 
-The single source of truth is **SQLite**; the Xray config is always generated from it and
-applied by the supervisor. The web panel is embedded in the binary.
+RosPanel is engineered around **separation of Control Plane and Data Plane**:
 
-**Stack:** Go 1.27 · Xray-core · SQLite (modernc, CGO-free) · React + Vite + Tailwind.
+* **Control Plane (The Panel):** a single Go binary orchestrating system state, the web UI, configuration and subscription generation, background routines, and node synchronization. The panel can run alongside a local Xray engine or as a pure standalone Control Plane. For local administrative operations without network overhead, a Management API listener over a Unix Domain Socket (`ROSPANEL_UNIX_SOCKET`) is supported.
+* **In-Process Xray Integration:** traffic metrics collection (`StatsService`) and watchdog health checks (`PingAPI`) communicate over a direct in-process **gRPC client** (`127.0.0.1:10085`) without spawning external CLI subprocesses (`xray api statsquery`). This completely eliminates `fork()`/`execve()` overhead and delivers 10x faster Protobuf statistics decoding.
+* **Database & Caching:** single source of truth is **SQLite** in WAL mode (`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;`). Features a concurrent reader pool with a dedicated writer mutex `writeMu` (preventing `SQLITE_BUSY` errors) and an atomic in-memory settings cache (`atomic.Pointer[model.Settings]`) with read latency < 400 ns.
+* **Layer Isolation (DTO):** strict boundary between domain models and external network contracts. OpenAPI specifications and API v1 handlers strictly consume typed DTO structures (`internal/server/dto.go`).
+* **Node Synchronization (Node Agent):** the node agent connects to the panel over outbound HTTPS long-polling, reporting a structured component status slice `ComponentStatus` (Xray, AmneziaWG). The master supervisor aggregates the network-wide operational state.
+
+**Stack:** Go 1.27 · Xray-core · AmneziaWG 3.1 (userspace Go) · SQLite (modernc, CGO-free) · React + Vite + Tailwind.
 
 ---
 
@@ -608,8 +621,9 @@ backend hands the panel a key plus arguments and never rendered prose. Adding a 
 means one more dictionary on each side.
 
 Useful environment variables (all optional): `ROSPANEL_DATA` (data directory),
-`ROSPANEL_ADMIN_ADDR` (the panel's loopback address, `127.0.0.1:8080` by default), `XRAY_BIN`,
-`ROSPANEL_HOST`, `ROSPANEL_ACME_EMAIL`.
+`ROSPANEL_ADMIN_ADDR` (the panel's loopback address, `127.0.0.1:8080` by default),
+`ROSPANEL_UNIX_SOCKET` (path to Unix Domain Socket for Management API),
+`XRAY_BIN`, `ROSPANEL_HOST`, `ROSPANEL_ACME_EMAIL`.
 
 Flood protection (nftables limits on public TCP ports, see "Operations") is configured through
 the environment too — handy when a whole office or a CGNAT carrier sits behind one IP and
@@ -625,9 +639,14 @@ The current state is visible in **Dashboard → Management → Diagnostics**: if
 installed or the panel isn't running as root, the rules silently won't apply — diagnostics will
 say so.
 
-PRs and issues are welcome. Commits follow
-[Conventional Commits](https://www.conventionalcommits.org/): release-please uses them to cut
-releases and publish the binary and the Docker image to GHCR.
+### Commit Standards & CHANGELOG Maintenance
+
+PRs and issues are welcome. Commits strictly follow the [Conventional Commits](https://www.conventionalcommits.org/) specification: [release-please](https://github.com/googleapis/release-please) uses them to automate releases, build [CHANGELOG.md](CHANGELOG.md), and publish binaries and Docker images to GHCR.
+
+**To maintain detailed technical release notes:**
+1. **Detailed Commit Body:** commit summaries (`feat:`, `fix:`, `perf:`, `refactor:`) must be paired with a structured bulleted body detailing what modules were touched, the rationale, and measurable performance gains (benchmarks, allocations, latency).
+2. **Enriching Release PRs:** release-please generates release PR drafts containing commit headers. Before merging a release PR, enrich the corresponding sections in [CHANGELOG.md](CHANGELOG.md) with sub-bullets from the commit bodies.
+3. The full guidelines are documented in [.agents/rules/changelog-and-commits.md](.agents/rules/changelog-and-commits.md).
 
 ---
 

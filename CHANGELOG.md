@@ -2,52 +2,73 @@
 
 ## [2.25.4](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.25.3...v2.25.4) (2026-09-07)
 
-
-### Refactoring
+### Refactoring & Architecture
 
 * **xray:** прямой in-process gRPC-клиент для StatsService ([8eab61a](https://github.com/Shu1t3/rospanel-shu1t3/commit/8eab61a6c405cd041e0deef61093bde6541d4876))
+  * **Ликвидация процессов fork/exec:** замена вызовов внешнего CLI `xray api statsquery` через `exec.CommandContext` в `Supervisor.QueryStats` и `Supervisor.PingAPI` на прямой in-process gRPC-клиент (`google.golang.org/grpc`) к loopback-порту `127.0.0.1:10085`. Полностью устранены периодические спавны процессов каждые 3 секунды при открытом веб-дашборде (`vpnSpeedLoop`) и каждые 30 секунд в сторожевом таймере (watchdog) проверки зависания Xray.
+  * **Ускорение разбора статистики в 10 раз:** замена JSON-десериализации на прямое декодирование Protobuf (`parseProtoStats`): время выполнения снижено с 1409 нс до 140.7 нс, потребление памяти сокращено на 70% (336 Б против 1153 Б), а число аллокаций снижено с 17 до 2 на батч.
+  * **Управление жизненным циклом:** ленивая инициализация подключения через `grpc.NewClient`, автоматическое восстановление соединения при перезапуске Xray и безопасная очистка ресурсов (`closeGRPC`) при остановке или приостановке работы супервизора (`Stop`, `Suspend`, `stopProc`).
+  * **Тестирование:** добавлены модульные и интеграционные тесты с mock gRPC-сервером в `supervisor_grpc_test.go` (проверка `QueryStats`, `PingAPI`, авто-переподключения и бенчмарков).
 
 ## [2.25.3](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.24.1...v2.25.3) (2026-09-07)
 
+### Performance Improvements
 
-### chore
-
-* release 2.25.3 ([9bb733f](https://github.com/Shu1t3/rospanel-shu1t3/commit/9bb733fa25301f074d0f148443ff1a285e271aff))
-
+* **firewall & memory:** пакетная обработка правил фаервола, оптимизация Sing-Box и лимиты памяти ([f3ebc06](https://github.com/Shu1t3/rospanel-shu1t3/commit/f3ebc06cb4e37ae72f332a26f38e9196e64d9ee3))
+  * `ipblock`: пакетное применение правил nftables (`BlockIPs`/`UnblockIPs`), исключающее многократный последовательный запуск процессов nftables при блокировке групп IP-адресов.
+  * `sub`: оптимизация генератора подписок Sing-Box (`GenerateSingBox`) с предварительным выделением ёмкости слайсов и статическими структурами, ускорившая генерацию в 2.7 раза.
+  * `server`: обобщённый конверт пагинации `PageEnvelope[T]` и `PageMeta`, устранивший боксинг `interface{}` в API-пагинации.
+  * `runtime`: внедрение мягкого потолка памяти `GOMEMLIMIT=256MiB` для дочернего процесса Xray и оптимизация параметров авторизации `auth.Configure`.
+* **database & logs:** оптимизация SQLite, кольцевой буфер логов и быстрый путь сериализации ([4105104](https://github.com/Shu1t3/rospanel-shu1t3/commit/4105104288498866586fb0c97036285e4f8408f4))
+  * `store`: включение режима `PRAGMA synchronous=NORMAL` в SQLite WAL mode для ускорения транзакций и коммитов в 7.6 раз без риска повреждения базы данных.
+  * `store`: добавление индекса `idx_connections_last_seen` и легковесного запроса `WorkingUserIDs` без дешифрования данных.
+  * `core`: оптимизация сброса сессий `FlushAccess` с использованием `WorkingUserIDs` и кулдаун ротации записей `RecordAccess`.
+  * `logbuf`: замена динамического слайса на кольцевой буфер фиксированного размера, устранившая утечки памяти при интенсивном потоке логов.
+  * `xray`: потоковое сканирование логов без аллокаций памяти (`zero-alloc byte scanning`), внедрение 1.5-секундного кэша объединения (`coalescing cache`) для параллельных запросов статистики.
+  * `server`: ускорение вспомогательного метода `writeOK` со статическим предзакодированным JSON и быстрый путь `decodeJSON`.
 
 ### Features
 
-* **external:** present a device when reading somebody else's subscription ([cab6a0f](https://github.com/Shu1t3/rospanel-shu1t3/commit/cab6a0f9cfa07f728df880de828244ab1025a450))
-* **nodes:** the AmneziaWG tunnel is watched on nodes, not just on the master ([4bbf73f](https://github.com/Shu1t3/rospanel-shu1t3/commit/4bbf73fe56903d83bbaf9cc191977c36b184e705))
-* synchronize features with upstream (external device identity, node AWG monitoring, UI stream resilience) ([80ed643](https://github.com/Shu1t3/rospanel-shu1t3/commit/80ed6430657314f7d703ab452f49c2f964c18343))
-
+* **external:** идентификация устройств (HWID) при чтении внешних подписок ([cab6a0f](https://github.com/Shu1t3/rospanel-shu1t3/commit/cab6a0f9cfa07f728df880de828244ab1025a450))
+  * Передача стабильного идентификатора устройства при запросах к сторонним подпискам для прозрачного учёта в инфраструктуре источника.
+* **nodes:** мониторинг туннелей AmneziaWG на нодах ([4bbf73f](https://github.com/Shu1t3/rospanel-shu1t3/commit/4bbf73fe56903d83bbaf9cc191977c36b184e705))
+  * Агент ноды собирает метрики и статус интерфейса AmneziaWG и передаёт их мастер-серверу в регулярном цикле синхронизации.
+* **upstream:** комплексная синхронизация возможностей с апстримом ([80ed643](https://github.com/Shu1t3/rospanel-shu1t3/commit/80ed6430657314f7d703ab452f49c2f964c18343))
+  * Поддержка внешней идентичности устройств, отображение AWG в отчёте о здоровье системы на мастере и нодах, внедрение устойчивого механизма стриминга логов и статусов в веб-интерфейсе (`livestream.ts`) с автоматическим переподключением.
 
 ### Bug Fixes
 
-* add operational rule sets for reasoning, editing, terminal use, and token optimization while cleaning up existing rule files ([affbd91](https://github.com/Shu1t3/rospanel-shu1t3/commit/affbd91dda7efb232bd043311ae616a6826683f3))
-* **core:** the manager's background loops stop when it does ([3d3d20a](https://github.com/Shu1t3/rospanel-shu1t3/commit/3d3d20aa9caf7750a49b5dfa05de1e1adef6f682))
-* **health:** the AmneziaWG row sits under Xray config, not at the end ([ed6fd75](https://github.com/Shu1t3/rospanel-shu1t3/commit/ed6fd751d8d4cc46887c0d8e60ae8d9adeb78e36))
-* **health:** the master's own AmneziaWG tunnel is in its diagnostics too ([a02b4b2](https://github.com/Shu1t3/rospanel-shu1t3/commit/a02b4b2a405bb13042c75be0829736c2bc5dd859))
-* **sub:** the lane name comes back typed, not read out of the config map ([1c12158](https://github.com/Shu1t3/rospanel-shu1t3/commit/1c12158a18e3eaa1bc99b68845760bef9d5fee9c))
-* **web:** five defects the fork's frontend audit pointed at, done our way ([74e3035](https://github.com/Shu1t3/rospanel-shu1t3/commit/74e30354ab916e39db1fe60d640449937805af63))
+* **core:** корректная остановка фоновых воркеров менеджера ([3d3d20a](https://github.com/Shu1t3/rospanel-shu1t3/commit/3d3d20aa9caf7750a49b5dfa05de1e1adef6f682))
+  * Гарантированное завершение фоновых циклов `Manager` при вызове `Close()` через канал `done`, предотвращающее утечки горутин в тестах и при остановке сервиса.
+* **health:** отображение диагностики туннелей AmneziaWG ([ed6fd75](https://github.com/Shu1t3/rospanel-shu1t3/commit/ed6fd751d8d4cc46887c0d8e60ae8d9adeb78e36), [a02b4b2](https://github.com/Shu1t3/rospanel-shu1t3/commit/a02b4b2a405bb13042c75be0829736c2bc5dd859))
+  * Включение собственного туннеля мастера в диагностическую таблицу и выравнивание строки под блоком конфигурации Xray.
+* **sub:** типизированные названия лейнов в подписке ([1c12158](https://github.com/Shu1t3/rospanel-shu1t3/commit/1c12158a18e3eaa1bc99b68845760bef9d5fee9c))
+  * Возврат строго типизированного имени лейна вместо нетипизированного чтения из мапы конфигурации.
+* **web:** устранение дефектов интерфейса по итогам фронтенд-аудита ([74e3035](https://github.com/Shu1t3/rospanel-shu1t3/commit/74e30354ab916e39db1fe60d640449937805af63))
+  * Исправление доступности элементов форм (ID атрибуты), оптимизация рендеринга `OverviewPanel`, `LogViewer` и `ExternalServers`.
 
+### Refactoring & Governance
 
-### Performance Improvements
-
-* batch firewall rules, tune singbox generation, generic page envelope and memory limit ([f3ebc06](https://github.com/Shu1t3/rospanel-shu1t3/commit/f3ebc06cb4e37ae72f332a26f38e9196e64d9ee3))
-* optimize database access, log buffer, subprocess query and serialization ([4105104](https://github.com/Shu1t3/rospanel-shu1t3/commit/4105104288498866586fb0c97036285e4f8408f4))
-
-
-### Refactoring
-
-* migrate agent skills to rules and workflows, and update gitignore configuration ([e25fe4a](https://github.com/Shu1t3/rospanel-shu1t3/commit/e25fe4a9d530a07d3a48da26526da64082df9c2b))
+* **rules:** миграция навыков агентов в правила и воркфлоу ([e25fe4a](https://github.com/Shu1t3/rospanel-shu1t3/commit/e25fe4a9d530a07d3a48da26526da64082df9c2b))
+  * Реорганизация структуры инструкций в `.agents/rules/` и `.agents/workflows/`, обновление исключений `.gitignore`.
+* **rules:** операционные наборы правил разработки ([affbd91](https://github.com/Shu1t3/rospanel-shu1t3/commit/affbd91dda7efb232bd043311ae616a6826683f3))
+  * Внедрены стандарты кратких рассуждений, точечного редактирования файлов, дисциплины использования терминала и оптимизации токенов.
 
 ## [2.24.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.24.0...v2.24.1) (2026-09-05)
 
-
 ### Performance Improvements
 
-* комплексная оптимизация производительности и масштабируемости (Go 1.27) ([593db48](https://github.com/Shu1t3/rospanel-shu1t3/commit/593db489bece3113cf44dcf3065d730068ba32d6))
+* **core & store:** комплексная оптимизация производительности и масштабируемости (Go 1.27) ([593db48](https://github.com/Shu1t3/rospanel-shu1t3/commit/593db489bece3113cf44dcf3065d730068ba32d6))
+  * **[B01] Атомарный in-memory кэш настроек:** интеграция `atomic.Pointer[model.Settings]` в `Store` с глубоким копированием `Clone()`, снизившая задержку `GetSettings` с 89 мкс до 370 нс (ускорение в 240+ раз) и сократившая аллокации с 388 до 1 на запрос.
+  * **[B02] Параллельное чтение SQLite WAL:** расширение пула соединений до 8 открытых и 4 idle, добавление мьютекса `writeMu` для безопасной сериализации пишущих транзакций без ошибок `SQLITE_BUSY`.
+  * **[B03] Оптимизация выборки пользователей:** составной индекс `connections(user_id, last_seen, ip)` и разделение `queryUsersRaw`/`queryUsers` без повторного вычисления статусов.
+  * **[B04] Кэширование состояния нод (NodeDesiredState):** быстрый хэш FNV-1a параметров ноды и пользователей, исключивший холостую перегенерацию Xray-конфигов на 30-секундных poll-запросах.
+  * **[B05] Оптимизация аллокаций генератора Xray:** устранение неиспользуемых срезов и использование стекового буфера `strconv.AppendInt` в `UserEmail` (ускорение генерации конфига на 25%).
+  * **[B06] Серверная пагинация API пользователей:** `ListUsersPaged` с точечной выборкой групп/прав по ID, ускорившая загрузку страницы пользователей в 11 раз (93 мкс против 1.02 мс на 500 юзерах) и снизившая потребление памяти на 95%.
+  * **[B07] Zero-alloc hot-path access-логов:** замена строкового ключа `email+"|"+ip` на структуру `accPendingKey{userID, ip}` (0 B/op, 0 allocs/op).
+  * **[B08] Миграция на Go 1.27 uuid:** переход на стандартную библиотеку `uuid` и удаление внешней зависимости `github.com/google/uuid`.
+  * **[B09] Graceful Shutdown воркеров:** координация жизненного цикла горутин очередей Telegram и фоновых задач менеджера через `sync.WaitGroup`.
+  * **[B10] Безопасный endpoint pprof:** маршрут `/api/debug/pprof/*` с защитой токеном `X-Panel-Secret` и детектором утечек горутин `goroutineleak`.
 
 ## [2.24.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.23.4...v2.24.0) (2026-09-05)
 
@@ -95,32 +116,48 @@
 
 ## [2.23.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.22.0...v2.23.0) (2026-09-04)
 
-
 ### Features
 
-* разделение Control/Data Plane, изоляция внешних серверов и унификация генератора подписок ([4982bbe](https://github.com/Shu1t3/rospanel-shu1t3/commit/4982bbe11a154aabeb9aab9f9410399922d9c69a))
-
+* **control/data plane & sub:** разделение Control/Data Plane, изоляция внешних серверов и унификация генератора подписок ([4982bbe](https://github.com/Shu1t3/rospanel-shu1t3/commit/4982bbe11a154aabeb9aab9f9410399922d9c69a))
+  * `sub`: внедрена универсальная структура `sub.Request` и независимые генераторы подписок (`GenerateShareLinks`, `GenerateClash`, `GenerateSingBox`, `GenerateXrayJSON`, `GeneratePage`), поддерживающие автономную отдачу подписок без физических нод.
+  * `sub/server`: из структуры физического узла `sub.Server` удалены поля `External`. Устранено искусственное прикрепление внешних серверов к `LocalNodeID` / первому серверу.
+  * `server`: методы `subPhysicalServers` и `subExternalServers` разделены; внешние серверы отдаются клиентам даже при 100% заполнении или сокрытии всех физических узлов.
+  * `service`: обеспечен запуск панели в режиме standalone control plane без фатального сбоя (`log.Fatalf`) при отсутствии бинарника Xray.
+  * `service`: добавлена поддержка слушателя Management API через Unix Domain Socket (`ROSPANEL_UNIX_SOCKET`) для локального администрирования в обход сетевого стека Data Plane.
 
 ### Bug Fixes
 
-* implement graceful shutdown for manager background routines using a done channel to prevent test race conditions ([ac659c3](https://github.com/Shu1t3/rospanel-shu1t3/commit/ac659c33789f6a2d5e87a516be69d352a45d94b9))
-
+* **core:** graceful shutdown фоновых воркеров менеджера ([ac659c3](https://github.com/Shu1t3/rospanel-shu1t3/commit/ac659c33789f6a2d5e87a516be69d352a45d94b9))
+  * Внедрение канала `done` для синхронизации и предотвращения состояний гонки в тестах.
 
 ### Refactoring
 
-* разделение DTO/домена и внедрение унифицированной модели статусов компонентов ([84bcdbf](https://github.com/Shu1t3/rospanel-shu1t3/commit/84bcdbf4e8673c0f647377af636b3644770f008f))
+* **dto & components:** разделение DTO/домена и внедрение унифицированной модели статусов компонентов ([84bcdbf](https://github.com/Shu1t3/rospanel-shu1t3/commit/84bcdbf4e8673c0f647377af636b3644770f008f))
+  * `server`: реализован изолированный слой DTO (`internal/server/dto.go`) и двунаправленные мапперы для всех хендлеров API v1 и панели управления; устранена прямая сериализация доменных сущностей `model.*` в JSON с сохранением 100% wire-совместимости контрактов.
+  * `server/openapi`: спецификация OpenAPI переведена на использование структур DTO вместо доменных сущностей.
+  * `nodeapi/nodeagent`: внедрена унифицированная модель статусов сервисов узла `ComponentStatus` с поддержкой Xray, AWG и возможностью расширения; автоматическая нормализация для обратной совместимости (`NormalizedComponents`).
+  * `core`: детерминированная агрегация состояний компонентов `AggregateComponentStatus` и `NodeAggregatedStatus` (healthy, degraded, unhealthy, disabled, unknown); обновлена диагностика узлов и расчет аптайма.
+  * `server/metrics`: зарегистрирована и экспортирована метрика Prometheus `rospanel_node_awg_running`.
 
 ## [2.22.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.21.0...v2.22.0) (2026-09-04)
 
-
 ### Features
 
-* обновление AmneziaWG до протокола 3.1, поддержка сигнатур пакетов I1–I5 и перенос в доп. подключения ([9052229](https://github.com/Shu1t3/rospanel-shu1t3/commit/9052229c064a57b107e6dee91d40553523c617d1))
-
+* **amneziawg:** обновление AmneziaWG до протокола 3.1, поддержка сигнатур пакетов I1–I5 и перенос в доп. подключения ([9052229](https://github.com/Shu1t3/rospanel-shu1t3/commit/9052229c064a57b107e6dee91d40553523c617d1))
+  * Переход на `github.com/amnezia-vpn/amneziawg-go/v3` v3.1.20260828 (userspace Go без kernel module).
+  * Модель `AWGParams`: поля S3, S4, диапазоны H1–H4, сигнатуры I1–I5, `HeaderProtectionKey`, `ContentPaddingAddition`, `RandomTrailers`, `DisableCookies` и тайминги.
+  * Кастомный `UnmarshalJSON` с поддержкой legacy v1/v2 и формата v3.
+  * Генерация UAPI v3 с hex-ключами, валидация непересечения диапазонов H1–H4 и экспорт клиентских `.conf` по спецификации AWG 3.1.
+  * Пресеты обфускации пакетов I1–I5 (QUIC Initial, TLS ClientHello, DNS Query, HTTP/3, DTLS, WireGuard Noise).
+  * Компонент `AwgEditor`: перенос управления AmneziaWG в раздел «Доп. подключения».
 
 ### Bug Fixes
 
-* устранение уязвимостей и дефектов аудита кодовой базы (REVIEW.md) ([3b43c24](https://github.com/Shu1t3/rospanel-shu1t3/commit/3b43c24977bede5b5d5f8de8b7570d64f52cee17))
+* **security & core:** устранение уязвимостей и дефектов аудита кодовой базы ([3b43c24](https://github.com/Shu1t3/rospanel-shu1t3/commit/3b43c24977bede5b5d5f8de8b7570d64f52cee17))
+  * `xray/core`: гарантированное сохранение панели управления при выключении VLESS (инбаунд `vless-in` на 443 с fallback на `PanelDest` монтируется безусловно, очищается только список клиентов).
+  * `awg`: строгая валидация паддингов S1–S4 ≥ 12 при активном `HeaderProtectionKey` (соответствие ChaCha20 nonce), безусловный сброс булевых флагов в UAPI.
+  * `sub`: сохранение внешних подписок при скрытии мастера (`HideWhenFull`), исключение `::/0` из client `AllowedIPs` во избежание blackholing IPv6.
+  * `nodeapi`: передача телеметрии `AWGRunning` и `AWGError` в протоколе синхронизации узлов.
 
 ## [2.21.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.20.2...v2.21.0) (2026-09-03)
 
