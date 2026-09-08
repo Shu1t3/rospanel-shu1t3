@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.25.5](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.25.4...v2.25.5) (2026-09-08)
+
+
+### Bug Fixes
+
+* add AmneziaWG 3.1 support and performance-focused architecture documentation ([b19bcde](https://github.com/Shu1t3/rospanel-shu1t3/commit/b19bcde3cb7f120c07cffdaf9bfed66693c5222b))
+* **alerts:** a panel restart is not an AmneziaWG outage ([451778b](https://github.com/Shu1t3/rospanel-shu1t3/commit/451778b816345f3689c52c8477039f702380c647))
+* **http:** a held HTTP/2 response outlives ReadHeaderTimeout ([2000a0e](https://github.com/Shu1t3/rospanel-shu1t3/commit/2000a0e2bc2651916411b82c75a9fd1565214446))
+* **nodeagent:** a held poll clears the node's sync-failure window ([6c6e30e](https://github.com/Shu1t3/rospanel-shu1t3/commit/6c6e30eb52d5185d8c7128af65d5ee9439e4692a))
+* sync upstream fixes for nodeagent sync window and master AWG restart alert ([14a2def](https://github.com/Shu1t3/rospanel-shu1t3/commit/14a2def0ae6704249d09a91559ba8159c6200880))
+
+
+### Refactoring
+
+* extract AmneziaWG update logic into a helper function and add unit tests ([973fdac](https://github.com/Shu1t3/rospanel-shu1t3/commit/973fdac5a4cd4c7b5507b19b90bf915435bc6e19))
+
 ## [2.25.4](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.25.3...v2.25.4) (2026-09-07)
 
 ### Refactoring & Architecture
