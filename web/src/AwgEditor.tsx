@@ -15,6 +15,7 @@ import {
   generateAwgPresetSignatures,
   type AwgPresetId,
 } from "./awgPresets";
+import { buildAwgConnectionsUpdate } from "./awgUpdate";
 import { useAction } from "./hooks";
 import { errMessage, notifyError, notifySuccess } from "./notify";
 import { Badge, Button, CenterLoader, IconChevron, Select, Switch, TextInput } from "./ui";
@@ -151,33 +152,14 @@ export function AwgEditor({
   const handleSave = () => {
     if (readOnly) return;
     const task = async () => {
-      // Build full update payload based on current status
       if (!status) return;
-      const protoMap: Record<string, boolean> = {};
-      status.protocols.forEach((p) => {
-        protoMap[p.key] = p.key === "awg" ? enabled : p.enabled;
+      const updatePayload: ConnectionsUpdate = buildAwgConnectionsUpdate(status, {
+        enabled,
+        port,
+        dns,
+        params,
+        regenKeys,
       });
-
-      const updatePayload: ConnectionsUpdate = {
-        protocols: protoMap,
-        fingerprints: {},
-        names: {},
-        hysteria_port: status.hysteria_port,
-        hop_start: status.hop_start,
-        hop_end: status.hop_end,
-        hop_interval: status.hop_interval || "5-10",
-        reality_port: status.reality_port,
-        reality_dest: status.reality_dest,
-        reality_anti_replay: status.reality_anti_replay,
-        regen_reality_keys: false,
-        tls_fragment: status.tls_fragment,
-        tls_min13: status.tls_min13,
-        block_quic: status.block_quic,
-        awg_port: port,
-        awg_dns: dns,
-        awg_params: params,
-        regen_awg_keys: regenKeys,
-      };
 
       const updated =
         serverId > 0
