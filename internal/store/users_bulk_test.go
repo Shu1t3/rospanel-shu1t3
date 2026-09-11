@@ -101,4 +101,38 @@ func TestBulkResetTraffic(t *testing.T) {
 	if got2.UsedUp != 0 || got2.UsedDown != 0 || got2.LastUp != 3000 || got2.LastDown != 4000 {
 		t.Errorf("u2 traffic = (%d, %d, %d, %d), want (0, 0, 3000, 4000)", got2.UsedUp, got2.UsedDown, got2.LastUp, got2.LastDown)
 	}
+
+	// User with a period gets last_reset_at updated.
+	_ = st.SetResetPeriod(u1.ID, "monthly", 100)
+	now := int64(2000)
+	if _, err := st.ResetTrafficMany(map[int64][2]int64{u1.ID: {1100, 2100}}, now); err != nil {
+		t.Fatalf("ResetTrafficMany: %v", err)
+	}
+	if fresh1, _ := st.GetUser(u1.ID); fresh1.LastResetAt != now {
+		t.Errorf("u1 last_reset_at = %d, want %d", fresh1.LastResetAt, now)
+	}
+}
+
+func TestImportUserResetAnchor(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+
+	u1, err := st.ImportUser(ImportedUser{Name: "i1", UUID: "uuid-1", ResetPeriod: "monthly"})
+	if err != nil {
+		t.Fatalf("import u1: %v", err)
+	}
+	if u1.LastResetAt == 0 {
+		t.Errorf("expected non-zero LastResetAt for monthly user, got 0")
+	}
+
+	u2, err := st.ImportUser(ImportedUser{Name: "i2", UUID: "uuid-2", ResetPeriod: "none"})
+	if err != nil {
+		t.Fatalf("import u2: %v", err)
+	}
+	if u2.LastResetAt != 0 {
+		t.Errorf("expected 0 LastResetAt for none user, got %d", u2.LastResetAt)
+	}
 }

@@ -36,12 +36,18 @@ type bruteGuard struct {
 	banned         map[string]time.Time // ip → expiry
 	nftMu          sync.Mutex
 	ensureFailedAt time.Time
+	done           <-chan struct{}
 }
 
-func newBruteGuard() *bruteGuard {
+func newBruteGuard(done ...<-chan struct{}) *bruteGuard {
+	var d <-chan struct{}
+	if len(done) > 0 {
+		d = done[0]
+	}
 	g := &bruteGuard{
 		attempts: make(map[string][]time.Time),
 		banned:   make(map[string]time.Time),
+		done:     d,
 	}
 	go g.cleanupLoop()
 	return g
@@ -164,7 +170,12 @@ func (g *bruteGuard) unban(ip string) {
 func (g *bruteGuard) cleanupLoop() {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
-	for range ticker.C {
+	for {
+		select {
+		case <-g.done:
+			return
+		case <-ticker.C:
+		}
 		now := time.Now()
 		cutoff := now.Add(-bruteWindow)
 		var expired []string

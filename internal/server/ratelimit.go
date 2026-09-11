@@ -211,7 +211,29 @@ func (l *ipRateLimiter) allow(ip string) bool {
 			}
 		}
 		if len(l.hits) > l.maxKeys {
-			l.hits = make(map[string]*windowRec)
+			lowWater := l.maxKeys * 3 / 4
+			for k, r := range l.hits {
+				if len(l.hits) <= lowWater {
+					break
+				}
+				if r.count < l.limit {
+					delete(l.hits, k)
+				}
+			}
+			if len(l.hits) > lowWater {
+				type entry struct {
+					key   string
+					reset time.Time
+				}
+				all := make([]entry, 0, len(l.hits))
+				for k, r := range l.hits {
+					all = append(all, entry{k, r.reset})
+				}
+				slices.SortFunc(all, func(a, b entry) int { return a.reset.Compare(b.reset) })
+				for _, e := range all[:len(all)-lowWater] {
+					delete(l.hits, e.key)
+				}
+			}
 		}
 	}
 	r := l.hits[ip]

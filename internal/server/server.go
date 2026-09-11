@@ -295,7 +295,7 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// per-IP throttle blunts key-guessing and runaway clients. The segment itself
 	// is the obscurity layer — once it matches, the API answers with real REST
 	// status codes (401/403) so integrators can debug their credentials.
-	if apiPath != "" && seg == apiPath {
+	if apiPath != "" && subtle.ConstantTimeCompare([]byte(seg), []byte(apiPath)) == 1 {
 		if !rt.apiLimiter.allow(clientIP(r)) {
 			// A real REST status, unlike every other surface below: reaching here means
 			// the caller already knows the segment, and an integrator throttled by us
@@ -315,7 +315,7 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// orphans a joined node). Authentication is per-node bearer token inside the
 	// handler; an unmatched sub-path or a bad/absent token falls through to the
 	// decoy, so the surface is invisible to anyone without the segment + a token.
-	if nodePath != "" && seg == nodePath {
+	if nodePath != "" && subtle.ConstantTimeCompare([]byte(seg), []byte(nodePath)) == 1 {
 		if !rt.apiLimiter.allow(clientIP(r)) {
 			// Decoy, not a 429: this surface's whole contract is that a caller without
 			// a valid token cannot tell it from unknown hosting, and a throttle reply

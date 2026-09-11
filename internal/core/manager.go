@@ -308,8 +308,9 @@ type nodeLogEntry struct {
 // panel's loopback fallback dest); tls carries the managed cert paths; operaDir
 // is where the opera-proxy helper binary is downloaded/run from.
 func New(st *store.Store, sup *xray.Supervisor, opts xray.Options, tls TLSPaths, operaDir string) *Manager {
+	doneCh := make(chan struct{})
 	m := &Manager{
-		done:             make(chan struct{}),
+		done:             doneCh,
 		store:            st,
 		sup:              sup,
 		opts:             opts,
@@ -321,7 +322,7 @@ func New(st *store.Store, sup *xray.Supervisor, opts xray.Options, tls TLSPaths,
 		abuseAlerted:     make(map[abuseAlertKey]struct{}),
 		applied:          make(map[int64]struct{}),
 		tz:               time.Local,
-		guard:            newBruteGuard(),
+		guard:            newBruteGuard(doneCh),
 		shaper:           shaper.New(),
 		devNotice:        newDeviceNotice(),
 		payNotice:        newNotice(6 * time.Hour),

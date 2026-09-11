@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -37,18 +38,23 @@ func (s *Store) ReencryptSensitiveFields() error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	for _, u := range users {
-		if u.password == "" || strings.HasPrefix(u.password, "enc:v1:") {
-			continue
+	if err := s.withTx(func(tx *sql.Tx) error {
+		for _, u := range users {
+			if u.password == "" || strings.HasPrefix(u.password, "enc:v1:") {
+				continue
+			}
+			enc := encField(u.password)
+			if !secretRoundtripOK(enc) {
+				log.Printf("[ERROR] reencrypt: user %d password roundtrip failed — leaving plaintext", u.id)
+				continue
+			}
+			if _, err := tx.Exec(`UPDATE users SET password = ? WHERE id = ?`, enc, u.id); err != nil {
+				return err
+			}
 		}
-		enc := encField(u.password)
-		if !secretRoundtripOK(enc) {
-			log.Printf("[ERROR] reencrypt: user %d password roundtrip failed — leaving plaintext", u.id)
-			continue
-		}
-		if _, err := s.db.Exec(`UPDATE users SET password = ? WHERE id = ?`, enc, u.id); err != nil {
-			return err
-		}
+		return nil
+	}); err != nil {
+		return err
 	}
 
 	type col struct {
@@ -132,31 +138,33 @@ func (s *Store) reencryptColumns(table, query string, cols []string, update stri
 	if err := res.Err(); err != nil {
 		return err
 	}
-	for _, r := range rows {
-		changed := false
-		args := make([]any, 0, len(r.vals)+1)
-		for i, v := range r.vals {
-			if v == "" || strings.HasPrefix(v, "enc:v1:") {
-				args = append(args, v)
+	return s.withTx(func(tx *sql.Tx) error {
+		for _, r := range rows {
+			changed := false
+			args := make([]any, 0, len(r.vals)+1)
+			for i, v := range r.vals {
+				if v == "" || strings.HasPrefix(v, "enc:v1:") {
+					args = append(args, v)
+					continue
+				}
+				enc := encField(v)
+				if !secretRoundtripOK(enc) {
+					log.Printf("[ERROR] reencrypt: %s %d %s roundtrip failed — leaving plaintext", table, r.id, cols[i])
+					args = append(args, v)
+					continue
+				}
+				args = append(args, enc)
+				changed = true
+			}
+			if !changed {
 				continue
 			}
-			enc := encField(v)
-			if !secretRoundtripOK(enc) {
-				log.Printf("[ERROR] reencrypt: %s %d %s roundtrip failed — leaving plaintext", table, r.id, cols[i])
-				args = append(args, v)
-				continue
+			if _, err := tx.Exec(update, append(args, r.id)...); err != nil {
+				return err
 			}
-			args = append(args, enc)
-			changed = true
 		}
-		if !changed {
-			continue
-		}
-		if _, err := s.db.Exec(update, append(args, r.id)...); err != nil {
-			return err
-		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // reencryptUserWGKeys covers the AmneziaWG identity minted for a user.

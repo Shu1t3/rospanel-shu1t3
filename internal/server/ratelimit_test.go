@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"testing"
+	"time"
 )
 
 // A locked-out IP must stay locked out even when an attacker floods the limiter
@@ -47,3 +48,29 @@ func TestLoginLimiterBoundedWhenAllBlocked(t *testing.T) {
 		t.Fatalf("IP map grew past cap with all-blocked entries: %d (cap %d)", len(l.ips), l.maxKeys)
 	}
 }
+
+func TestIPRateLimiterFloodDoesNotClearRateLimit(t *testing.T) {
+	l := newIPRateLimiter(5, 5*time.Minute)
+	const victim = "203.0.113.7"
+	for i := 0; i < 5; i++ {
+		if !l.allow(victim) {
+			t.Fatalf("unexpected rate limit hit early on attempt %d", i)
+		}
+	}
+	if l.allow(victim) {
+		t.Fatal("victim IP should be rate-limited after 5 hits")
+	}
+
+	// Flood well past maxKeys with unique addresses making 1 hit each
+	for i := 0; i < l.maxKeys*2; i++ {
+		l.allow(fmt.Sprintf("198.51.100.%d.%d", i/256, i%256))
+	}
+
+	if l.allow(victim) {
+		t.Fatal("rate-limited victim IP was unblocked by an unrelated IP flood")
+	}
+	if len(l.hits) > l.maxKeys {
+		t.Fatalf("hits map grew unbounded after flood: %d (cap %d)", len(l.hits), l.maxKeys)
+	}
+}
+

@@ -75,12 +75,16 @@ func (s *Store) ImportUser(in ImportedUser) (*model.User, error) {
 	if period == "" {
 		period = "none"
 	}
+	var lastResetAt int64
+	if period != "" && period != "none" {
+		lastResetAt = time.Now().Unix()
+	}
 	err := s.db.QueryRow(
 		`INSERT INTO users (name, uuid, password, sub_token, enabled, data_limit, expire_at,
-		   used_up, used_down, device_limit, speed_limit, reset_period, note, tags, wg_private_key)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+		   used_up, used_down, device_limit, speed_limit, reset_period, last_reset_at, note, tags, wg_private_key)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
 		in.Name, in.UUID, encField(in.Password), in.SubToken, enabled, in.DataLimit, in.ExpireAt,
-		in.UsedUp, in.UsedDown, in.DeviceLimit, in.SpeedLimit, period, in.Note,
+		in.UsedUp, in.UsedDown, in.DeviceLimit, in.SpeedLimit, period, lastResetAt, in.Note,
 		model.EncodeTags(in.Tags), encField(in.WGPrivateKey),
 	).Scan(&id)
 	if err != nil {
@@ -709,20 +713,26 @@ func (s *Store) UsersByIDs(ids []int64) ([]model.User, error) {
 // ResetTrafficMany zeroes usage for several users in one transaction, each
 // re-baselined to its own live counters (see ResetTraffic). Returns the ids it
 // wrote — the same list back, since a missing id updates nothing and harms nobody.
-func (s *Store) ResetTrafficMany(baselines map[int64][2]int64) ([]int64, error) {
+func (s *Store) ResetTrafficMany(baselines map[int64][2]int64, now ...int64) ([]int64, error) {
 	if len(baselines) == 0 {
 		return nil, nil
 	}
+	resetAt := time.Now().Unix()
+	if len(now) > 0 && now[0] > 0 {
+		resetAt = now[0]
+	}
 	done := make([]int64, 0, len(baselines))
 	err := s.withTx(func(tx *sql.Tx) error {
-		stmt, err := tx.Prepare(`UPDATE users SET used_up=0, used_down=0, last_up=?, last_down=? WHERE id = ?`)
+		stmt, err := tx.Prepare(`UPDATE users SET used_up=0, used_down=0, last_up=?, last_down=?,
+		        last_reset_at = CASE WHEN reset_period IN ('', 'none') THEN last_reset_at ELSE ? END
+		 WHERE id = ?`)
 		if err != nil {
 			return err
 		}
 		defer stmt.Close()
 		done = done[:0]
 		for id, t := range baselines {
-			if _, err := stmt.Exec(t[0], t[1], id); err != nil {
+			if _, err := stmt.Exec(t[0], t[1], resetAt, id); err != nil {
 				return err
 			}
 			done = append(done, id)

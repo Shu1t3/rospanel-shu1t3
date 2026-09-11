@@ -172,10 +172,10 @@ func (rt *Router) uploadRestore(w http.ResponseWriter, r *http.Request) {
 		writeErrCode(w, http.StatusBadRequest, "err.uploadParseError", "ошибка разбора загрузки")
 		return
 	}
-	// Re-authenticate: a restore replaces the whole data directory, including the admin
-	// roster the caller is authenticated against, and it is applied on the next boot
-	// with no undo. Carried as a form field because this endpoint is multipart, not JSON.
-	if !rt.verifyStepUp(w, r, r.FormValue("current_password")) {
+	// Re-authenticate with TOTP when configured: a restore replaces the whole data directory,
+	// including the admin roster the caller is authenticated against, and it is applied on the
+	// next boot with no undo. Carried as form fields because this endpoint is multipart, not JSON.
+	if !rt.verifyStepUpTOTP(w, r, r.FormValue("current_password"), r.FormValue("code")) {
 		return
 	}
 	f, _, err := r.FormFile("backup")
