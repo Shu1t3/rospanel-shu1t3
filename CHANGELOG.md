@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.1.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v3.1.0...v3.1.1) (2026-09-11)
+
+
+### Bug Fixes
+
+* **core,server,store:** resolve audit findings for quota reset, backup 2fa, ratelimit and leaks ([1535a7b](https://github.com/Shu1t3/rospanel-shu1t3/commit/1535a7bfae8831088796fae66c99570e62526bb9))
+* **deps:** add golang.zx2c4.com/wintun indirect dependency to go.mod ([3f180fa](https://github.com/Shu1t3/rospanel-shu1t3/commit/3f180fad550f216e00f731685d0202d4d424e643))
+
 ## [3.1.0](https://github.com/Shu1t3/rospanel-shu1t3/releases/tag/v3.1.0) (2026-09-11)
 
 ### Features
