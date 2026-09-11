@@ -324,7 +324,33 @@ export interface ConnectionsStatus {
   // tunnel and mean nothing for a node.
   awg_port: number
   awg_public_key: string
-  awg_params: AWGParams
+  // The obfuscation parameters as the server stores them. The headers and the
+  // ranges are strings because in AmneziaWG 3.1 each is a band ("110-130"); a
+  // block written before it holds a single number, which arrives as one.
+  awg_params: {
+    jc: number
+    jmin: number
+    jmax: number
+    s1: number
+    s2: number
+    s3?: number
+    s4?: number
+    h1: number | string
+    h2: number | string
+    h3: number | string
+    h4: number | string
+    i1?: string
+    i2?: string
+    imitation?: string
+    header_key?: string
+    padding?: string
+    trailers?: boolean
+    rekey_after?: string
+    rekey_timeout?: string
+    reject_after?: string
+    keepalive?: string
+    handshakes?: string
+  }
   awg_dns: string
   awg_running: boolean
   awg_error?: string
@@ -712,6 +738,10 @@ export interface Admin {
   must_change_password: boolean
   created_at: number
   last_login_at: number
+  // Whether this admin has a confirmed authenticator. The secret never leaves the
+  // server (model.Admin.TOTPEnabled) — only the flag does, so the roster can show
+  // who is protected.
+  totp_enabled: boolean
 }
 
 export interface AdminList {
@@ -1515,7 +1545,6 @@ export const login = (username: string, password: string, code?: string) =>
 export interface ConnPolicy {
   mode: 'off' | 'allow' | 'block'
   countries: string[]
-  asns: number[]
   enforce: boolean
   block_hours: number
 }
@@ -1902,7 +1931,9 @@ export interface Webhook {
   id: number
   url: string
   secret: string
-  events: string[]
+  // null when the hook is subscribed to everything: the server marshals an empty
+  // list as null, and reading .length off it is what used to blank the API tab.
+  events: string[] | null
   enabled: boolean
   created_at: number
   last_status: number

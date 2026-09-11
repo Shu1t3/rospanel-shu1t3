@@ -18,23 +18,31 @@ import {
 } from "./api";
 import { ApplyingModal, useXrayApply } from "./apply";
 import { useAction } from "./hooks";
+import { NameVarsHint } from "./namevars";
 import i18n from "./i18n";
 import { errMessage, notifyError, notifySuccess } from "./notify";
 import {
-  Badge,
   Button,
   CenterLoader,
-  Drawer,
+  cn,
+  Code,
+  IconButton,
   IconChevron,
+  IconPencil,
+  IconPlus,
+  IconRestart,
+  IconTrash,
   Modal,
+  Mono,
+  rowKey,
+  Section,
   Select,
+  SettingRow,
   Switch,
   TagsInput,
   Textarea,
   TextInput,
 } from "./ui";
-import { AwgEditor } from "./AwgEditor";
-import { NameVarsHint } from "./namevars";
 
 // Labels for the wire values, so the UI never shows a bare protocol slug.
 const PROTOCOL_LABELS: Record<string, string> = {
@@ -45,7 +53,7 @@ const PROTOCOL_LABELS: Record<string, string> = {
 };
 
 const TRANSPORT_LABELS: Record<string, string> = {
-  tcp: "TCP",
+  tcp: "TCP (raw)",
   ws: "WebSocket",
   xhttp: "XHTTP",
   grpc: "gRPC",
@@ -59,7 +67,6 @@ export const transportLabel = (protocol: string, transport: string): string => {
   }
   return TRANSPORT_LABELS[transport] ?? transport;
 };
-
 
 const securityLabels = (): Record<string, string> => ({
   none: i18n.t("common.none"),
@@ -82,7 +89,7 @@ const hopIntervals = () =>
 
 // blank is a new inbound's starting point: the combination that works everywhere
 // and needs the least explaining — VLESS over WebSocket behind our own certificate.
-export const blank = (): InboundInput => ({
+const blank = (): InboundInput => ({
   enabled: true,
   name: "",
   protocol: "vless",
@@ -114,7 +121,7 @@ export const blank = (): InboundInput => ({
 });
 
 // toInput turns a stored inbound back into the editable shape.
-export function toInput(v: Inbound): InboundInput {
+function toInput(v: Inbound): InboundInput {
   const o = v.opts;
   return {
     enabled: v.enabled,
@@ -166,11 +173,9 @@ function num(v: string): number {
 export function InboundsEditor({
   serverId,
   restartsPanel,
-  readOnly = false,
 }: {
   serverId: number;
   restartsPanel: boolean;
-  readOnly?: boolean;
 }) {
   const { t } = useTranslation();
   const [list, setList] = useState<Inbound[] | null>(null);
@@ -192,7 +197,6 @@ export function InboundsEditor({
         notifyError(errMessage(e));
         setList([]);
       });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverId]);
 
   // Every write here changes a listening socket, so it always goes through the
@@ -234,63 +238,47 @@ export function InboundsEditor({
   const full = list.length >= catalog.max;
 
   return (
-    <div className="flex flex-col gap-3">
-      <AwgEditor
-        serverId={serverId}
-        restartsPanel={restartsPanel}
-        readOnly={readOnly}
-      />
-
-      <div className="rounded-xl border border-gray-200/80 bg-gray-50/60 p-4">
-        <h3 className="mb-1 font-bold text-ink">{t("inb.title")}</h3>
-        <p className="text-sm text-ink-muted">
-          {t("inb.description", { max: catalog.max })}
-        </p>
-      </div>
-
-      {list.length === 0 && (
-        <p className="px-1 text-sm text-ink-muted">
-          {t("inb.empty")}
-        </p>
-      )}
-
-      <div className="flex flex-col gap-2">
-        {list.map((v) => (
-          <InboundRow
-            key={v.id}
-            v={v}
-            busy={busy || applying}
-            onToggle={(en) => toggle(v, en)}
-            onEdit={() => setEditing({ id: v.id, v: toInput(v) })}
-            onDelete={() => setConfirmDel(v)}
-            onRegen={() => regen(v)}
-            readOnly={readOnly}
-          />
-        ))}
-      </div>
-
-      {!readOnly && (
-        <div>
-          <Button
-            variant="light"
-            onClick={() => setEditing({ id: 0, v: blank() })}
+    <div className="flex flex-col gap-3.5">
+      <Section
+        title={t("inb.title")}
+        desc={
+          full
+            ? t("inb.limitReached", { max: catalog.max })
+            : t("inb.description", { max: catalog.max })
+        }
+        action={
+          <IconButton
+            variant="filled"
+            color="brand"
+            title={t("inb.add")}
             disabled={busy || applying || full}
+            onClick={() => setEditing({ id: 0, v: blank() })}
           >
-            {t("inb.add")}
-          </Button>
-          {full && (
-            <p className="mt-2 text-xs text-ink-muted">
-              {t("inb.limitReached", { max: catalog.max })}
-            </p>
-          )}
-        </div>
-      )}
+            <IconPlus />
+          </IconButton>
+        }
+        flush
+      >
+        {list.length === 0 && <SettingRow hint={t("inb.empty")} />}
+      </Section>
 
-      <Drawer
+      {list.map((v) => (
+        <InboundRow
+          key={v.id}
+          v={v}
+          busy={busy || applying}
+          onToggle={(en) => toggle(v, en)}
+          onEdit={() => setEditing({ id: v.id, v: toInput(v) })}
+          onDelete={() => setConfirmDel(v)}
+          onRegen={() => regen(v)}
+        />
+      ))}
+
+      <Modal
         open={!!editing}
         onClose={() => setEditing(null)}
-        side="right"
         title={t(editing?.id ? "inb.connection" : "inb.newConnection")}
+        size="lg"
       >
         {editing && (
           <InboundForm
@@ -302,7 +290,7 @@ export function InboundsEditor({
             busy={busy || applying}
           />
         )}
-      </Drawer>
+      </Modal>
 
       <Modal
         open={!!confirmDel}
@@ -333,14 +321,13 @@ export function InboundsEditor({
 }
 
 // InboundRow is one collapsed inbound: identity, where it listens, and the actions.
-export function InboundRow({
+function InboundRow({
   v,
   busy,
   onToggle,
   onEdit,
   onDelete,
   onRegen,
-  readOnly,
 }: {
   v: Inbound;
   busy: boolean;
@@ -348,11 +335,9 @@ export function InboundRow({
   onEdit: () => void;
   onDelete: () => void;
   onRegen: () => void;
-  readOnly?: boolean;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
-  const isReadOnly = readOnly;
   const o = v.opts;
   const isSS = v.protocol === "shadowsocks";
   // Shadowsocks-2022 is encrypted by its own AEAD, so "no TLS" would misread as
@@ -360,97 +345,114 @@ export function InboundRow({
   // instead — dropping the "2022-blake3-" prefix every method shares.
   const ssMethod = (o.method ?? "").replace("2022-blake3-", "");
   return (
-    <div className="overflow-hidden rounded-xl border border-gray-200/80 bg-gray-50/60">
-      <button
-        type="button"
-        onClick={() => setOpen((x) => !x)}
-        className="flex w-full items-center justify-between gap-2 p-4 text-left"
-      >
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
+    <Section
+      title={
+        <button
+          type="button"
+          onClick={() => setOpen((x) => !x)}
+          className="flex min-w-0 flex-wrap items-center gap-2 text-left"
+        >
           <IconChevron
-            className={`shrink-0 text-gray-400 transition-transform ${open ? "rotate-180" : ""}`}
+            className={cn(
+              "shrink-0 text-gray-400 transition-transform",
+              open && "rotate-180",
+            )}
           />
-          <span className="font-medium text-ink">{v.name}</span>
-          <Badge color="gray">{PROTOCOL_LABELS[v.protocol] ?? v.protocol}</Badge>
-          {!isSS && <Badge color="gray">{transportLabel(v.protocol, o.transport)}</Badge>}
-          {isSS && ssMethod && <Badge color="green">{ssMethod}</Badge>}
-          {o.security === "reality" && <Badge color="green">REALITY</Badge>}
-          {o.security === "none" && !isSS && <Badge color="orange">{t("inb.noTls")}</Badge>}
-          <Badge color="gray">{v.port}</Badge>
-          {!v.enabled && <Badge color="gray">{t("conn.off")}</Badge>}
-        </div>
-        <span onClick={(e) => e.stopPropagation()} className="flex items-center">
-          <Switch checked={v.enabled} onChange={onToggle} disabled={busy || isReadOnly} />
-        </span>
-      </button>
-
-      {open && (
-        <div className="flex flex-col gap-3 border-t border-gray-100 px-4 pb-4 pt-3">
-          {hasAdvanced(v) && (
-            <p className="rounded-lg bg-gray-100 px-3 py-2 text-xs text-ink-muted">
-              {t("inb.hasExtras")}
-            </p>
-          )}
-          {v.unsupported && v.unsupported.length > 0 && (
-            <p className="rounded-lg bg-orange-50 px-3 py-2 text-xs text-orange-800">
-              {t("inb.unsupportedBy", { clients: v.unsupported.join(", ") })}
-            </p>
-          )}
-          <div className="flex flex-col gap-1 text-sm">
-            <Row label={t("conn.port")} value={String(v.port)} />
-            {isSS ? (
-              <Row label={t("inb.ssMethod")} value={o.method ?? ""} />
-            ) : (
-              <>
-                <Row
-                  label={t("conn.transport")}
-                  value={transportLabel(v.protocol, o.transport)}
-                />
-                <Row
-                  label={t("inb.security")}
-                  value={securityLabels()[o.security] ?? o.security}
-                />
-              </>
+          <span className="truncate">{v.name}</span>
+          <span className="flex flex-wrap items-center gap-2 text-[11px] font-normal text-ink-muted">
+            <Mono>{PROTOCOL_LABELS[v.protocol] ?? v.protocol}</Mono>
+            {!isSS && <Mono>{transportLabel(v.protocol, o.transport)}</Mono>}
+            {isSS && ssMethod && <Mono className="text-success">{ssMethod}</Mono>}
+            {o.security === "reality" && <Mono className="text-success">REALITY</Mono>}
+            {o.security === "none" && !isSS && (
+              <span className="text-warning">{t("inb.noTls")}</span>
             )}
-            {o.path && <Row label={t("inb.path")} value={o.path} />}
-            {o.service_name && <Row label={t("inb.grpcService")} value={o.service_name} />}
-            {o.mode && <Row label={t("inb.xhttpMode")} value={o.mode} />}
-            {o.header_type === "http" && (
-              <Row label={t("inb.httpMasq")} value={(o.header_hosts ?? []).join(", ")} />
-            )}
-            {o.authority && <Row label="Authority" value={o.authority} />}
-            {o.multi_mode && <Row label="gRPC" value="multi-mode" />}
-            {o.host && <Row label="Host" value={o.host} />}
-            {o.sni && <Row label="SNI" value={o.sni} />}
-            {o.reality_dest && <Row label={t("inb.masquerade")} value={o.reality_dest} />}
-            {(o.hop_end ?? 0) > v.port && (
-              <Row label={t("inb.hop")} value={`${o.hop_start}–${o.hop_end}`} />
-            )}
-          </div>
+            <Mono>{v.port}</Mono>
+            {!v.enabled && <span>{t("conn.off")}</span>}
+          </span>
+        </button>
+      }
+      action={
+        // The actions do not wait for the row to be unfolded: appearing on expand
+        // grew the header band by the height of a button and made the whole list
+        // jump under the cursor.
+        <span className="flex items-center gap-0.5">
           {o.security === "reality" && (
-            <div className="flex flex-col gap-1 border-t border-gray-100 pt-3">
+            <IconButton
+              color="orange"
+              title={t("conn.regenKeys")}
+              onClick={onRegen}
+              disabled={busy}
+            >
+              <IconRestart />
+            </IconButton>
+          )}
+          <IconButton title={t("common.edit")} onClick={onEdit} disabled={busy}>
+            <IconPencil />
+          </IconButton>
+          <IconButton
+            color="red"
+            title={t("common.delete")}
+            onClick={onDelete}
+            disabled={busy}
+          >
+            <IconTrash />
+          </IconButton>
+          <Switch checked={v.enabled} onChange={onToggle} disabled={busy} />
+        </span>
+      }
+      flush
+    >
+      {open && (
+        <>
+          {hasAdvanced(v) && <SettingRow hint={t("inb.hasExtras")} />}
+          {v.unsupported && v.unsupported.length > 0 && (
+            <SettingRow
+              hint={
+                <span className="text-warning">
+                  {t("inb.unsupportedBy", { clients: v.unsupported.join(", ") })}
+                </span>
+              }
+            />
+          )}
+          <Row label={t("conn.port")} value={String(v.port)} />
+          {isSS ? (
+            <Row label={t("inb.ssMethod")} value={o.method ?? ""} />
+          ) : (
+            <>
+              <Row
+                label={t("conn.transport")}
+                value={transportLabel(v.protocol, o.transport)}
+              />
+              <Row
+                label={t("inb.security")}
+                value={securityLabels()[o.security] ?? o.security}
+              />
+            </>
+          )}
+          {o.path && <Row label={t("inb.path")} value={o.path} />}
+          {o.service_name && <Row label={t("inb.grpcService")} value={o.service_name} />}
+          {o.mode && <Row label={t("inb.xhttpMode")} value={o.mode} />}
+          {o.header_type === "http" && (
+            <Row label={t("inb.httpMasq")} value={(o.header_hosts ?? []).join(", ")} />
+          )}
+          {o.authority && <Row label="Authority" value={o.authority} />}
+          {o.multi_mode && <Row label="gRPC" value="multi-mode" />}
+          {o.host && <Row label="Host" value={o.host} />}
+          {o.sni && <Row label="SNI" value={o.sni} />}
+          {o.reality_dest && <Row label={t("inb.masquerade")} value={o.reality_dest} />}
+          {(o.hop_end ?? 0) > v.port && (
+            <Row label={t("inb.hop")} value={`${o.hop_start}–${o.hop_end}`} />
+          )}
+          {o.security === "reality" && (
+            <>
               <LongRow label="Public key" value={v.reality_public_key ?? ""} />
               <LongRow label="Short IDs" value={v.reality_short_id ?? ""} />
-            </div>
+            </>
           )}
-          {!isReadOnly && (
-            <div className="flex flex-wrap justify-end gap-2 border-t border-gray-100 pt-3">
-              {o.security === "reality" && (
-                <Button size="sm" variant="light" color="orange" onClick={onRegen} disabled={busy}>
-                  {t("conn.regenKeys")}
-                </Button>
-              )}
-              <Button size="sm" variant="light" color="gray" onClick={onEdit} disabled={busy}>
-                {t("common.edit")}
-              </Button>
-              <Button size="sm" variant="light" color="red" onClick={onDelete} disabled={busy}>
-                {t("common.delete")}
-              </Button>
-            </div>
-          )}
-        </div>
+        </>
       )}
-    </div>
+    </Section>
   );
 }
 
@@ -522,16 +524,13 @@ function ASw({ label, hint, value, onChange }: {
   label: string; hint?: string; value?: boolean; onChange: (v: boolean) => void;
 }) {
   return (
-    <div
-      className="flex cursor-pointer items-center justify-between gap-3 select-none"
-      onClick={() => onChange(!value)}
-    >
+    <label className="flex items-center justify-between gap-3">
       <span className="text-sm">
         {label}
         {hint && <span className="block text-xs text-ink-muted">{hint}</span>}
       </span>
-      <Switch checked={!!value} onChange={onChange} aria-label={label} />
-    </div>
+      <Switch checked={!!value} onChange={onChange} />
+    </label>
   );
 }
 
@@ -543,35 +542,42 @@ function HeadersEditor({ value, onChange }: {
   onChange: (v?: Record<string, string>) => void;
 }) {
   const { t } = useTranslation();
-  const [rows, setRows] = useState<[string, string][]>(() => Object.entries(value ?? {}));
-  const push = (next: [string, string][]) => {
+  // Each row carries a key of its own, so deleting one takes that row's inputs with
+  // it instead of shifting the row below into its DOM — and its caret.
+  type Row = { key: string; name: string; value: string };
+  const [rows, setRows] = useState<Row[]>(() =>
+    Object.entries(value ?? {}).map(([name, v]) => ({ key: rowKey(), name, value: v })),
+  );
+  const push = (next: Row[]) => {
     setRows(next);
     const obj: Record<string, string> = {};
-    for (const [k, val] of next) if (k.trim()) obj[k.trim()] = val;
+    for (const r of next) if (r.name.trim()) obj[r.name.trim()] = r.value;
     onChange(Object.keys(obj).length ? obj : undefined);
   };
+  const patch = (key: string, p: Partial<Row>) =>
+    push(rows.map((r) => (r.key === key ? { ...r, ...p } : r)));
   return (
     <div className="flex flex-col gap-2">
       <span className="text-sm text-ink-muted">{t("inb.requestHeaders")}</span>
-      {rows.map(([k, val], i) => (
-        <div key={i} className="flex items-center gap-2">
+      {rows.map((r) => (
+        <div key={r.key} className="flex items-center gap-2">
           <TextInput
-            value={k}
+            value={r.name}
             placeholder={t("inb.headerName")}
-            onChange={(x) => push(rows.map((r, j) => (j === i ? [x, r[1]] : r)))}
+            onChange={(x) => patch(r.key, { name: x })}
           />
           <TextInput
-            value={val}
+            value={r.value}
             placeholder={t("inb.headerValue")}
-            onChange={(x) => push(rows.map((r, j) => (j === i ? [r[0], x] : r)))}
+            onChange={(x) => patch(r.key, { value: x })}
           />
-          <Button size="sm" variant="light" color="red" onClick={() => push(rows.filter((_, j) => j !== i))}>
+          <Button size="sm" variant="light" color="red" onClick={() => push(rows.filter((x) => x.key !== r.key))}>
             ×
           </Button>
         </div>
       ))}
       <div>
-        <Button size="sm" variant="light" onClick={() => push([...rows, ["", ""]])}>
+        <Button size="sm" variant="light" onClick={() => push([...rows, { key: rowKey(), name: "", value: "" }])}>
           {t("inb.addHeader")}
         </Button>
       </div>
@@ -808,30 +814,31 @@ function AdvancedSection({
   );
 }
 
+// One read-only fact about an inbound, in the shape every settings row has.
 function Row({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between gap-2">
-      <span className="text-ink-muted">{label}</span>
-      <span className="text-right font-medium">{value}</span>
-    </div>
+    <SettingRow
+      label={label}
+      control={<Mono className="text-[11px] text-ink-muted">{value}</Mono>}
+    />
   );
 }
 
+// The same for a value no row edge can hold — a key, a set of short IDs.
 function LongRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex flex-col gap-1">
-      <span className="text-sm text-ink-muted">{label}</span>
-      <code className="block break-all rounded border border-gray-200 bg-white/60 px-2 py-1 font-mono text-xs text-ink">
+    <SettingRow label={label}>
+      <Code block copy>
         {value}
-      </code>
-    </div>
+      </Code>
+    </SettingRow>
   );
 }
 
 // InboundForm renders exactly the fields the chosen protocol × transport × security
 // actually uses. The options come from the server's catalog, so the form can never
 // offer a combination the validator would reject.
-export function InboundForm({
+function InboundForm({
   v,
   catalog,
   onChange,
@@ -1034,10 +1041,7 @@ export function InboundForm({
             onChange={(x) => set("reality_dest", x.join(","))}
             placeholder={t("inb.realityPlaceholder")}
           />
-          <div
-            className="flex cursor-pointer items-center justify-between gap-3 select-none"
-            onClick={() => set("reality_anti_replay", !v.reality_anti_replay)}
-          >
+          <label className="flex items-center justify-between gap-3">
             <span className="text-sm">
               {t("conn.antiReplay")}
               <span className="block text-xs text-ink-muted">
@@ -1047,9 +1051,8 @@ export function InboundForm({
             <Switch
               checked={v.reality_anti_replay}
               onChange={(x) => set("reality_anti_replay", x)}
-              aria-label={t("conn.antiReplay")}
             />
-          </div>
+          </label>
           <p className="text-xs text-ink-muted">
             {t("inb.realityHint")}
           </p>
@@ -1120,13 +1123,10 @@ export function InboundForm({
           knobs in here apply to it. */}
       {!isShadowsocks && <AdvancedSection v={v} set={set} enums={catalog.enums} />}
 
-      <div
-        className="flex cursor-pointer items-center justify-between gap-3 border-t border-gray-100 pt-3 select-none"
-        onClick={() => set("enabled", !v.enabled)}
-      >
+      <label className="flex items-center justify-between gap-3 border-t border-gray-100 pt-3">
         <span className="text-sm">{t("common.enabled")}</span>
-        <Switch checked={v.enabled} onChange={(x) => set("enabled", x)} aria-label={t("common.enabled")} />
-      </div>
+        <Switch checked={v.enabled} onChange={(x) => set("enabled", x)} />
+      </label>
 
       <div className="flex justify-end gap-2 border-t border-gray-100 pt-3">
         <Button variant="light" color="gray" onClick={onCancel} disabled={busy}>

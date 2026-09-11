@@ -1,13 +1,17 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import i18n, { currentLang } from "./i18n";
+import { ExternalServers } from "./ExternalServers";
+import i18n from "./i18n";
 import {
   applyConnections,
   applyNodeConnections,
+  resetConnections,
+  resetNodeConnections,
   createNode,
   deleteNode,
   getConnections,
   getGeoCategories,
+  getMe,
   getNodeConnections,
   getNodeGeo,
   getNodeTLS,
@@ -19,8 +23,6 @@ import {
   provisionNode,
   refreshNodeGeo,
   regenNodeJoin,
-  resetConnections,
-  resetNodeConnections,
   saveRouting,
   setNodeACME,
   setNodeGeoCadence,
@@ -55,12 +57,12 @@ import { ConnectionsEditor } from "./ConnectionsEditor";
 import { InboundsEditor } from "./InboundsEditor";
 import { ServerSnapshots } from "./ServerSnapshots";
 import { canonicalDns, DnsEditor } from "./DnsEditor";
-import { ExternalServers } from "./ExternalServers";
 import { helperStatus } from "./egress";
-import { fmtBytes } from "./format";
+import { fmtBytes, fmtStamp } from "./format";
 import { decoyLabel } from "./GeneralSettings";
 import { HealthPanel } from "./HealthPanel";
 import { errMessage, notifyError, notifySuccess } from "./notify";
+import { EMPTY_STEP_UP, type StepUp, StepUpFields, stepUpReady, useTotpEnabled } from "./stepup";
 import { TLSPanel } from "./TLSPanel";
 import { XrayConfigView } from "./XrayConfig";
 import { XrayLogs } from "./XrayLogs";
@@ -68,44 +70,47 @@ import {
   effectiveCfg,
   EMPTY,
   GeoSection,
-  IPListSection,
   hydrateRouting,
+  IPListSection,
   laneSources,
   RoutingEditor,
-  Section,
   type LaneSource,
   type StatusBadge,
 } from "./RoutingEditor";
 import {
   Badge,
   Button,
-  Card,
   CenterLoader,
   cn,
   Code,
+  Drawer,
   Dropdown,
   DropdownDivider,
   DropdownItem,
   IconBraces,
-  IconChevron,
   IconButton,
-  IconTrash,
   IconDots,
   IconGear,
   IconPulse,
   IconRestart,
   IconTerminal,
+  IconTrash,
+  MiniBar,
   Modal,
+  Mono,
   PasswordInput,
+  Section,
   SegmentedControl,
   Select,
+  SettingRow,
   Switch,
   Textarea,
   TextInput,
+  type Tone,
+  ToolDialog,
   useConfirm,
 } from "./ui";
 import { PlacementFields, placementOf } from "./PlacementFields";
-import { EMPTY_STEP_UP, type StepUp, StepUpFields, stepUpReady, useTotpEnabled } from "./stepup";
 
 // DialogTabs is the in-modal tab strip used by the server settings dialogs, so a
 // server's many sections (domain / routing / DNS / …) don't stack into one long
@@ -125,15 +130,16 @@ function DialogTabs({
   onChange: (v: string) => void;
 }) {
   return (
-    <div className="mb-4 flex gap-1 overflow-x-auto border-b border-gray-200">
+    <div className="no-scrollbar -mx-5 flex gap-0.5 overflow-x-auto px-5">
       {tabs.map((t) => (
         <button
+          type="button"
           key={t.value}
           onClick={() => onChange(t.value)}
           className={cn(
-            "whitespace-nowrap border-b-2 px-3 py-2 text-sm font-semibold transition",
+            "whitespace-nowrap border-b-2 px-3 py-2.5 text-[13px] font-semibold transition",
             value === t.value
-              ? "border-brand-600 text-brand-800"
+              ? "border-brand-600 text-ink"
               : "border-transparent text-ink-muted hover:text-ink",
           )}
         >
@@ -289,55 +295,50 @@ function SystemProxyEditor({
       : "";
 
   return (
-    <div className="flex flex-col gap-3 border-t border-gray-200/70 pt-4">
-      <div>
-        <p className="font-medium text-ink">{t("proxy.title")}</p>
-        <p className="mt-0.5 text-sm text-ink-muted">{t("proxy.hint")}</p>
-      </div>
-
-      <div className="flex flex-col gap-2">
-        <ProxyListenerRow
-          label="SOCKS5"
-          enabled={cur.socks_enabled}
-          port={cur.socks_port}
-          defaultPort={1080}
-          onToggle={(v) => enable("socks_enabled", v)}
-          onPort={(v) => patch({ socks_port: v })}
-        />
-        <ProxyListenerRow
-          label="HTTP"
-          enabled={cur.http_enabled}
-          port={cur.http_port}
-          defaultPort={3128}
-          onToggle={(v) => enable("http_enabled", v)}
-          onPort={(v) => patch({ http_port: v })}
-        />
-      </div>
+    <Section
+      title={t("proxy.title")}
+      desc={t("proxy.hint")}
+      action={
+        on ? (
+          <Button size="xs" variant="light" onClick={addAccount}>
+            {t("proxy.addAccount")}
+          </Button>
+        ) : undefined
+      }
+      flush
+    >
+      <ProxyListenerRow
+        label="SOCKS5"
+        enabled={cur.socks_enabled}
+        port={cur.socks_port}
+        defaultPort={1080}
+        onToggle={(v) => enable("socks_enabled", v)}
+        onPort={(v) => patch({ socks_port: v })}
+      />
+      <ProxyListenerRow
+        label="HTTP"
+        enabled={cur.http_enabled}
+        port={cur.http_port}
+        defaultPort={3128}
+        onToggle={(v) => enable("http_enabled", v)}
+        onPort={(v) => patch({ http_port: v })}
+      />
 
       {/* The accounts appear once something is listening: with both protocols off
           there is nobody to authenticate, and empty rows would just be noise. Each
           account is its own row so one consumer can be revoked without touching the
           others — which is the whole reason there is a list rather than one login. */}
-      {on && (
-        <div className="flex flex-col gap-2">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-sm font-medium text-ink">{t("proxy.accounts")}</span>
-            <Button size="sm" variant="light" onClick={addAccount}>
-              {t("proxy.addAccount")}
-            </Button>
-          </div>
-          {accounts.length === 0 && (
-            <p className="text-xs text-ink-muted">{t("proxy.noAccounts")}</p>
-          )}
-          {accounts.map((a, i) => (
-            <div
-              key={i}
-              className="flex flex-col gap-2 rounded-xl border border-gray-200/80 bg-white/60 p-3"
-            >
+      {on && accounts.length === 0 && (
+        <SettingRow hint={t("proxy.noAccounts")} />
+      )}
+      {on &&
+        accounts.map((a, i) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: the account list is the wire payload — it carries no id, and its position is what every mutator here addresses
+          <SettingRow key={i}>
+            <div className="flex flex-col gap-2">
               {/* Login, password and the delete control on ONE line: the button
                   belongs to this account, and on its own row it read as an action on
-                  the whole list. It is bottom-aligned so it sits on the inputs' line
-                  rather than on their labels'. */}
+                  the whole list. */}
               <div className="flex items-end gap-2">
                 <div className="min-w-0 flex-1">
                   <TextInput
@@ -358,7 +359,6 @@ function SystemProxyEditor({
                   color="red"
                   title={t("common.delete")}
                   onClick={() => removeAccount(i)}
-                  className="mb-0.5"
                 >
                   <IconTrash />
                 </IconButton>
@@ -380,10 +380,9 @@ function SystemProxyEditor({
                 </div>
               )}
             </div>
-          ))}
-        </div>
-      )}
-    </div>
+          </SettingRow>
+        ))}
+    </Section>
   );
 }
 
@@ -408,28 +407,28 @@ function ProxyListenerRow({
 }) {
   const { t } = useTranslation();
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-200/80 bg-white/60 px-3 py-2.5">
-      <div className="flex min-w-0 items-center gap-2">
-        <span className="font-medium text-ink">{label}</span>
-        {!enabled && <Badge color="gray">{t("conn.off")}</Badge>}
-      </div>
-      <div className="flex items-center gap-3">
-        <span className="text-sm text-ink-muted">{t("conn.port")}</span>
-        <div className="w-24">
-          {/* A listener that was never given a port shows the one it will get when
-              switched on, as a value rather than a placeholder: next to a row whose
-              port was saved, a grey hint reads as a different kind of number. */}
-          <TextInput
-            type="number"
-            value={port ? String(port) : enabled ? "" : String(defaultPort)}
-            onChange={(v) => onPort(Number(v) || 0)}
-            placeholder={String(defaultPort)}
-            disabled={!enabled}
-          />
+    <SettingRow
+      label={label}
+      hint={!enabled ? t("conn.off") : undefined}
+      control={
+        <div className="flex items-center gap-3">
+          <span className="text-[11px] text-ink-muted">{t("conn.port")}</span>
+          <div className="w-24">
+            {/* A listener that was never given a port shows the one it will get when
+                switched on, as a value rather than a placeholder: next to a row whose
+                port was saved, a grey hint reads as a different kind of number. */}
+            <TextInput
+              type="number"
+              value={port ? String(port) : enabled ? "" : String(defaultPort)}
+              onChange={(v) => onPort(Number(v) || 0)}
+              placeholder={String(defaultPort)}
+              disabled={!enabled}
+            />
+          </div>
+          <Switch checked={enabled} onChange={onToggle} />
         </div>
-        <Switch checked={enabled} onChange={onToggle} />
-      </div>
-    </div>
+      }
+    />
   );
 }
 
@@ -439,10 +438,7 @@ function fmtSeen(unix: number): string {
   if (ago < 60) return i18n.t("lastSeen.justNow");
   if (ago < 3600) return i18n.t("lastSeen.minutes", { n: Math.floor(ago / 60) });
   if (ago < 86400) return i18n.t("lastSeen.hours", { n: Math.floor(ago / 3600) });
-  return new Date(unix * 1000).toLocaleString(currentLang(), {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
+  return fmtStamp(unix);
 }
 
 // statusDot is the colour of the small dot that leads each server row. It answers
@@ -466,27 +462,57 @@ function clampCoefficient(v: string): number {
   return Math.min(Math.max(n, 0.1), 10);
 }
 
-export function statusDot(node: NodeView): string {
-  if (!node.enabled || !node.joined) return "bg-gray-400";
-  if (!node.is_local && !node.online) return "bg-red-500";
-  return node.xray_running ? "bg-emerald-500" : "bg-amber-500";
+// NodeState is a server's steady state in one place: the dot's colour, the word for
+// it and how that word should read. The dashboard writes it as text in a dense row
+// and the server card as a badge; before this each spelled the rules out again and
+// the two could drift apart on a state neither had thought about.
+//
+// Deliberately NOT covering the transient restart states (see RestartChip): those are
+// about a click the operator just made, not about how the server is.
+export type NodeState = {
+  dot: string; // background class for the state dot
+  label: string;
+  tone: Tone;
+};
+
+export function nodeState(node: NodeView): NodeState {
+  if (!node.is_local && !node.enabled) {
+    return { dot: "bg-gray-400", label: i18n.t("nodes.disabled"), tone: "default" };
+  }
+  if (!node.is_local && !node.joined) {
+    return { dot: "bg-gray-400", label: i18n.t("nodes.notJoined"), tone: "default" };
+  }
+  if (!node.is_local && !node.online) {
+    return { dot: "bg-danger", label: i18n.t("usersPanel.offline"), tone: "danger" };
+  }
+  if (!node.xray_running) {
+    return { dot: "bg-warning", label: i18n.t("nodes.xrayDown"), tone: "warning" };
+  }
+  if (!node.is_local && node.sync_fails >= UNSTABLE_SYNC_FAILS) {
+    return { dot: "bg-warning", label: i18n.t("nodes.unstable"), tone: "warning" };
+  }
+  return { dot: "bg-success", label: i18n.t("nodes.serving"), tone: "success" };
 }
 
-// StatusChip is the small state label next to a server's name. The master needs no
-// chip for the states it cannot be in (its name already reads "Master" when unnamed);
-// plain "up and serving" is left to the green dot to keep the row quiet; the states
-// that need words get an xs badge.
-function StatusChip({ node }: { node: NodeView }) {
-  if (!node.is_local) {
-    if (!node.enabled) return <Badge color="gray" size="xs">{i18n.t("nodes.disabled")}</Badge>;
-    if (!node.joined) return <Badge color="gray" size="xs">{i18n.t("nodes.notJoined")}</Badge>;
-    if (!node.online) return <Badge color="red" size="xs">{i18n.t("usersPanel.offline")}</Badge>;
-  }
-  // A restart the operator just asked for outranks everything below: during the
-  // bounce "Xray not running" is true too, and only this says the state is their own
-  // click rather than a fault. The outcome is shown for a few seconds after —
-  // confirmation lands about a second in, and a badge that appears and vanishes
-  // between two refreshes is why the same restart got clicked four times.
+// serving counts the servers actually carrying traffic — reachable AND running Xray.
+export function servingCount(nodes: NodeView[]): number {
+  return nodes.filter(
+    (n) => n.enabled && n.joined && (n.is_local || n.online) && n.xray_running,
+  ).length;
+}
+
+export function statusDot(node: NodeView): string {
+  return nodeState(node).dot;
+}
+
+
+// RestartChip is the outcome of a restart the operator just asked for. It outranks
+// the steady state in the line below: during the bounce "Xray not running" is true
+// too, and only this says the state is their own click rather than a fault. The
+// outcome shows for a few seconds after — confirmation lands about a second in, and
+// a badge that appears and vanishes between two refreshes is why the same restart
+// got clicked four times.
+function RestartChip({ node }: { node: NodeView }) {
   if (node.xray_restart === "pending") {
     return <Badge color="brand" size="xs">{i18n.t("nodes.restartQueued")}</Badge>;
   }
@@ -496,22 +522,7 @@ function StatusChip({ node }: { node: NodeView }) {
   if (node.xray_restart === "timeout") {
     return <Badge color="orange" size="xs">{i18n.t("nodes.restartUnconfirmed")}</Badge>;
   }
-  // The amber dot needs a word: reachable but not serving is the one state an
-  // operator reads as "fine" if nothing says otherwise.
-  if (!node.xray_running) {
-    return <Badge color="orange" size="xs">{i18n.t("nodes.xrayDown")}</Badge>;
-  }
-  // Online and serving, yet its long-poll to the panel keeps dropping: last_seen
-  // still advances (it looks fine), but the transport is limping. Surfacing it is the
-  // whole point — this state hid for a month until it decayed into hard outages.
-  if (!node.is_local && node.sync_fails >= UNSTABLE_SYNC_FAILS) {
-    return (
-      <Badge color="orange" size="xs">
-        {i18n.t("nodes.unstable")}
-      </Badge>
-    );
-  }
-  return null; // up and serving → the green dot already says so
+  return null;
 }
 
 // UNSTABLE_SYNC_FAILS is how many dropped syncs in the last hour a node reports before
@@ -524,11 +535,6 @@ const UNSTABLE_SYNC_FAILS = 6;
 export function serverName(node: NodeView): string {
   if (node.is_local) return node.master_label?.trim() || i18n.t("nodes.master");
   return node.name;
-}
-
-// Sep is the muted middot between inline meta values.
-function Sep() {
-  return <span className="text-gray-300">·</span>;
 }
 
 // InstallCommandModal shows the one-line install command exactly once after a node
@@ -584,6 +590,8 @@ function AddNodeDialog({
   const [sshKey, setSshKey] = useState("");
   const [log, setLog] = useState<string[]>([]);
   const [installing, setInstalling] = useState(false);
+  // The node is created once; a retry after a failed SSH install reuses this id
+  // instead of creating a second orphan node.
   const [createdId, setCreatedId] = useState<number | null>(null);
 
   const submitCommand = async () => {
@@ -604,6 +612,8 @@ function AddNodeDialog({
     if (sshAuth === "key" && !sshKey.trim()) return;
     setInstalling(true);
     try {
+      // Create the node once; on a retry reuse the existing id so a failed install
+      // doesn't leave a trail of orphan not-joined nodes.
       let nodeId = createdId;
       if (nodeId == null) {
         setLog([t("nodes.creating")]);
@@ -639,10 +649,17 @@ function AddNodeDialog({
   };
 
   return (
-    <Modal open onClose={onClose} title={t("nodes.addNode")} size="lg" dismissible={!installing}>
-      <div className="mb-4 inline-flex rounded-lg border border-gray-200 dark:border-gray-700 p-0.5 text-sm">
+    <Modal
+      open
+      onClose={onClose}
+      title={t("nodes.addNode")}
+      size="lg"
+      dismissible={!installing}
+    >
+      <div className="mb-4 inline-flex rounded-lg border border-gray-200 p-0.5 text-sm">
         {(["command", "ssh"] as const).map((m) => (
           <button
+            type="button"
             key={m}
             onClick={() => setMode(m)}
             disabled={installing}
@@ -651,9 +668,7 @@ function AddNodeDialog({
               mode === m ? "bg-brand-600 text-onaccent" : "text-ink-muted",
             )}
           >
-            {m === "command"
-              ? t("nodes.tabCommand")
-              : t("nodes.tabSsh")}
+            {t(m === "command" ? "nodes.tabCommand" : "nodes.tabSsh")}
           </button>
         ))}
       </div>
@@ -682,6 +697,7 @@ function AddNodeDialog({
             <div className="inline-flex rounded-lg border border-gray-200 p-0.5 text-sm">
               {(["password", "key"] as const).map((a) => (
                 <button
+                  type="button"
                   key={a}
                   onClick={() => setSshAuth(a)}
                   className={cn(
@@ -710,6 +726,7 @@ function AddNodeDialog({
         {log.length > 0 && (
           <div className="max-h-56 overflow-auto rounded-md bg-gray-50 p-3 font-mono text-xs">
             {log.map((l, i) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: an install transcript is positional — lines repeat verbatim and only ever append
               <div key={i} className={l.startsWith(ERR_PREFIX) ? "text-danger" : ""}>
                 {l}
               </div>
@@ -816,10 +833,17 @@ function ReconnectDialog({
   };
 
   return (
-    <Modal open onClose={onClose} title={t("nodes.reinstallOf", { name: node.name })} size="lg" dismissible={!running}>
+    <Modal
+      open
+      onClose={onClose}
+      title={t("nodes.reinstallOf", { name: node.name })}
+      size="lg"
+      dismissible={!running}
+    >
       <div className="mb-4 inline-flex rounded-lg border border-gray-200 p-0.5 text-sm">
         {(["command", "ssh"] as const).map((m) => (
           <button
+            type="button"
             key={m}
             onClick={() => setMode(m)}
             disabled={running}
@@ -852,6 +876,7 @@ function ReconnectDialog({
           <div className="inline-flex rounded-lg border border-gray-200 p-0.5 text-sm">
             {(["password", "key"] as const).map((a) => (
               <button
+                type="button"
                 key={a}
                 onClick={() => setSshAuth(a)}
                 className={cn(
@@ -877,6 +902,7 @@ function ReconnectDialog({
           {log.length > 0 && (
             <div className="max-h-56 overflow-auto rounded-md bg-gray-50 p-3 font-mono text-xs">
               {log.map((l, i) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: an install transcript is positional — lines repeat verbatim and only ever append
                 <div key={i} className={l.startsWith(ERR_PREFIX) ? "text-danger" : ""}>
                   {l}
                 </div>
@@ -951,6 +977,10 @@ function useServerRouting(init: {
     setOperaEnabled,
     operaCountry,
     setOperaCountry,
+    // What the server currently has, as against the draft above: a status word must
+    // describe the running egress, not a switch nobody has saved yet.
+    savedWarp: base.warp,
+    savedOpera: base.opera,
     effective: () => effectiveCfg(cfg, laneSrc),
     dirty,
     // revert restores the editor to the last-saved snapshot.
@@ -1030,27 +1060,11 @@ function NodeGeoCard({ node, onChanged }: { node: NodeView; onChanged: () => voi
   );
 }
 
-export function formatSpeedLimit(kbps: number, t?: (k: any) => string): string {
-  if (!kbps || kbps <= 0) return "∞";
-  const kbpsLabel = t ? t("nodes.unitKbps") : "Kbps";
-  const mbpsLabel = t ? t("nodes.unitMbps") : "Mbps";
-  const gbpsLabel = t ? t("nodes.unitGbps") : "Gbps";
-
-  if (kbps >= 1_000_000 && kbps % 1_000_000 === 0) {
-    return `${kbps / 1_000_000} ${gbpsLabel}`;
-  }
-  if (kbps >= 1_000_000) {
-    return `${(kbps / 1_000_000).toFixed(1)} ${gbpsLabel}`;
-  }
-  if (kbps >= 1_000 && kbps % 1_000 === 0) {
-    return `${kbps / 1_000} ${mbpsLabel}`;
-  }
-  if (kbps >= 1_000) {
-    return `${(kbps / 1_000).toFixed(1)} ${mbpsLabel}`;
-  }
-  return `${kbps} ${kbpsLabel}`;
-}
-
+// NodeSettingsDialog edits a remote node's full per-server config: name, decoy,
+// protocol overrides, its OWN routing + egress (the same editor as the master), and
+// its DNS. Routing/egress and DNS each either inherit the panel's or are the node's
+// own override. Egress (proxy lanes / WARP / Opera) is independent of the master and
+// only meaningful with own routing, so it lives inside the routing editor.
 function NodeSettingsDialog({
   node,
   decoys,
@@ -1067,15 +1081,21 @@ function NodeSettingsDialog({
   const { t } = useTranslation();
   const [name, setName] = useState(node.name);
   const [decoy, setDecoy] = useState(node.decoy_template);
+  // The per-node quota multiplier (1 = neutral). Kept as a string so the field can be
+  // cleared while typing; parsed on save.
   const [coef, setCoef] = useState(String(node.traffic_coefficient || 1));
   const [pl, setPl] = useState<Placement>(placementOf(node));
   const [plBase, setPlBase] = useState<Placement>(placementOf(node));
   const plDirty = JSON.stringify(pl) !== JSON.stringify(plBase);
+  // genBase / dnsBase are the last-saved snapshots powering dirty-tracking + revert on
+  // the General and DNS tabs (routing carries its own inside useServerRouting).
   const [genBase, setGenBase] = useState({
     name: node.name,
     decoy: node.decoy_template,
     coef: String(node.traffic_coefficient || 1),
   });
+  // The system proxy is part of the General tab, so its draft lives here and rides
+  // that tab's single save.
   const [proxy, setProxy] = useState<SystemProxy>(node.proxy);
   const [proxyBase, setProxyBase] = useState<SystemProxy>(node.proxy);
   const proxyDirty = JSON.stringify(proxy) !== JSON.stringify(proxyBase);
@@ -1094,26 +1114,42 @@ function NodeSettingsDialog({
     name !== genBase.name || decoy !== genBase.decoy || coef !== genBase.coef || proxyDirty || plDirty;
   const dnsDirty = dns !== dnsBase;
 
-  const warpBadge: StatusBadge = !r.warpEnabled
-    ? { label: t("conn.off"), color: "gray" }
-    : node.warp_registered
-      ? { label: t("egress.alive"), color: "green" }
-      : { label: t("nodes.willRegister"), color: "orange" };
-  const operaBadge: StatusBadge = r.operaEnabled
-    ? { label: t("nodes.on"), color: "green" }
-    : { label: t("conn.off"), color: "gray" };
+  // Status words describe the SAVED egress: WARP registration is known from the
+  // node's report, Opera runs remotely so the panel only knows on/off. A flipped but
+  // unsaved switch says so rather than claiming the lane is already up.
+  const warpBadge: StatusBadge =
+    r.warpEnabled !== r.savedWarp
+      ? { label: t("route.unsaved"), color: "orange" }
+      : !r.savedWarp
+        ? { label: t("conn.off"), color: "gray" }
+        : node.warp_registered
+          ? { label: t("egress.alive"), color: "green" }
+          : { label: t("nodes.willRegister"), color: "orange" };
+  const operaBadge: StatusBadge =
+    r.operaEnabled !== r.savedOpera
+      ? { label: t("route.unsaved"), color: "orange" }
+      : r.savedOpera
+        ? { label: t("nodes.on"), color: "green" }
+        : { label: t("conn.off"), color: "gray" };
 
+  // Each tab saves on its own (like Connections/Geo/Domain) and stays open; onRefresh
+  // updates the background list. General persists name/decoy, Routing the routing +
+  // egress, DNS its own endpoint — three independent saves.
   const saveGeneral = async () => {
     if (!name.trim()) return;
     setSaving(true);
     try {
       await updateNode(node.id, {
         name: name.trim(),
-        host: node.host,
+        host: node.host, // domain is changed from the Domain tab
         decoy_template: decoy,
         traffic_coefficient: clampCoefficient(coef),
         placement: pl,
+        // Protocols are edited on the Connections tab; omitting them here tells the
+        // panel to preserve the current values (never revert a just-made change).
       });
+      // Only when it actually changed: the proxy write reconciles the server's Xray,
+      // which is not something a rename should trigger.
       if (proxyDirty) {
         await setServerProxy(node.id, proxy);
         setProxyBase(proxy);
@@ -1132,6 +1168,8 @@ function NodeSettingsDialog({
   const saveRouting = async () => {
     setSaving(true);
     try {
+      // Routing + egress — always the node's OWN (no inherit toggle). An empty routing
+      // config just means "mostly direct". DNS is saved separately.
       await setNodeRouting(
         node.id,
         r.effective(),
@@ -1152,6 +1190,7 @@ function NodeSettingsDialog({
   const saveDns = async () => {
     setSaving(true);
     try {
+      // Empty ⇒ inherit the panel's default resolver.
       await setNodeDNS(node.id, dns.trim() ? dns : null);
       setDnsBase(dns);
       notifySuccess(t("nodes.dnsSaved"));
@@ -1163,56 +1202,78 @@ function NodeSettingsDialog({
     }
   };
 
-  const dialogTabs = [
-    { value: "general", label: t("settings.tabGeneral") },
-    { value: "connections", label: t("nodes.tabConnections") },
-    { value: "inbounds", label: t("nodes.tabInbounds") },
-    { value: "routing", label: t("nodes.tabRouting") },
-    { value: "dns", label: "DNS" },
-    { value: "geo", label: "Geo" },
-    { value: "domain", label: t("restore.domain") },
-  ];
-
-  const isDirty = genDirty || dnsDirty || r.dirty;
-  const handleClose = () => {
-    if (isDirty && !window.confirm(t("common.unsavedChangesPrompt", "У вас есть несохраненные изменения. Закрыть окно?"))) {
-      return;
-    }
-    onClose();
-  };
-
   return (
-    <Modal open onClose={handleClose} title={t("nodes.settingsOf", { name: node.name })} size="xl">
-      <DialogTabs value={tab} onChange={setTab} tabs={dialogTabs} />
+    <Drawer
+      open
+      onClose={onClose}
+      wide
+      title={t("nodes.settingsOf", { name: node.name })}
+      subtitle={node.host}
+      toolbar={
+        <DialogTabs
+          value={tab}
+          onChange={setTab}
+          tabs={[
+            { value: "general", label: t("settings.tabGeneral") },
+            { value: "connections", label: t("nodes.tabConnections") },
+            { value: "inbounds", label: t("nodes.tabInbounds") },
+            { value: "routing", label: t("nodes.tabRouting") },
+            { value: "dns", label: "DNS" },
+            { value: "geo", label: "Geo" },
+            { value: "domain", label: t("restore.domain") },
+          ]}
+        />
+      }
+    >
 
       {tab === "general" && (
-        <div className="flex flex-col gap-4">
-          <Section title={t("nodes.server")}>
-            <TextInput label={t("groups.name")} value={name} onChange={setName} placeholder={t("nodes.namePlaceholder")} />
-            <Select
-              label={t("nodes.decoy")}
-              value={decoy}
-              onChange={setDecoy}
-              data={decoys.map((d) => ({ value: d, label: decoyLabel(d) }))}
+        <div className="flex flex-col gap-3.5">
+          <Section title={t("nodes.server")} flush>
+            <SettingRow
+              label={t("groups.name")}
+              field={
+                <TextInput
+                  value={name}
+                  onChange={setName}
+                  placeholder={t("nodes.namePlaceholder")}
+                />
+              }
             />
-            <div className="flex flex-col gap-1">
-              <TextInput
-                label={t("nodes.coefficient")}
-                type="number"
-                value={coef}
-                onChange={setCoef}
-                placeholder="1.0"
-              />
-              <p className="text-xs text-ink-muted">{t("nodes.coefficientHint")}</p>
-            </div>
-            <PlacementFields value={pl} onChange={setPl} online={node.online_users ?? 0} trafficUsed={node.traffic_period_used} />
-            <SystemProxyEditor
-              host={node.host}
-              value={proxy}
-              saved={proxyBase}
-              onChange={setProxy}
+            <SettingRow
+              label={t("nodes.decoy")}
+              field={
+                <Select
+                  value={decoy}
+                  onChange={setDecoy}
+                  data={decoys.map((d) => ({ value: d, label: decoyLabel(d) }))}
+                />
+              }
+            />
+            <SettingRow
+              label={t("nodes.coefficient")}
+              hint={t("nodes.coefficientHint")}
+              field={
+                <TextInput
+                  type="number"
+                  value={coef}
+                  onChange={setCoef}
+                  placeholder="1.0"
+                />
+              }
             />
           </Section>
+          <PlacementFields
+            value={pl}
+            onChange={setPl}
+            online={node.online_users ?? 0}
+            trafficUsed={node.traffic_period_used}
+          />
+          <SystemProxyEditor
+            host={node.host}
+            value={proxy}
+            saved={proxyBase}
+            onChange={setProxy}
+          />
           <TabSaveBar
             onSave={saveGeneral}
             onReset={() => {
@@ -1234,20 +1295,15 @@ function NodeSettingsDialog({
           load={() => getNodeConnections(node.id)}
           save={(u) => applyNodeConnections(node.id, u)}
           reset={() => resetNodeConnections(node.id)}
-          serverId={node.id}
           restartsPanel={false}
         />
       )}
 
-      {tab === "inbounds" && (
-        <InboundsEditor
-          serverId={node.id}
-          restartsPanel={false}
-        />
-      )}
+      {tab === "inbounds" && <InboundsEditor serverId={node.id} restartsPanel={false} />}
 
       {tab === "routing" && (
-        <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-3.5">
+          {/* Routing + egress — always the node's own (independent of the master). */}
           <RoutingEditor
             cfg={r.cfg}
             onCfg={r.onCfg}
@@ -1273,8 +1329,8 @@ function NodeSettingsDialog({
       )}
 
       {tab === "dns" && (
-        <div className="flex flex-col gap-4">
-          <Section title="DNS" desc={t("nodes.dnsNodeHint")}>
+        <div className="flex flex-col gap-3.5">
+          <Section title="DNS" desc={t("nodes.dnsNodeHint")} flush>
             <DnsEditor value={dns} onChange={setDns} />
           </Section>
           <TabSaveBar
@@ -1296,7 +1352,7 @@ function NodeSettingsDialog({
           onChanged={onRefresh}
         />
       )}
-    </Modal>
+    </Drawer>
   );
 }
 
@@ -1367,6 +1423,7 @@ function MasterSettingsDialog({
   });
   const reset = r.reset;
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs once on mount; the loader is redefined every render, so listing it would refetch in a loop
   useEffect(() => {
     getGeoStatus()
       .then((g) => {
@@ -1404,7 +1461,6 @@ function MasterSettingsDialog({
         notifyError(errMessage(e));
       })
       .finally(() => setLoaded(true));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const refreshGeo = () =>
@@ -1443,17 +1499,20 @@ function MasterSettingsDialog({
     }
   };
 
-  const warpBadge: StatusBadge = !r.warpEnabled
-    ? { label: t("conn.off"), color: "gray" }
-    : warpRegistered
-      ? { label: t("egress.alive"), color: "green" }
-      : { label: t("nodes.notRegistered"), color: "orange" };
-  const operaBadge = helperStatus(
-    r.operaEnabled,
-    operaRunning,
-    operaAlive,
-    "",
-  ) as StatusBadge;
+  // Same rule as the node dialog: the word follows what is saved, and an unsaved
+  // switch says so.
+  const warpBadge: StatusBadge =
+    r.warpEnabled !== r.savedWarp
+      ? { label: t("route.unsaved"), color: "orange" }
+      : !r.savedWarp
+        ? { label: t("conn.off"), color: "gray" }
+        : warpRegistered
+          ? { label: t("egress.alive"), color: "green" }
+          : { label: t("nodes.notRegistered"), color: "orange" };
+  const operaBadge: StatusBadge =
+    r.operaEnabled !== r.savedOpera
+      ? { label: t("route.unsaved"), color: "orange" }
+      : (helperStatus(r.savedOpera, operaRunning, operaAlive, "") as StatusBadge);
 
   // Each tab saves on its own (like Connections/Geo/Domain) and stays open; onRefresh
   // updates the background list. These map to the panel's global settings behind the
@@ -1500,20 +1559,15 @@ function MasterSettingsDialog({
       onRefresh();
     });
 
-  const isDirty = genDirty || dnsDirty;
-  const handleClose = () => {
-    if (isDirty && !window.confirm(t("common.unsavedChangesPrompt", "У вас есть несохраненные изменения. Закрыть окно?"))) {
-      return;
-    }
-    onClose();
-  };
-
   return (
-    <Modal open onClose={handleClose} title={t("nodes.masterSettings")} size="xl">
-      {!loaded ? (
-        <CenterLoader />
-      ) : (
-        <>
+    <Drawer
+      open
+      onClose={onClose}
+      wide
+      title={t("nodes.masterSettings")}
+      subtitle={node.host}
+      toolbar={
+        loaded ? (
           <DialogTabs
             value={tab}
             onChange={setTab}
@@ -1529,30 +1583,50 @@ function MasterSettingsDialog({
               { value: "snapshots", label: t("nodes.tabSnapshots") },
             ]}
           />
+        ) : undefined
+      }
+    >
+      {!loaded ? (
+        <CenterLoader />
+      ) : (
+        <>
 
           {tab === "general" && (
-            <div className="flex flex-col gap-4">
-              <Section title={t("nodes.server")}>
-                <TextInput
+            <div className="flex flex-col gap-3.5">
+              <Section title={t("nodes.server")} flush>
+                <SettingRow
                   label={t("groups.name")}
-                  value={name}
-                  onChange={setName}
-                  placeholder={t("nodes.masterNamePlaceholder")}
+                  field={
+                    <TextInput
+                      value={name}
+                      onChange={setName}
+                      placeholder={t("nodes.masterNamePlaceholder")}
+                    />
+                  }
                 />
-                <Select
+                <SettingRow
                   label={t("nodes.decoy")}
-                  value={decoy}
-                  onChange={setDecoy}
-                  data={decoys.map((d) => ({ value: d, label: decoyLabel(d) }))}
-                />
-                <PlacementFields value={pl} onChange={setPl} online={node.online_users ?? 0} trafficUsed={node.traffic_period_used} />
-                <SystemProxyEditor
-                  host={node.host}
-                  value={proxy}
-                  saved={proxyBase}
-                  onChange={setProxy}
+                  field={
+                    <Select
+                      value={decoy}
+                      onChange={setDecoy}
+                      data={decoys.map((d) => ({ value: d, label: decoyLabel(d) }))}
+                    />
+                  }
                 />
               </Section>
+              <PlacementFields
+                value={pl}
+                onChange={setPl}
+                online={node.online_users ?? 0}
+                trafficUsed={node.traffic_period_used}
+              />
+              <SystemProxyEditor
+                host={node.host}
+                value={proxy}
+                saved={proxyBase}
+                onChange={setProxy}
+              />
               <TabSaveBar
                 onSave={saveGeneral}
                 onReset={() => {
@@ -1569,19 +1643,13 @@ function MasterSettingsDialog({
           )}
 
           {tab === "connections" && (
-            <ConnectionsEditor
-              load={getConnections}
-              save={applyConnections}
-              reset={resetConnections}
-              serverId={0}
-              restartsPanel
-            />
+            <ConnectionsEditor load={getConnections} save={applyConnections} reset={resetConnections} restartsPanel />
           )}
 
           {tab === "inbounds" && <InboundsEditor serverId={0} restartsPanel />}
 
           {tab === "routing" && (
-            <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-3.5">
               <RoutingEditor
                 cfg={r.cfg}
                 onCfg={r.onCfg}
@@ -1613,8 +1681,8 @@ function MasterSettingsDialog({
           )}
 
           {tab === "dns" && (
-            <div className="flex flex-col gap-4">
-              <Section title="DNS" desc={t("nodes.dnsMasterHint")}>
+            <div className="flex flex-col gap-3.5">
+              <Section title="DNS" desc={t("nodes.dnsMasterHint")} flush>
                 <DnsEditor value={dns} onChange={setDns} />
               </Section>
               <TabSaveBar
@@ -1661,21 +1729,56 @@ function MasterSettingsDialog({
         </>
       )}
       <ApplyingModal open={applying} />
-    </Modal>
+    </Drawer>
   );
 }
 
+// cmpVersion orders two release strings the way semver does: the numbers first,
+// left to right, then the pre-release suffix — "2.14.0-rc1" comes before the
+// "2.14.0" it precedes, and a part that is missing counts as zero.
+function cmpVersion(a: string, b: string): number {
+  const parse = (v: string) => {
+    const [core, ...pre] = v.replace(/^v/, "").split("-");
+    return { nums: core.split(".").map((n) => parseInt(n, 10) || 0), pre: pre.join("-") };
+  };
+  const x = parse(a);
+  const y = parse(b);
+  for (let i = 0; i < Math.max(x.nums.length, y.nums.length); i++) {
+    const d = (x.nums[i] ?? 0) - (y.nums[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  if (x.pre === y.pre) return 0;
+  if (!x.pre) return 1;
+  if (!y.pre) return -1;
+  return x.pre < y.pre ? -1 : 1;
+}
+
 // NodeCard renders one node with its status, traffic, protocol toggles and decoy.
+// agentSkew says which way this node's agent build differs from the panel's own
+// version: "older" is the one "Update all" fixes, "newer" happens when a server was
+// updated by hand ahead of the panel and it is the panel that is behind. Not the
+// same question as NodeView.version_skew, which is about the Xray build the panel
+// pins — a node can be current on one and behind on the other.
+type AgentSkew = "" | "older" | "newer";
+
+function agentSkew(node: NodeView, panelVersion: string): AgentSkew {
+  if (node.is_local || !node.node_version || !panelVersion) return "";
+  const d = cmpVersion(node.node_version, panelVersion);
+  return d < 0 ? "older" : d > 0 ? "newer" : "";
+}
+
 function NodeCard({
   node,
   decoys,
   geo,
+  panelVersion,
   onChanged,
   onRegen,
 }: {
   node: NodeView;
   decoys: string[];
   geo: GeoCategories;
+  panelVersion: string;
   onChanged: () => void;
   onRegen: (command: string) => void;
 }) {
@@ -1701,6 +1804,9 @@ function NodeCard({
     }
   };
 
+  // Deleting a server is re-authorised, not just confirmed: it cuts off everyone on
+  // that node at once and the panel has no undo for it — the box has to be installed
+  // and joined again. Hence a form rather than the shared yes/no dialog.
   const closeRemove = () => {
     setRemoveOpen(false);
     setRemoveCreds(EMPTY_STEP_UP);
@@ -1714,6 +1820,8 @@ function NodeCard({
       notifySuccess(t("nodes.deleted"));
       onChanged();
     } catch (e) {
+      // The dialog stays open: a refused code is the common case, and it is worth
+      // exactly one more attempt rather than a re-opened form with the password gone.
       notifyError(errMessage(e));
     } finally {
       setRemoving(false);
@@ -1725,7 +1833,8 @@ function NodeCard({
       <p className="text-sm leading-relaxed text-ink-muted">
         {t("nodes.deleteBody", { name: node.name })}
       </p>
-      <StepUpFields value={removeCreds} onChange={setRemoveCreds} />
+      {/* withCode: deleting a node goes through verifyStepUpTOTP on the server. */}
+      <StepUpFields value={removeCreds} onChange={setRemoveCreds} withCode />
       <div className="mt-5 flex justify-end gap-2">
         <Button variant="light" color="gray" onClick={closeRemove}>
           {t("common.cancel")}
@@ -1745,14 +1854,27 @@ function NodeCard({
   const doUpdate = async () => {
     try {
       await updateNodeVersion(node.id);
-      notifySuccess(t("nodes.updateStarted", { count: 1 }));
-      onChanged();
+      notifySuccess(t("nodes.updating"));
     } catch (e) {
       notifyError(errMessage(e));
     }
   };
 
+  // Bouncing Xray drops every live connection on THAT server, so it is confirmed
+  // first. On the master it happens right away; on a node the panel can only ask —
+  // the node acts when its (immediately woken) poll returns, and the row then reads
+  // the restart-queued badge until the node reports an Xray that actually restarted.
+  // Hence no success toast for a node: the claim isn't ours to make yet.
   const doXrayRestart = async () => {
+    const ok = await confirm({
+      title: node.is_local
+        ? t("nodes.restartXrayTitle")
+        : t("nodes.restartXrayOn", { name: node.name }),
+      body: t("nodes.restartXrayBody"),
+      confirmLabel: t("manage.restartConfirm"),
+      danger: true,
+    });
+    if (!ok) return;
     setRestarting(true);
     try {
       if (node.is_local) {
@@ -1760,9 +1882,9 @@ function NodeCard({
         notifySuccess(t("nodes.xrayRestarted"));
       } else {
         await restartNodeXray(node.id);
-        notifySuccess(t("nodes.restartQueued"));
+        notifySuccess(t("nodes.awaitingNode"));
+        onChanged(); // pick up the pending badge now, not on the next poll tick
       }
-      onChanged();
     } catch (e) {
       notifyError(errMessage(e));
     } finally {
@@ -1770,59 +1892,69 @@ function NodeCard({
     }
   };
 
-  return (
-    <>
-      {removeModal}
-      <div className="flex flex-wrap items-center justify-between gap-3 p-4">
-        {confirmNode}
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span
-              className={cn("h-2 w-2 shrink-0 rounded-full", statusDot(node))}
-              title={node.enabled ? (node.online ? "Online" : "Offline") : "Disabled"}
-            />
-            <span className="truncate font-medium text-ink">
-              {serverName(node)}
-            </span>
-            <span className="truncate font-mono text-sm text-ink-muted">{node.host}</span>
-            <StatusChip node={node} />
-          </div>
-          <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-ink-muted">
-            <span>{t("nodes.todayTraffic", { value: fmtBytes(node.traffic_up + node.traffic_down) })}</span>
-            {!node.is_local && (
-              <>
-                <Sep />
-                <span>{fmtSeen(node.last_seen)}</span>
-              </>
-            )}
-            <Sep />
-            <span className={node.version_skew ? "text-amber-600" : undefined}>
-              Xray {node.xray_version || "—"}
-              {node.version_skew ? " ⚠" : ""}
-            </span>
-            {!node.is_local && (
-              <>
-                <Sep />
-                <span>{t("nodes.agentVersion", { version: node.node_version || "—" })}</span>
-              </>
-            )}
-          </div>
-        </div>
+  const state = nodeState(node);
+  const pct = (used: number, total: number) => (total > 0 ? (used / total) * 100 : 0);
+  const traffic = node.traffic_up + node.traffic_down;
+  // The line under the address: whether we are hearing from it, and what it runs.
+  // The master answers for itself, so it has no "last seen" to report.
+  const version = node.is_local ? panelVersion : node.node_version;
+  const skew = agentSkew(node, panelVersion);
+  // The line under the address: how the server is, and when we last heard it say so.
+  // The master answers for itself — there is no "last seen" for the machine you are
+  // talking to, and its Xray version is a click away in the config it serves.
+  const sublineTail = node.is_local ? "" : fmtSeen(node.last_seen);
 
-        <div className="flex shrink-0 flex-wrap items-center gap-1">
-          {!node.is_local && <Switch checked={node.enabled} onChange={toggleEnabled} />}
-          {/* Settings / Connections action */}
+  return (
+    <section
+      className={cn(
+        "rounded-xl border border-brand-600/10 bg-white",
+        !node.enabled && !node.is_local && "opacity-55",
+      )}
+    >
+      {confirmNode}
+      {removeModal}
+
+      <header className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-brand-600/10 px-3.5 py-2.5">
+        <span className={cn("size-2 shrink-0 rounded-full", state.dot)} />
+        <span className="shrink truncate text-sm font-semibold text-ink">{serverName(node)}</span>
+        {node.is_local && !!node.master_label?.trim() && (
+          <Badge size="xs" color="brand" className="shrink-0">
+            {t("nodes.master")}
+          </Badge>
+        )}
+        {/* What this server runs, plainly: the number, not the word "agent" in front
+            of it. The master answers with the panel's own version — it IS the panel. */}
+        {!!version && (
+          <Badge size="xs" color="gray" className="shrink-0">
+            <span className="font-mono">{version}</span>
+          </Badge>
+        )}
+        <RestartChip node={node} />
+        {skew && (
+          <Badge
+            size="xs"
+            color={skew === "older" ? "orange" : "gray"}
+            className="shrink-0 max-sm:hidden"
+          >
+            {t(skew === "older" ? "nodes.agentOutdated" : "nodes.agentAhead")}
+          </Badge>
+        )}
+
+        {/* Six actions, as icons. Spelled out they crowded the row and pushed the
+            server's own name off a narrow screen; the words live on as the
+            accessible name and the hover title. */}
+        <span className="ml-auto flex shrink-0 items-center gap-0.5">
           <IconButton title={t("nav.settings")} onClick={() => setEditingRouting(true)}>
-            <IconGear size={18} />
+            <IconGear size={16} />
           </IconButton>
           <IconButton title={t("nodes.diagnostics")} onClick={() => setShowingHealth(true)}>
-            <IconPulse size={18} />
+            <IconPulse size={16} />
           </IconButton>
           <IconButton title={t("xray.configTitle")} onClick={() => setShowingConfig(true)}>
-            <IconBraces size={18} />
+            <IconBraces size={16} />
           </IconButton>
           <IconButton title={t("manage.logs")} onClick={() => setShowingLogs(true)}>
-            <IconTerminal size={18} />
+            <IconTerminal size={16} />
           </IconButton>
           <IconButton
             title={
@@ -1830,7 +1962,6 @@ function NodeCard({
                 ? t("nodes.restartQueuedHint")
                 : t("nodes.restartXray")
             }
-            color="red"
             disabled={
               restarting ||
               node.xray_restart === "pending" ||
@@ -1839,7 +1970,7 @@ function NodeCard({
             onClick={doXrayRestart}
           >
             <IconRestart
-              size={18}
+              size={16}
               className={node.xray_restart === "pending" ? "animate-spin" : undefined}
             />
           </IconButton>
@@ -1850,15 +1981,24 @@ function NodeCard({
               trigger={
                 <span
                   title={t("nodes.manageNode")}
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-gray-600 transition hover:bg-gray-100 active:scale-90"
+                  className="inline-flex size-8 items-center justify-center rounded-lg text-gray-600 transition hover:bg-gray-100 active:scale-90"
                 >
-                  <IconDots size={18} />
+                  <IconDots size={16} />
                 </span>
               }
             >
+              {/* The access switch lives here rather than in the header: a toggle
+                  among five icon buttons is a mis-click waiting to happen, and this
+                  one takes a server out of every subscription. */}
+              <DropdownItem onClick={() => toggleEnabled(!node.enabled)}>
+                {t(node.enabled ? "usersPanel.disable" : "usersPanel.enable")}
+              </DropdownItem>
               <DropdownItem onClick={doUpdate}>
                 {t("nodes.update")}{node.version_skew ? ` ${t("nodes.newVersionSuffix")}` : ""}
               </DropdownItem>
+              {/* One reinstall action: the dialog offers the command and the SSH way.
+                  They were two menu items (one just issued the command for
+                  the same reinstall), which read as two different operations. */}
               <DropdownItem onClick={() => setReconnecting(true)}>
                 {t("nodes.reinstall")}
               </DropdownItem>
@@ -1868,8 +2008,65 @@ function NodeCard({
               </DropdownItem>
             </Dropdown>
           )}
+        </span>
+      </header>
+
+      {/* On a phone this is three stacked lines — who and what it carried, how it is,
+          then the load bars full width. On a wider screen the same three parts sit in
+          one row; `lg:contents` dissolves the mobile pairing so ordering can put the
+          traffic back on the right. */}
+      <div className="p-3.5 lg:flex lg:flex-wrap lg:items-center lg:gap-x-5">
+        <div className="flex items-start justify-between gap-3 lg:contents">
+          <span className="flex min-w-0 flex-col gap-0.5 lg:order-1 lg:min-w-45">
+            <Mono className="truncate text-xs text-gray-800">{node.host || "—"}</Mono>
+            <span className="truncate text-xs text-ink-muted">
+              <span
+                title={
+                  !node.is_local && node.sync_fails > 0
+                    ? t("nodes.syncFailsHint", { count: node.sync_fails })
+                    : undefined
+                }
+                className={cn(
+                  state.tone === "success" && "text-success",
+                  state.tone === "warning" && "text-warning",
+                  state.tone === "danger" && "text-danger",
+                )}
+              >
+                {state.label}
+              </span>
+              {sublineTail && ` · ${sublineTail}`}
+            </span>
+          </span>
+
+          <span className="flex shrink-0 flex-col items-end lg:order-3 lg:ml-auto">
+            <Mono className="text-sm text-ink">{fmtBytes(traffic)}</Mono>
+            <span className="text-[11px] text-ink-muted">{t("nodes.trafficToday")}</span>
+          </span>
         </div>
+
+        {/* A server that has never reported says so, rather than showing three empty
+            bars — which read as an idle machine. */}
+        {node.has_host_stats ? (
+          <div className="mt-2.5 flex min-w-0 flex-col gap-1.5 lg:order-2 lg:mt-0 lg:flex-row lg:items-center lg:gap-5">
+            <MiniBar label="CPU" percent={node.cpu_percent} className="w-full lg:w-37" />
+            <MiniBar
+              label="RAM"
+              percent={pct(node.mem_used, node.mem_total)}
+              className="w-full lg:w-37"
+            />
+            <MiniBar
+              label={t("overview.disk")}
+              percent={pct(node.disk_used, node.disk_total)}
+              className="w-full lg:w-37"
+            />
+          </div>
+        ) : (
+          <span className="mt-2 block text-xs text-ink-muted lg:order-2 lg:mt-0">
+            {t("overview.noStats")}
+          </span>
+        )}
       </div>
+
       {reconnecting && (
         <ReconnectDialog
           node={node}
@@ -1926,7 +2123,7 @@ function NodeCard({
           onClose={() => setShowingConfig(false)}
         />
       )}
-    </>
+    </section>
   );
 }
 
@@ -1993,41 +2190,39 @@ function NodeLogsDialog({ node, onClose }: { node: NodeView; onClose: () => void
       : lines.filter((l) => classifyNodeLog(l) === level);
 
   return (
-    <Modal open onClose={onClose} title={t("nodes.logsOf", { name: node.name })} size="xl">
-      <div className="mb-3 overflow-x-auto">
+    // The same frame the panel's own log viewer uses: a fixed-height window. A modal
+    // that sizes to its content shrank to a couple of lines while a node was still
+    // sending its first ones, and grew under the reader as they arrived.
+    <ToolDialog
+      title={t("nodes.logsOf", { name: node.name })}
+      onClose={onClose}
+      headerExtra={
         <SegmentedControl data={nodeLogFilters()} value={level} onChange={setLevel} />
+      }
+    >
+      <div className="flex-1 overflow-auto bg-gray-50 p-3 font-mono text-xs leading-relaxed">
+        {!loaded ? (
+          <p className="text-gray-400">{t("nodes.requestingLogs")}</p>
+        ) : lines.length === 0 ? (
+          <p className="text-gray-400">{t("nodes.logsPending")}</p>
+        ) : shown.length === 0 ? (
+          <p className="text-gray-400">{t("logs.noLinesAtLevel")}</p>
+        ) : (
+          shown.map((l, i) => (
+            <div
+              // biome-ignore lint/suspicious/noArrayIndexKey: a log stream is positional — lines repeat verbatim and only ever append
+              key={i}
+              className={cn(
+                "whitespace-pre-wrap break-all",
+                NODE_LOG_COLORS[classifyNodeLog(l)],
+              )}
+            >
+              {l}
+            </div>
+          ))
+        )}
       </div>
-      {!loaded ? (
-        <p className="text-sm text-ink-muted">{t("nodes.requestingLogs")}</p>
-      ) : lines.length === 0 ? (
-        <p className="text-sm text-ink-muted">
-          {t("nodes.logsPending")}
-        </p>
-      ) : (
-        <div className="max-h-[60vh] overflow-auto rounded-md bg-gray-50 p-3 font-mono text-xs leading-relaxed">
-          {shown.length === 0 ? (
-            <p className="text-gray-400">{t("logs.noLinesAtLevel")}</p>
-          ) : (
-            shown.map((l, i) => (
-              <div
-                key={i}
-                className={cn(
-                  "whitespace-pre-wrap break-all",
-                  NODE_LOG_COLORS[classifyNodeLog(l)],
-                )}
-              >
-                {l}
-              </div>
-            ))
-          )}
-        </div>
-      )}
-      <div className="mt-4 flex justify-end">
-        <Button variant="light" color="gray" onClick={onClose}>
-          {t("common.close")}
-        </Button>
-      </div>
-    </Modal>
+    </ToolDialog>
   );
 }
 
@@ -2040,16 +2235,21 @@ export function NodesPanel() {
   const [geo, setGeo] = useState<GeoCategories>({ geosite: [], geoip: [], iplist: [] });
   const [adding, setAdding] = useState(false);
   const [installCmd, setInstallCmd] = useState<string | null>(null);
+  const [panelVersion, setPanelVersion] = useState("");
 
   const load = () =>
     listNodes()
       .then((r) => setNodes(r.nodes))
       .catch((e) => notifyError(errMessage(e)));
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs once on mount; the loader is redefined every render, so listing it would refetch in a loop
   useEffect(() => {
     load();
     getSettings()
       .then((s) => setDecoys(s.decoy_templates || []))
+      .catch(() => {});
+    getMe()
+      .then((m) => setPanelVersion(m.version || ""))
       .catch(() => {});
     getGeoCategories()
       .then((g) =>
@@ -2069,15 +2269,25 @@ export function NodesPanel() {
   // seconds the server means it to be shown. Otherwise this is just the liveness
   // refresh keeping online/offline badges current, and it stays lazy.
   const showingRestart = !!nodes?.some((n) => n.xray_restart);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the cadence is the only thing this re-reads; load is redefined every render and would restart the timer on each one
   useEffect(() => {
-    const t = setInterval(load, showingRestart ? 2000 : 15000);
+    // 8s while the page is open. A node's own report lands every 30–60s (the panel
+    // holds its long-poll that long), so this cannot make node data fresher than the
+    // node makes it — but everything the PANEL knows already, an enable, a queued
+    // restart, an agent version after an update, shows up within a tick instead of
+    // sitting on screen stale for a quarter of a minute.
+    const t = setInterval(load, showingRestart ? 2000 : 8000);
     return () => clearInterval(t);
   }, [showingRestart]);
 
   if (nodes === null) return <CenterLoader />;
 
   const remoteCount = nodes.filter((n) => !n.is_local).length;
-  const anyStale = nodes.some((n) => !n.is_local && n.version_skew && n.online);
+  // Two different problems, two different fixes: nodes behind the panel are what
+  // "Update all" is for, while a node ahead of the panel means the panel is the
+  // one to update — telling the operator to pull those "up" would be backwards.
+  const anyBehind = nodes.some((n) => n.online && agentSkew(n, panelVersion) === "older");
+  const anyAhead = nodes.some((n) => n.online && agentSkew(n, panelVersion) === "newer");
 
   const updateAll = async () => {
     try {
@@ -2089,33 +2299,56 @@ export function NodesPanel() {
   };
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold text-ink">{t("nav.servers")}</h1>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {remoteCount > 0 && (
-            <Button variant="light" color="gray" onClick={updateAll}>
-              {t("nodes.updateAll")}{anyStale ? " ⚠" : ""}
-            </Button>
-          )}
-          <Button onClick={() => setAdding(true)}>{t("nodes.addNode")}</Button>
-        </div>
+    <div className="flex flex-col gap-3.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button size="sm" onClick={() => setAdding(true)}>
+          {t("nodes.addNode")}
+        </Button>
+        {remoteCount > 0 && (
+          <Button size="sm" variant="outline" color="gray" onClick={updateAll}>
+            {t("nodes.updateAll")}{anyBehind ? " ⚠" : ""}
+          </Button>
+        )}
       </div>
 
-      <Card className="divide-y divide-gray-100">
-        {nodes.map((n) => (
-          <NodeCard
-            key={n.id}
-            node={n}
-            decoys={decoys}
-            geo={geo}
-            onChanged={load}
-            onRegen={setInstallCmd}
-          />
-        ))}
-      </Card>
+      {anyBehind && (
+        <p className="accent-tint rounded-lg px-3 py-2 text-xs text-accent">
+          {t("nodes.someAgentsOutdated")}
+        </p>
+      )}
+
+      {anyAhead && (
+        <p className="accent-tint rounded-lg px-3 py-2 text-xs text-accent">
+          {t("nodes.someAgentsAhead")}
+        </p>
+      )}
+
+      {/* A vertical list of sections, one per server — not a grid of cards. A fleet is
+          read top to bottom, and a row that wraps to a second column is a row an
+          operator scrolls past. */}
+      {nodes.map((n) => (
+        <NodeCard
+          key={n.id}
+          node={n}
+          decoys={decoys}
+          geo={geo}
+          panelVersion={panelVersion}
+          onChanged={load}
+          onRegen={setInstallCmd}
+        />
+      ))}
+
+      {/* One server is not a fleet: say what the page is for instead of leaving the
+          master alone under a heading about servers. */}
+      {remoteCount === 0 && (
+        <div className="flex flex-col items-center gap-2 rounded-xl border border-brand-600/10 bg-white px-4 py-10 text-center">
+          <p className="text-sm font-semibold text-ink">{t("nodes.onlyThisServer")}</p>
+          <p className="max-w-md text-xs text-ink-muted">{t("nodes.onlyThisServerHint")}</p>
+          <Button size="sm" className="mt-2" onClick={() => setAdding(true)}>
+            {t("nodes.addNode")}
+          </Button>
+        </div>
+      )}
 
       <ExternalServers />
 

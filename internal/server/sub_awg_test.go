@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -86,6 +87,25 @@ func TestAWGConfigEndpointsAndPageCard(t *testing.T) {
 	confLegacy := get(base+"/awg/0.conf", "curl/8")
 	if confLegacy.Code != http.StatusOK || !strings.Contains(confLegacy.Body.String(), "[Interface]") {
 		t.Errorf("legacy config /awg/0.conf: %d\n%s", confLegacy.Code, confLegacy.Body.String())
+	}
+	// The file a user actually downloads has to be 3.1, all the way from the
+	// parameters the panel minted when the lane was switched on above. The unit
+	// tests cover the renderer; this is the whole path — generate, store, read
+	// back, serve — and it is the one that decides what lands in the app.
+	body := conf.Body.String()
+	for _, want := range []string{"S3 = ", "S4 = ", "HeaderProtectionKey = ",
+		"ContentPaddingAddition = ", "RandomTrailers = on", "RekeyAfterTime = ",
+		"RejectAfterTime = ", "KeepaliveTimeout = ", "MaxHandshakeAttempts = ",
+		// The decoy chain: without it the first packet of a new flow is an
+		// unrecognised blob, which is the shape the blocking looks for.
+		"I1 = <", "I2 = <"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the served config is not 3.1 — no %q:\n%s", want, body)
+		}
+	}
+	// And its headers are bands, not the single values 1.5 had.
+	if !regexp.MustCompile(`(?m)^H1 = \d+-\d+$`).MatchString(body) {
+		t.Errorf("H1 is not a band:\n%s", body)
 	}
 	if png := get(base+"/awg/0.png", "curl/8"); png.Code != http.StatusOK || png.Header().Get("Content-Type") != "image/png" {
 		t.Errorf("qr: %d %q", png.Code, png.Header().Get("Content-Type"))

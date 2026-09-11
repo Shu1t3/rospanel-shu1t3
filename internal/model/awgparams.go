@@ -1,17 +1,20 @@
 package model
 
 import (
-	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 )
 
-// AWGParams are a server's AmneziaWG obfuscation parameters (AWG 3.1) as the
-// store keeps them — the same fields as awg.Params, kept here so the model does
-// not pull the tunnel engine into every package that reads a settings row.
+// AWGParams are a server's AmneziaWG obfuscation parameters as the store keeps
+// them — the same fields as awg.Params, kept here so the model does not pull the
+// tunnel engine into every package that reads a settings row. See internal/awg
+// for what each one does and which protocol generation it belongs to.
+//
+// The ranges are strings in exactly the form both the engine's IPC and the client
+// config file want ("110-130", or a bare "110" when the ends meet), so this type
+// stores what it will emit and never has to reconstruct it. awg.Range parses
+// either form, and a bare number is what every row written before 3.1 holds.
 type AWGParams struct {
 	Jc   int `json:"jc"`
 	Jmin int `json:"jmin"`
@@ -21,152 +24,79 @@ type AWGParams struct {
 	S3   int `json:"s3,omitempty"`
 	S4   int `json:"s4,omitempty"`
 
-	// H1–H4 in AWG 3.1 can be a single number or a range "min-max" (e.g. "1000-5000").
 	H1 string `json:"h1"`
 	H2 string `json:"h2"`
 	H3 string `json:"h3"`
 	H4 string `json:"h4"`
 
-	// I1–I5 are custom signature packets sent before handshakes (empty by default).
-	I1 string `json:"i1,omitempty"`
-	I2 string `json:"i2,omitempty"`
-	I3 string `json:"i3,omitempty"`
-	I4 string `json:"i4,omitempty"`
-	I5 string `json:"i5,omitempty"`
+	I1        string `json:"i1,omitempty"`
+	I2        string `json:"i2,omitempty"`
+	Imitation string `json:"imitation,omitempty"`
 
-	// HeaderProtectionKey is the ChaCha20 32-byte key (Base64).
-	HeaderProtectionKey string `json:"header_protection_key,omitempty"`
+	HeaderKey string `json:"header_key,omitempty"`
+	Padding   string `json:"padding,omitempty"`
+	Trailers  bool   `json:"trailers,omitempty"`
 
-	// ContentPaddingAddition is the range for transport padding (e.g. "0-32").
-	ContentPaddingAddition string `json:"content_padding_addition,omitempty"`
-
-	// RandomTrailers appends random bytes to packets.
-	RandomTrailers bool `json:"random_trailers,omitempty"`
-
-	// DisableCookies disables cookie reply under high load.
-	DisableCookies bool `json:"disable_cookies,omitempty"`
-
-	// Timing ranges (e.g. "110-130", "4-6").
-	RekeyAfterTime       string `json:"rekey_after_time,omitempty"`
-	RekeyTimeout         string `json:"rekey_timeout,omitempty"`
-	RejectAfterTime      string `json:"reject_after_time,omitempty"`
-	KeepaliveTimeout     string `json:"keepalive_timeout,omitempty"`
-	MaxHandshakeAttempts string `json:"max_handshake_attempts,omitempty"`
+	RekeyAfter   string `json:"rekey_after,omitempty"`
+	RekeyTimeout string `json:"rekey_timeout,omitempty"`
+	RejectAfter  string `json:"reject_after,omitempty"`
+	Keepalive    string `json:"keepalive,omitempty"`
+	Handshakes   string `json:"handshakes,omitempty"`
 }
 
 // IsZero reports a parameter block that was never generated.
-func (p AWGParams) IsZero() bool {
-	return p.Jc == 0 && p.Jmin == 0 && p.Jmax == 0 && p.S1 == 0 && p.S2 == 0 &&
-		p.H1 == "" && p.H2 == "" && p.H3 == "" && p.H4 == ""
-}
+func (p AWGParams) IsZero() bool { return p == AWGParams{} }
 
-// UnmarshalJSON handles both AWG 1.0 format (where H1..H4 were uint32 numbers)
-// and AWG 3.1 format (where H1..H4 are strings or ranges).
-func (p *AWGParams) UnmarshalJSON(data []byte) error {
-	type rawAWGParams struct {
-		Jc                     int    `json:"jc"`
-		Jmin                   int    `json:"jmin"`
-		Jmax                   int    `json:"jmax"`
-		S1                     int    `json:"s1"`
-		S2                     int    `json:"s2"`
-		S3                     int    `json:"s3"`
-		S4                     int    `json:"s4"`
-		H1                     any    `json:"h1"`
-		H2                     any    `json:"h2"`
-		H3                     any    `json:"h3"`
-		H4                     any    `json:"h4"`
-		I1                     string `json:"i1"`
-		I2                     string `json:"i2"`
-		I3                     string `json:"i3"`
-		I4                     string `json:"i4"`
-		I5                     string `json:"i5"`
-		HeaderProtectionKey    string `json:"header_protection_key"`
-		ContentPaddingAddition string `json:"content_padding_addition"`
-		RandomTrailers         any    `json:"random_trailers"`
-		DisableCookies         any    `json:"disable_cookies"`
-		RekeyAfterTime         string `json:"rekey_after_time"`
-		RekeyTimeout           string `json:"rekey_timeout"`
-		RejectAfterTime        string `json:"reject_after_time"`
-		KeepaliveTimeout       string `json:"keepalive_timeout"`
-		MaxHandshakeAttempts   string `json:"max_handshake_attempts"`
+// UnmarshalJSON accepts the two shapes a stored parameter block can have: the
+// current one, where every range is a string, and the one every row written
+// before AmneziaWG 3.1 holds, where h1–h4 were plain numbers. Reading the old
+// shape is not a nicety — a failed unmarshal would leave the block zero, and a
+// zero block reads as "this server never had a tunnel", which would silently mint
+// new keys and invalidate every config already handed out.
+func (p *AWGParams) UnmarshalJSON(b []byte) error {
+	type stored AWGParams // no methods, so this does not recurse
+	var raw struct {
+		stored
+		H1 json.RawMessage `json:"h1"`
+		H2 json.RawMessage `json:"h2"`
+		H3 json.RawMessage `json:"h3"`
+		H4 json.RawMessage `json:"h4"`
 	}
-	var raw rawAWGParams
-	if err := json.Unmarshal(data, &raw); err != nil {
+	if err := json.Unmarshal(b, &raw); err != nil {
 		return err
 	}
-
-	p.Jc = raw.Jc
-	p.Jmin = raw.Jmin
-	p.Jmax = raw.Jmax
-	p.S1 = raw.S1
-	p.S2 = raw.S2
-	p.S3 = raw.S3
-	p.S4 = raw.S4
-	p.H1 = parseHeaderField(raw.H1)
-	p.H2 = parseHeaderField(raw.H2)
-	p.H3 = parseHeaderField(raw.H3)
-	p.H4 = parseHeaderField(raw.H4)
-	p.I1 = raw.I1
-	p.I2 = raw.I2
-	p.I3 = raw.I3
-	p.I4 = raw.I4
-	p.I5 = raw.I5
-	p.HeaderProtectionKey = raw.HeaderProtectionKey
-	p.ContentPaddingAddition = raw.ContentPaddingAddition
-	p.RandomTrailers = parseBoolField(raw.RandomTrailers)
-	p.DisableCookies = parseBoolField(raw.DisableCookies)
-	p.RekeyAfterTime = raw.RekeyAfterTime
-	p.RekeyTimeout = raw.RekeyTimeout
-	p.RejectAfterTime = raw.RejectAfterTime
-	p.KeepaliveTimeout = raw.KeepaliveTimeout
-	p.MaxHandshakeAttempts = raw.MaxHandshakeAttempts
-	return nil
-}
-
-func parseHeaderField(v any) string {
-	switch val := v.(type) {
-	case string:
-		return strings.TrimSpace(val)
-	case float64:
-		return strconv.FormatUint(uint64(val), 10)
-	case int64:
-		return strconv.FormatInt(val, 10)
-	case int:
-		return strconv.Itoa(val)
-	case json.Number:
-		return val.String()
-	default:
-		return ""
-	}
-}
-
-func parseBoolField(v any) bool {
-	switch val := v.(type) {
-	case bool:
-		return val
-	case string:
-		lower := strings.ToLower(strings.TrimSpace(val))
-		return lower == "true" || lower == "on" || lower == "1" || lower == "yes"
-	case float64:
-		return val != 0
-	default:
-		return false
-	}
-}
-
-// Validate checks for structural validity of parameters according to AWG 3.1 specifications.
-func (p AWGParams) Validate() error {
-	if p.HeaderProtectionKey != "" {
-		raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(p.HeaderProtectionKey))
+	*p = AWGParams(raw.stored)
+	for i, src := range []json.RawMessage{raw.H1, raw.H2, raw.H3, raw.H4} {
+		v, err := headerString(src)
 		if err != nil {
-			return fmt.Errorf("awg: header protection key: %w", err)
+			return fmt.Errorf("awg params: h%d: %w", i+1, err)
 		}
-		if len(raw) != 32 {
-			return errors.New("awg: header protection key must be a valid 32-byte Base64 key")
-		}
-		if p.S1 < 12 || p.S2 < 12 || p.S3 < 12 || p.S4 < 12 {
-			return errors.New("awg: when header protection is enabled, S1-S4 must be at least 12 bytes")
+		switch i {
+		case 0:
+			p.H1 = v
+		case 1:
+			p.H2 = v
+		case 2:
+			p.H3 = v
+		case 3:
+			p.H4 = v
 		}
 	}
 	return nil
+}
+
+// headerString reads one header field as either a quoted range or a bare number.
+func headerString(raw json.RawMessage) (string, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s, nil
+	}
+	var n uint32
+	if err := json.Unmarshal(raw, &n); err != nil {
+		return "", fmt.Errorf("neither a range nor a number: %s", raw)
+	}
+	return strconv.FormatUint(uint64(n), 10), nil
 }

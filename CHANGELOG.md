@@ -1,5 +1,25 @@
 # Changelog
 
+## [3.1.0](https://github.com/Shu1t3/rospanel-shu1t3/releases/tag/v3.1.0) (2026-09-11)
+
+### Features
+
+* **awg:** AmneziaWG 3.1 official engine integration and handshake imitation (DNS, TLS, QUIC, HTTP)
+* **warp:** multi-endpoint IP pool and leak-free balancer fallback
+* **redesign:** modern console redesign (v3.0.0) with updated UI tokens, traffic area chart, and server loads
+* **fork:** preserved Happ subscriptions, UFW automated firewall, in-process gRPC stats, admin session revocation, and branding
+
+### Bug Fixes
+
+* **awg:** the panel says which protocol a server imitates
+* **conn:** the obfuscation summary shows the whole 3.1 parameter set
+* **i18n:** shorten the AmneziaWG settings hint
+* **overview:** recent events carry a date, not just a clock
+* **audit:** skip journal rows on no-op user edits
+* **stats:** say which window each report on the page covers
+* **ui:** indicate unsaved egress toggle state in status badges
+* **users:** a traffic reset restarts the quota cycle
+
 ## [2.25.5](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.25.4...v2.25.5) (2026-09-08)
 
 

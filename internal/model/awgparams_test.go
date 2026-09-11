@@ -24,11 +24,10 @@ func TestAWGParamsUnmarshalV3(t *testing.T) {
 		"jc": 8, "jmin": 100, "jmax": 900, "s1": 117, "s2": 107, "s3": 81, "s4": 13,
 		"h1": "332000358-332002244", "h2": "1931595695-1931642067", "h3": "2978398494-2978431738", "h4": "3980400275-3980438548",
 		"i1": "<b 0x010203><r 10><t>",
-		"header_protection_key": "dGVzdGtleXRlc3RrZXl0ZXN0a2V5dGVzdGtleXRlc3RrZXk=",
-		"content_padding_addition": "0-32",
-		"random_trailers": true,
-		"disable_cookies": "on",
-		"rekey_after_time": "110-130"
+		"header_key": "dGVzdGtleXRlc3RrZXl0ZXN0a2V5dGVzdGtleXRlc3RrZXk=",
+		"padding": "0-32",
+		"trailers": true,
+		"rekey_after": "110-130"
 	}`
 	var p AWGParams
 	if err := json.Unmarshal([]byte(v3JSON), &p); err != nil {
@@ -40,10 +39,10 @@ func TestAWGParamsUnmarshalV3(t *testing.T) {
 	if p.I1 != "<b 0x010203><r 10><t>" {
 		t.Errorf("i1 mismatch: %q", p.I1)
 	}
-	if !p.RandomTrailers || !p.DisableCookies {
-		t.Errorf("bool flags mismatch: random_trailers=%v disable_cookies=%v", p.RandomTrailers, p.DisableCookies)
+	if !p.Trailers {
+		t.Errorf("bool flags mismatch: trailers=%v", p.Trailers)
 	}
-	if p.RekeyAfterTime != "110-130" {
-		t.Errorf("rekey_after_time mismatch: %q", p.RekeyAfterTime)
+	if p.RekeyAfter != "110-130" {
+		t.Errorf("rekey_after mismatch: %q", p.RekeyAfter)
 	}
 }
