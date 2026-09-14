@@ -11,6 +11,7 @@ import {
   getStatsSeries,
   getUserConnections,
   getUserDevices,
+  getUserHappLink,
   unbindUserDevice,
   renameUser,
   resetUserTraffic,
@@ -42,13 +43,16 @@ import {
   fmtLastSeen,
   fmtQuota,
   fmtSpeed,
+  fmtTerm,
   gbToBytes,
+  groupSpeedCap,
   isOnline,
   localDay,
   quotaOptions,
   ranges,
   resetPeriods,
   speedLimitOptions,
+  termModes,
   unixToLocalDate,
 } from './format'
 import { useAction, useShowMore } from './hooks'
@@ -201,7 +205,7 @@ function ExtendUserModal({
     <Modal open={open} onClose={onClose} title={t('usersPanel.extendTitle')}>
       <div className="flex flex-col gap-4">
         <p className="text-sm text-ink-muted">
-          {t('userDetail.extendUserBody', { name: user.name, date: fmtExpire(user.expire_at) })}
+          {t('userDetail.extendUserBody', { name: user.name, date: fmtTerm(user.expire_at, user.hold_seconds) })}
         </p>
         <div className="flex flex-wrap gap-2">
           {EXTEND_PRESETS.map((p) => (
@@ -280,6 +284,13 @@ export function UserDetail({
   // applying each keystroke would reconcile Xray five times for one edit.
   const [dPlan, setDPlan] = useState('0')
   const [dExpire, setDExpire] = useState('')
+  // The manual term: an end date, or a number of days starting on the first connection.
+  const [dTerm, setDTerm] = useState('date')
+  const [dHoldDays, setDHoldDays] = useState('30')
+  // Whether the days were typed. Until they are, a pending term keeps its exact
+  // seconds — one set through the API need not be whole days, and rounding it for the
+  // field must not rewrite it on an unrelated save.
+  const [dHoldEdited, setDHoldEdited] = useState(false)
   const [dLimitGb, setDLimitGb] = useState('0')
   const [dDeviceLimit, setDDeviceLimit] = useState('0')
   const [dSpeedLimit, setDSpeedLimit] = useState('0')
@@ -288,7 +299,14 @@ export function UserDetail({
   const [renaming, setRenaming] = useState(false)
   const [extendOpen, setExtendOpen] = useState(false)
   const email = useCopy()
+  const happCopy = useCopy()
   const { confirm, confirmNode } = useConfirm()
+  // The encrypted Happ link is asked for on its own — each one is an RSA encryption,
+  // too dear to carry in the user list — and exists only while the operator has it
+  // switched on: "" hides the row. A rotated token is a new address, so a new link.
+  const [happLink, setHappLink] = useState('')
+  const userId = user?.id
+  const subUrl = user?.sub_url
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: resets the card for a new user; resetLimitDraft is defined below and closes over `user`, so re-running it on a user change is the whole point
   useEffect(() => {
@@ -300,6 +318,18 @@ export function UserDetail({
     setGroupQuery('')
     resetLimitDraft()
   }, [user])
+
+  useEffect(() => {
+    setHappLink('')
+    if (!userId || !subUrl) return
+    let alive = true
+    getUserHappLink(userId)
+      .then((d) => alive && setHappLink(d.link))
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [userId, subUrl])
 
   // All groups, for the access-group selector. Loaded once the card opens.
   useEffect(() => {
@@ -402,6 +432,10 @@ export function UserDetail({
   function resetLimitDraft() {
     setDPlan(String(user?.plan_id || 0))
     setDExpire(unixToLocalDate(user?.expire_at ?? 0))
+    const holding = !!user && user.expire_at === 0 && (user.hold_seconds ?? 0) > 0
+    setDTerm(holding ? 'hold' : 'date')
+    setDHoldDays(holding && user ? String(Math.floor(user.hold_seconds / 86400)) : '30')
+    setDHoldEdited(false)
     setDLimitGb(user && user.data_limit ? String(user.data_limit / (1024 * 1024 * 1024)) : '0')
     setDDeviceLimit(String(user?.device_limit ?? 0))
     setDSpeedLimit(String(user?.speed_limit ?? 0))
@@ -409,12 +443,34 @@ export function UserDetail({
   }
 
   const planManaged = billingOn && dPlan !== '0'
+  // A group that sets a speed cap overrides the one below, whatever the tariff says —
+  // unless a blocklist throttle is stricter, which nothing loosens.
+  const groupCapRaw = groupSpeedCap(user?.groups)
+  const throttledBelow =
+    !!user &&
+    user.abuse_action === 'throttle' &&
+    user.speed_limit > 0 &&
+    !!groupCapRaw &&
+    user.speed_limit < groupCapRaw.kbps
+  const groupCap = throttledBelow ? null : groupCapRaw
+  // Whether the account is waiting for its first connection right now, and what the
+  // draft says its term should be.
+  const heldNow = !!user && user.expire_at === 0 && (user.hold_seconds ?? 0) > 0
+  const dHoldSeconds =
+    heldNow && user && !dHoldEdited
+      ? user.hold_seconds
+      : Math.floor(Number(dHoldDays) || 0) * 86400
+  const termDirty =
+    user != null &&
+    (dTerm === 'hold'
+      ? !heldNow || dHoldSeconds !== user.hold_seconds
+      : heldNow || dExpire !== unixToLocalDate(user.expire_at))
 
   const limitsDirty =
     user != null &&
     (dPlan !== String(user.plan_id || 0) ||
       (!planManaged &&
-        (dExpire !== unixToLocalDate(user.expire_at) ||
+        (termDirty ||
           gbToBytes(Number(dLimitGb)) !== user.data_limit ||
           Number(dDeviceLimit) !== (user.device_limit ?? 0) ||
           Number(dSpeedLimit) !== (user.speed_limit ?? 0) ||
@@ -429,19 +485,32 @@ export function UserDetail({
     try {
       if (dPlan !== String(user.plan_id || 0)) await setUserPlan(user.id, Number(dPlan))
       if (dPlan === '0') {
-        await setUserLimits(
-          user.id,
-          gbToBytes(Number(dLimitGb)),
-          dateToUnixEndOfDay(dExpire),
-          Number(dDeviceLimit),
-          Number(dSpeedLimit),
-        )
+        // The term only when it was edited: an untouched one is left to the server,
+        // which may know better by now. A hold goes with no date, a date with no hold.
+        await setUserLimits(user.id, {
+          data_limit: gbToBytes(Number(dLimitGb)),
+          device_limit: Number(dDeviceLimit),
+          // Only when changed: the server reads a speed it is sent as the operator
+          // overruling a blocklist throttle, and a quota save is not that.
+          speed_limit:
+            Number(dSpeedLimit) !== (user.speed_limit ?? 0) ? Number(dSpeedLimit) : undefined,
+          term: termDirty
+            ? {
+                expire_at: dTerm === 'hold' ? 0 : dateToUnixEndOfDay(dExpire),
+                hold_seconds: dTerm === 'hold' ? dHoldSeconds : 0,
+                seen_expire_at: user.expire_at,
+                seen_hold_seconds: user.hold_seconds ?? 0,
+              }
+            : undefined,
+        })
         if (dReset !== (user.reset_period || 'none')) await setResetPeriod(user.id, dReset)
       }
       onChanged()
       notifySuccess(t('common.saved'))
     } catch (e) {
       fail(e)
+      // A refused term means the card is out of date; bring it up to the server's.
+      onChanged()
     } finally {
       setSavingLimits(false)
     }
@@ -469,12 +538,12 @@ export function UserDetail({
       .catch(fail)
       .finally(() => setSavingGroups(false))
   }
-  // A user whose ONLY selected groups grant nothing sees no connections at all — a
-  // silent lockout that's easy to create by accident (an empty group revokes rather
-  // than grants). Warn before it's applied.
-  const selectedGrantCount = allGroups
-    .filter((g) => sel.has(g.id))
-    .reduce((n, g) => n + (g.grants?.length ?? 0), 0)
+  // A user whose selected groups limit access but grant nothing between them sees no
+  // connections at all — a silent lockout (a group whose grants were swept still
+  // limits). Groups that do not limit access take no part. Warn before it's applied.
+  const limitingSelected = allGroups.filter((g) => sel.has(g.id) && g.limits_access)
+  const selectedGrantCount = limitingSelected.reduce((n, g) => n + (g.grants?.length ?? 0), 0)
+  const groupsLockOut = limitingSelected.length > 0 && selectedGrantCount === 0
   const groupQ = groupQuery.trim().toLowerCase()
   const selectedGroups = allGroups.filter((g) => sel.has(g.id))
   const availableGroups = allGroups.filter(
@@ -660,7 +729,7 @@ export function UserDetail({
               <Mono>{fmtQuota(user.used_up + user.used_down, user.data_limit)}</Mono>
             </StateRow>
             <StateRow label={t('usersPanel.colExpires')}>
-              <Mono>{fmtExpire(user.expire_at)}</Mono>
+              <Mono>{fmtTerm(user.expire_at, user.hold_seconds)}</Mono>
             </StateRow>
             <StateRow label={t('userDetail.devices')}>
               <Mono className={user.status === 'device_limited' ? 'text-warning' : undefined}>
@@ -673,7 +742,7 @@ export function UserDetail({
               <Mono>{fmtLastSeen(user.last_seen)}</Mono>
             </StateRow>
             <StateRow label={t('groups.title')}>
-              {(user.groups ?? []).length === 0 ? (
+              {!(user.groups ?? []).some((g) => g.limits_access) ? (
                 <span className="text-ink-muted">{t('userDetail.allConnections')}</span>
               ) : (
                 <span className="text-accent">
@@ -792,11 +861,39 @@ export function UserDetail({
               />
             )}
             <SettingRow
-              label={t('usersPanel.validUntil')}
+              label={t('usersPanel.termMode')}
               field={
-                <DatePicker value={dExpire} onChange={setDExpire} disabled={planManaged} />
+                <Select
+                  data={termModes()}
+                  value={dTerm}
+                  onChange={setDTerm}
+                  disabled={planManaged}
+                />
               }
             />
+            {dTerm === 'hold' && !planManaged ? (
+              <SettingRow
+                label={t('usersPanel.holdDays')}
+                hint={t('userDetail.holdHint')}
+                field={
+                  <TextInput
+                    type="number"
+                    value={dHoldDays}
+                    onChange={(v) => {
+                      setDHoldDays(v.replace(/\D/g, ''))
+                      setDHoldEdited(true)
+                    }}
+                  />
+                }
+              />
+            ) : (
+              <SettingRow
+                label={t('usersPanel.validUntil')}
+                field={
+                  <DatePicker value={dExpire} onChange={setDExpire} disabled={planManaged} />
+                }
+              />
+            )}
             <SettingRow
               label={t('usersPanel.trafficLimit')}
               field={
@@ -824,7 +921,18 @@ export function UserDetail({
             />
             <SettingRow
               label={t('userDetail.speedLimit')}
-              hint={t('userDetail.speedLimitHint')}
+              hint={
+                groupCap ? (
+                  <span className="text-warning">
+                    {t('userDetail.groupSpeedInForce', {
+                      name: groupCap.name,
+                      speed: fmtSpeed(groupCap.kbps),
+                    })}
+                  </span>
+                ) : (
+                  t('userDetail.speedLimitHint')
+                )
+              }
               field={
                 <CustomizableSelect
                   data={speedData}
@@ -863,7 +971,12 @@ export function UserDetail({
                     >
                       {t('common.cancel')}
                     </Button>
-                    <Button size="xs" loading={savingLimits} onClick={saveLimitDraft}>
+                    <Button
+                      size="xs"
+                      loading={savingLimits}
+                      disabled={!planManaged && dTerm === 'hold' && dHoldSeconds <= 0}
+                      onClick={saveLimitDraft}
+                    >
                       {t('common.save')}
                     </Button>
                   </span>
@@ -938,7 +1051,7 @@ export function UserDetail({
                 </SettingRow>
               )}
 
-              {sel.size > 0 && selectedGrantCount === 0 && (
+              {groupsLockOut && (
                 <SettingRow
                   hint={
                     <span className="text-warning">{t('userDetail.groupsGrantNothing')}</span>
@@ -977,6 +1090,14 @@ export function UserDetail({
               </div>
             </div>
             <Code block copy>{user.sub_url}</Code>
+            {happLink && (
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs text-ink-muted">{t('userDetail.happLink')}</span>
+                <Button size="xs" variant="light" onClick={() => happCopy.copy(happLink)}>
+                  {t(happCopy.copied ? 'common.copied' : 'common.copy')}
+                </Button>
+              </div>
+            )}
           </Panel>
 
           <Panel title="Telegram">

@@ -348,6 +348,8 @@ func (rt *Router) panelMux() http.Handler {
 	// Where clients may connect from (panel_connpolicy.go).
 	authed("GET /api/security/conn-policy", rt.getConnPolicy)
 	authed("POST /api/security/conn-policy", rt.saveConnPolicy)
+	authed("GET /api/security/trusted", rt.getTrustedNets)
+	authed("POST /api/security/trusted", rt.saveTrustedNets)
 	authed("POST /api/security/unblock", rt.unblockIP)
 	authed("GET /api/settings/status-page", rt.getStatusPage)
 	authed("POST /api/settings/status-page", rt.saveStatusPage)
@@ -406,6 +408,9 @@ func (rt *Router) panelMux() http.Handler {
 	// End users, the journal and stats are the operator's job — everything below is
 	// open from RoleOperator up.
 	authedOp("GET /api/users", rt.listUsers)
+	authedOp("GET /api/users/page", rt.listUsersPage)
+	authedOp("GET /api/users/brief", rt.listUsersBrief)
+	authedOpID("GET /api/users/{id}", rt.getUser)
 	authedOp("POST /api/users", rt.createUser)
 	authedOp("POST /api/users/bulk", rt.bulkUsers)
 	authedOpID("DELETE /api/users/{id}", rt.deleteUser)
@@ -426,6 +431,7 @@ func (rt *Router) panelMux() http.Handler {
 	authedOpID("POST /api/users/{id}/devices/unbind", rt.unbindUserDevice)
 	authedOpID("GET /api/users/{id}/abuse", rt.userAbuse)
 	authedOpID("POST /api/users/{id}/rotate-sub", rt.rotateSubToken)
+	authedOpID("GET /api/users/{id}/happ-link", rt.userHappLink)
 	authedOpID("POST /api/users/{id}/telegram/unlink", rt.unlinkUserTelegram)
 	authedOpID("POST /api/users/{id}/telegram/link", rt.genUserTelegramLink)
 	authedOpID("POST /api/users/{id}/telegram/message", rt.messageUser)

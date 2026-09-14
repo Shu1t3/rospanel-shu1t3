@@ -143,6 +143,7 @@ func TestMCPEveryToolAnswers(t *testing.T) {
 	readIDs := map[string]int64{
 		"get_users_by_id":             user.ID,
 		"get_users_by_id_abuse":       user.ID,
+		"get_users_by_id_happ_link":   user.ID,
 		"get_users_by_id_connections": user.ID,
 		"get_users_by_id_devices":     user.ID,
 		"get_users_by_id_events":      user.ID,
@@ -327,6 +328,9 @@ func TestMCPEveryToolAnswers(t *testing.T) {
 			"http_enabled": false, "http_port": 0, "accounts": []any{},
 		},
 	})
+	call("post_nodes_by_id_placement", map[string]any{
+		"id": model.LocalNodeID, "body": map[string]any{"traffic_limit": 1 << 40, "traffic_reset_day": 14},
+	})
 	call("post_nodes_by_id_update", map[string]any{"id": added})
 	call("post_nodes_update_all", map[string]any{})
 
@@ -372,7 +376,8 @@ func TestMCPToolsRejectMissingIDsWithoutBlamingThePanel(t *testing.T) {
 			"name": "ghost", "protocol": model.InbVLESS, "port": 21050,
 			"transport": model.TrWS, "security": model.SecTLS, "path": "/ghost",
 		},
-		"post_nodes_by_id_enabled": map[string]any{"enabled": false},
+		"post_nodes_by_id_enabled":   map[string]any{"enabled": false},
+		"post_nodes_by_id_placement": map[string]any{"sort_weight": 1},
 		"post_nodes_by_id_proxy": map[string]any{
 			"socks_enabled": false, "socks_port": 0,
 			"http_enabled": false, "http_port": 0, "accounts": []any{},
@@ -421,7 +426,7 @@ func TestAPIRejectsUnknownBodyFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	group, err := st.CreateGroup("strict-group", nil)
+	group, err := st.CreateGroup("strict-group", nil, 0)
 	if err != nil {
 		t.Fatalf("create group: %v", err)
 	}
@@ -476,7 +481,7 @@ func firstEventKey(t *testing.T, text string) string {
 // `member_ids` that changes no membership — the very failure the strictness is for.
 func TestAPINamesTheKindOfBadField(t *testing.T) {
 	h, _, st := nodeAPITestServer(t)
-	group, err := st.CreateGroup("round-trip", nil)
+	group, err := st.CreateGroup("round-trip", nil, 0)
 	if err != nil {
 		t.Fatalf("create group: %v", err)
 	}
@@ -563,6 +568,9 @@ func TestMCPUserWritesReachTheStore(t *testing.T) {
 		"note":         {value: "from the sweep", read: func(u model.User) any { return u.Note }},
 		// Mixed case and a stray space: the stored form is what the model normalises to.
 		"tags": {value: []any{"VIP", "beta "}, read: joined, want: "beta,vip"},
+		// A term starting on the first connection contradicts expire_at, so it is not
+		// sent with the rest; it gets its own create and patch below.
+		"hold_seconds": {value: float64(30 * 86400), read: func(u model.User) any { return float64(u.HoldSeconds) }},
 	}
 	expected := func(f field) any {
 		if f.want != nil {
@@ -579,6 +587,7 @@ func TestMCPUserWritesReachTheStore(t *testing.T) {
 	// enabled isn't a create field, and a plan or groups would overwrite the limits
 	// under test — those are the sweep's business.
 	delete(body, "enabled")
+	delete(body, "hold_seconds")
 	call("post_users", body)
 	users, err := st.ListUsers()
 	if err != nil || len(users) != 1 {
@@ -586,7 +595,7 @@ func TestMCPUserWritesReachTheStore(t *testing.T) {
 	}
 	created := users[0]
 	for name, f := range fields {
-		if name == "enabled" {
+		if name == "enabled" || name == "hold_seconds" {
 			continue
 		}
 		if got, want := f.read(created), expected(f); got != want {
@@ -616,6 +625,27 @@ func TestMCPUserWritesReachTheStore(t *testing.T) {
 			t.Errorf("patch_users_by_id: %s was sent as %v and stored as %v (want %v)", name, f.value, got, want)
 		}
 	}
+	// The held term, on its own: created on hold, then put on a different hold by patch
+	// — which also takes the date the patch above set away.
+	call("post_users", map[string]any{"name": "held", "hold_seconds": fields["hold_seconds"].value})
+	all, err := st.ListUsers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var held *model.User
+	for i := range all {
+		if all[i].Name == "held" {
+			held = &all[i]
+		}
+	}
+	if held == nil || float64(held.HoldSeconds) != fields["hold_seconds"].value || held.ExpireAt != 0 {
+		t.Errorf("post_users: hold_seconds did not land: %+v", held)
+	}
+	call("patch_users_by_id", map[string]any{"id": created.ID, "body": map[string]any{"hold_seconds": float64(7 * 86400)}})
+	if rehold, _ := st.GetUser(created.ID); rehold.HoldSeconds != 7*86400 || rehold.ExpireAt != 0 {
+		t.Errorf("patch_users_by_id: hold_seconds did not land: hold %d expire %d", rehold.HoldSeconds, rehold.ExpireAt)
+	}
+
 	// And that an empty list clears the tags, since "omit" and "empty" differ here.
 	call("patch_users_by_id", map[string]any{"id": created.ID, "body": map[string]any{"tags": []any{}, "note": ""}})
 	cleared, err := st.GetUser(created.ID)

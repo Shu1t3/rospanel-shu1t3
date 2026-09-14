@@ -840,6 +840,8 @@ func countInboundUsers(inbounds []Inbound) int {
 			n += len(s.Clients)
 		case HysteriaInboundSettings:
 			n += len(s.Users)
+		case ShadowsocksInboundSettings:
+			n += len(s.Users)
 		}
 	}
 	return n
@@ -865,40 +867,32 @@ func (s *Supervisor) ReplaceInbounds(apiAddr string, inbounds []Inbound) error {
 		return fmt.Errorf("xray binary unavailable")
 	}
 	for _, in := range inbounds {
-		if in.Tag == "" {
-			return fmt.Errorf("inbound with no tag")
-		}
-		data, err := json.Marshal(map[string]any{"inbounds": []Inbound{in}})
-		if err != nil {
+		if err := s.replaceInbound(apiAddr, in.Tag, in); err != nil {
 			return err
 		}
-		f, err := os.CreateTemp("", "xray-adi-*.json")
-		if err != nil {
-			return err
-		}
-		tmpName := f.Name()
-		if _, err := f.Write(data); err != nil {
-			f.Close()
-			_ = os.Remove(tmpName)
-			return err
-		}
-		f.Close()
+	}
+	return nil
+}
 
-		// A failed removal is not fatal on its own — an inbound that isn't there is
-		// exactly the state the add below wants. Only the add has to succeed.
-		if _, err := s.runXray(statsTimeout, "api", "rmi", "--server="+apiAddr, in.Tag); err != nil {
-			slog.Warn("xray: could not remove inbound before re-adding it", "tag", in.Tag, "err", err)
-		}
-		out, err := s.runXray(statsTimeout, "api", "adi", "--server="+apiAddr, tmpName)
-		_ = os.Remove(tmpName)
-		if err != nil {
-			return fmt.Errorf("api adi tag=%s: %w", in.Tag, err)
-		}
-		// The CLI exits 0 even when it added nothing, so the output is the only
-		// evidence. Leaving that unchecked is how a lane could quietly stay down.
-		if bytes.Contains(out, []byte("failed to")) {
-			return fmt.Errorf("api adi tag=%s: %s", in.Tag, bytes.TrimSpace(out))
-		}
+// replaceInbound is ReplaceInbounds for one inbound, given in any form that marshals
+// to an inbound — a typed Inbound from the generator or a node's decoded config entry.
+func (s *Supervisor) replaceInbound(apiAddr, tag string, inbound any) error {
+	if tag == "" {
+		return fmt.Errorf("inbound with no tag")
+	}
+	// A failed removal is not fatal on its own — an inbound that isn't there is
+	// exactly the state the add below wants. Only the add has to succeed.
+	if _, err := s.runXray(statsTimeout, "api", "rmi", "--server="+apiAddr, tag); err != nil {
+		slog.Warn("xray: could not remove inbound before re-adding it", "tag", tag, "err", err)
+	}
+	out, err := s.runXrayFile(statsTimeout, "xray-adi-*.json", map[string]any{"inbounds": []any{inbound}}, "api", "adi", "--server="+apiAddr)
+	if err != nil {
+		return fmt.Errorf("api adi tag=%s: %w", tag, err)
+	}
+	// The CLI exits 0 even when it added nothing, so the output is the only
+	// evidence. Leaving that unchecked is how a lane could quietly stay down.
+	if bytes.Contains(out, []byte("failed to")) {
+		return fmt.Errorf("api adi tag=%s: %s", tag, bytes.TrimSpace(out))
 	}
 	return nil
 }

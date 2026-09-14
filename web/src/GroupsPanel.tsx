@@ -5,14 +5,14 @@ import {
   deleteGroup,
   getGroupTargets,
   listGroups,
-  listUsers,
+  listUsersBrief,
   setGroupMembers,
   updateGroup,
   type Group,
   type GroupTarget,
-  type User,
+  type UserBrief,
 } from "./api";
-import { statusInfo } from "./format";
+import { fmtSpeed, speedLimitOptions, statusInfo } from "./format";
 import { useAction, useShowMore } from "./hooks";
 import { errMessage, notifyError, notifySuccess } from "./notify";
 import {
@@ -20,6 +20,7 @@ import {
   Button,
   CenterLoader,
   cn,
+  CustomizableSelect,
   Drawer,
   EmptyState,
   IconButton,
@@ -42,7 +43,7 @@ import {
 // long name would widen that row's column and the rows would stop lining up. The
 // action track is a fixed width for the same reason — the header's is empty, and an
 // `auto` track would resolve to zero there and to two buttons in every row.
-const TPL = "minmax(0,1.6fr) minmax(0,1fr) minmax(0,1fr) 76px";
+const TPL = "minmax(0,1.6fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) 76px";
 const TPL_NARROW = "minmax(0,1fr) auto";
 const WIDE_MIN = 520;
 
@@ -52,6 +53,8 @@ interface Editing {
   name: string;
   grants: Set<string>;
   members: Set<number>;
+  // The members' speed cap in kbit/s, as the select holds it ("0" = none).
+  speed: string;
 }
 
 const LANE_LABELS: Record<string, string> = {
@@ -67,7 +70,7 @@ export function GroupsPanel() {
   const { t } = useTranslation();
   const [groups, setGroups] = useState<Group[] | null>(null);
   const [targets, setTargets] = useState<GroupTarget[] | null>(null);
-  const [users, setUsers] = useState<User[]>([]);
+  const [users, setUsers] = useState<UserBrief[]>([]);
   const [editing, setEditing] = useState<Editing | null>(null);
   const [confirmDel, setConfirmDel] = useState<Group | null>(null);
   const { busy, run } = useAction();
@@ -77,7 +80,7 @@ export function GroupsPanel() {
   const reload = () => listGroups().then(setGroups);
 
   useEffect(() => {
-    Promise.all([listGroups(), getGroupTargets(), listUsers()])
+    Promise.all([listGroups(), getGroupTargets(), listUsersBrief()])
       .then(([g, t, u]) => {
         setGroups(g);
         setTargets(t);
@@ -91,13 +94,14 @@ export function GroupsPanel() {
 
   const save = () => {
     if (!editing) return;
-    const { id, name, grants, members } = editing;
+    const { id, name, grants, members, speed } = editing;
     run(async () => {
       const list = [...grants];
+      const kbps = Number(speed) || 0;
       // A new group must exist before it can hold members, so create first then set
       // membership; an edit sets both against the known id.
-      const gid = id === 0 ? (await createGroup(name, list)).id : id;
-      if (id !== 0) await updateGroup(id, name, list);
+      const gid = id === 0 ? (await createGroup(name, list, kbps)).id : id;
+      if (id !== 0) await updateGroup(id, name, list, kbps);
       await setGroupMembers(gid, [...members]);
       await reload();
       setEditing(null);
@@ -129,7 +133,7 @@ export function GroupsPanel() {
       color="brand"
       title={t("groups.create")}
       onClick={() =>
-        openEditor({ id: 0, name: "", grants: new Set(), members: new Set() })
+        openEditor({ id: 0, name: "", grants: new Set(), members: new Set(), speed: "0" })
       }
     >
       <IconPlus />
@@ -151,6 +155,7 @@ export function GroupsPanel() {
                 <span className="truncate">{t("groups.colName")}</span>
                 <span className="truncate">{t("groups.colConnections")}</span>
                 <span className="truncate">{t("groups.colMembers")}</span>
+                <span className="truncate">{t("groups.colSpeed")}</span>
                 <span />
               </div>
             )}
@@ -167,13 +172,22 @@ export function GroupsPanel() {
                   </span>
                   {wide ? (
                     <>
-                      <Mono className="text-xs text-ink-muted">{grants.length}</Mono>
+                      <Mono className="text-xs text-ink-muted">
+                        {g.limits_access ? grants.length : t("groups.allShort")}
+                      </Mono>
                       <Mono className="text-xs text-ink-muted">{g.members}</Mono>
+                      <Mono className="truncate text-xs text-ink-muted">
+                        {g.speed_limit > 0 ? fmtSpeed(g.speed_limit) : "—"}
+                      </Mono>
                     </>
                   ) : (
                     <span className="col-start-1 row-start-2 truncate text-[11px] text-ink-muted">
-                      {t("groups.nConnections", { count: grants.length })} ·{" "}
+                      {g.limits_access
+                        ? t("groups.nConnections", { count: grants.length })
+                        : t("groups.allShort")}{" "}
+                      ·{" "}
                       {t("groups.nMembers", { count: g.members })}
+                      {g.speed_limit > 0 ? ` · ${fmtSpeed(g.speed_limit)}` : ""}
                     </span>
                   )}
                   {/* Icons, like the roster two tabs over: the row is read for its
@@ -192,6 +206,7 @@ export function GroupsPanel() {
                           name: g.name,
                           grants: new Set(g.grants ?? []),
                           members: new Set(g.member_ids ?? []),
+                          speed: String(g.speed_limit ?? 0),
                         })
                       }
                     >
@@ -279,6 +294,32 @@ export function GroupsPanel() {
               onChange={(v) => setEditing({ ...editing, name: v })}
               placeholder={t("groups.namePlaceholder")}
             />
+            {/* "0" reads as "not set" here, not "unlimited": a group without a cap
+                leaves each member the one their tariff or card gives them. */}
+            <CustomizableSelect
+              label={t("userDetail.speedLimit")}
+              data={[
+                { value: "0", label: t("groups.speedNone") },
+                ...speedLimitOptions().filter((o) => o.value !== "0"),
+              ]}
+              value={editing.speed}
+              format={fmtSpeed}
+              units={[
+                { factor: 1, label: t("speed.unitKbit") },
+                { factor: 1000, label: t("speed.unitMbit") },
+              ]}
+              onChange={(v) => setEditing({ ...editing, speed: v })}
+            />
+            <p className="-mt-2 text-[11px] leading-relaxed text-ink-muted">
+              {t("groups.speedHint")}
+            </p>
+            {/* Saved with nothing ticked, the group stops limiting access — say so
+                before the save, since it opens every connection to the members. */}
+            {editing.grants.size === 0 && (
+              <p className="-mt-2 text-[11px] leading-relaxed text-warning">
+                {t("groups.noGrantsWarn")}
+              </p>
+            )}
             {tab === "grants" ? (
               <GrantsTable
                 targets={targets}
@@ -491,7 +532,7 @@ function MembersTable({
   members,
   onChange,
 }: {
-  users: User[];
+  users: UserBrief[];
   members: Set<number>;
   onChange: (m: Set<number>) => void;
 }) {
@@ -503,7 +544,7 @@ function MembersTable({
       ? users.filter(
           (u) =>
             u.name.toLowerCase().includes(q) ||
-            u.system_email.toLowerCase().includes(q),
+            `u${u.id}`.includes(q),
         )
       : users;
     // Selected members first, so the current set is visible without scrolling.
@@ -583,7 +624,7 @@ function MembersTable({
                       {u.name}
                     </span>
                     <Mono className="truncate text-[11px] text-ink-muted">
-                      {u.system_email}
+                      {`u${u.id}`}
                     </Mono>
                     <span
                       className={cn(

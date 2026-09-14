@@ -92,12 +92,20 @@ func (rt *Router) handleNodeSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+// nodeSyncBodyMax caps a sync request body. It was 1 MB, and an agent's traffic batch
+// had no bound of its own: a busy node went past the cap, the body was refused, the
+// agent resent the same batch forever, and the node stopped reporting and stopped
+// receiving config — including the update that would have fixed it. Current agents
+// send traffic in chunks well under 1 MB; the room above that is for an older agent
+// already holding an oversized batch, so it can get it through and be updated.
+const nodeSyncBodyMax = 8 << 20
+
 	// Bound the body read with a deadline, then clear it before the long-poll hold
 	// (the hold does no reads, and a leftover deadline would disturb connection reuse).
 	rc := http.NewResponseController(w)
 	_ = rc.SetReadDeadline(time.Now().Add(30 * time.Second))
 	var req nodeapi.SyncRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, nodeSyncBodyMax)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad request"})
 		return
 	}
@@ -132,7 +140,12 @@ func (rt *Router) handleNodeSync(w http.ResponseWriter, r *http.Request) {
 	// for the same reason. Only an UNSENT one counts: an agent too old to answer would
 	// otherwise leave the request pending forever, making every poll return instantly
 	// and turning the node into a hot loop against the panel for the whole timeout.
-	if resp.Changed || resp.Revoked != req.Revoked || rt.mgr.NodeHasFreshWork(node.ID) {
+	//
+	// A chunk of a traffic backlog is answered at once too, so the next chunk follows
+	// straight away — but only one that was counted: a report the panel failed to
+	// ingest is held, or a persistent database error would become a tight loop.
+	trafficBacklog := req.TrafficMore && len(req.Traffic) > 0 && resp.AckReport > 0
+	if resp.Changed || resp.Revoked != req.Revoked || rt.mgr.NodeHasFreshWork(node.ID) || trafficBacklog {
 		rt.writeNodeSync(w, r, node.ID, req.XrayStartedAt, resp)
 		return
 	}

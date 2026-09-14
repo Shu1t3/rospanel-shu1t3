@@ -11,12 +11,14 @@ import (
 // --- Group DTOs ---
 
 type groupDTO struct {
-	ID        int64    `json:"id"`
-	Name      string   `json:"name"`
-	CreatedAt int64    `json:"created_at"`
-	Grants    []string `json:"grants,omitempty"`
-	Members   int      `json:"members"`
-	MemberIDs []int64  `json:"member_ids"`
+	ID           int64    `json:"id"`
+	Name         string   `json:"name"`
+	CreatedAt    int64    `json:"created_at"`
+	Grants       []string `json:"grants,omitempty"`
+	Members      int      `json:"members"`
+	MemberIDs    []int64  `json:"member_ids"`
+	SpeedLimit   int      `json:"speed_limit"`
+	LimitsAccess bool     `json:"limits_access"`
 }
 
 func toGroupDTO(g *model.Group) groupDTO {
@@ -24,12 +26,14 @@ func toGroupDTO(g *model.Group) groupDTO {
 		return groupDTO{}
 	}
 	return groupDTO{
-		ID:        g.ID,
-		Name:      g.Name,
-		CreatedAt: g.CreatedAt,
-		Grants:    g.Grants,
-		Members:   g.Members,
-		MemberIDs: g.MemberIDs,
+		ID:           g.ID,
+		Name:         g.Name,
+		CreatedAt:    g.CreatedAt,
+		Grants:       g.Grants,
+		Members:      g.Members,
+		MemberIDs:    g.MemberIDs,
+		SpeedLimit:   g.SpeedLimit,
+		LimitsAccess: g.LimitsAccess,
 	}
 }
 

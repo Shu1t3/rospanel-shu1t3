@@ -23,17 +23,14 @@ func nodeTestManager(t *testing.T) *Manager {
 	}
 	t.Cleanup(func() { st.Close() })
 	return &Manager{
-		store:          st,
-		nodes:          newNodeRegistry(),
-		opts:           xray.Options{PanelDest: "127.0.0.1:8080"},
-		tz:             time.Local,
-		applied:        map[int64]struct{}{},
-		nodeGeoFiles:   map[int64][]nodeapi.GeoFile{},
-		nodeHostStats:  map[int64]nodeapi.HostStats{},
-		nodeSyncFails:  map[int64]int{},
-		nodeAWGRunning: map[int64]bool{},
-		nodeAWGErr:     map[int64]string{},
-		nodeComponents: map[int64][]nodeapi.ComponentStatus{},
+		store:         st,
+		nodes:         newNodeRegistry(),
+		opts:          xray.Options{PanelDest: "127.0.0.1:8080"},
+		tz:            time.Local,
+		applied:       map[int64]struct{}{},
+		nodeGeoFiles:  map[int64][]nodeapi.GeoFile{},
+		nodeHostStats: map[int64]nodeapi.HostStats{},
+		nodeSyncFails: map[int64]int{},
 	}
 }
 
@@ -219,10 +216,13 @@ func TestNodeDesiredStateHashStable(t *testing.T) {
 		t.Fatalf("hash not stable: %q vs %q", s1.Hash, s2.Hash)
 	}
 
-	// Adding a working user changes the config → changes the hash.
+	// Adding a working user changes the config → changes the hash. Written to the
+	// store directly, so the wake the manager's user sync would send is sent here: a
+	// change reaches nodes through a wake (see nodeInputs).
 	if _, err := m.store.CreateUser("u1", "uuid-u1", "pw", "tok-u1", 0, 0, 0); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
+	m.notifyNodes()
 	s3, err := m.NodeDesiredState(n)
 	if err != nil {
 		t.Fatalf("desired state 3: %v", err)

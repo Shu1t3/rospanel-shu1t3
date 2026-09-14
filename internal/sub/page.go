@@ -402,7 +402,7 @@ func PageWithSources(u model.User, set *model.Settings, servers []Server, ext []
 		SubURL:      subURL,
 		Links:       protoLinks,
 		AWG:         awgCards,
-		DeepLinks:   DeepLinks(subURL, lang),
+		DeepLinks:   DeepLinks(subURL, lang, set.SubHappCrypt),
 		StatusLabel: statusLabel,
 		StatusClass: statusClass,
 		Used:        fmtBytes(used),

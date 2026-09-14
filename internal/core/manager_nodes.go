@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/auth"
@@ -144,28 +145,11 @@ func (m *Manager) NodeDesiredState(n *model.Node) (*nodeapi.NodeState, error) {
 	if err != nil {
 		return nil, err
 	}
-	users, err := m.store.WorkingUsers(time.Now().Unix())
+	in, err := m.nodeInputs()
 	if err != nil {
 		return nil, err
 	}
-	opts, err := m.genOptsFor(n.ID)
-	if err != nil {
-		return nil, err
-	}
-	speedLimits := m.SpeedLimits()
-	blocked, _ := m.store.BlockedIPList()
-	proxies := m.getNodeProxies(n.ID)
-
-	fp := computeNodeFingerprint(set, n, users, opts.Custom, speedLimits, blocked, proxies)
-	m.nodeDesiredMu.RLock()
-	if m.nodeDesiredCache != nil {
-		if cached, ok := m.nodeDesiredCache[n.ID]; ok && cached.fingerprint == fp {
-			m.nodeDesiredMu.RUnlock()
-			return cached.state, nil
-		}
-	}
-	m.nodeDesiredMu.RUnlock()
-
+	users := in.users
 	ns := nodeSettings(set, n)
 	// Cert paths are sentinels the agent rewrites to its own absolute paths (the
 	// panel doesn't know the node's data dir); keeping them symbolic makes the hash
@@ -174,7 +158,16 @@ func (m *Manager) NodeDesiredState(n *model.Node) (*nodeapi.NodeState, error) {
 	ns.KeyPath = nodeapi.KeyPathSentinel
 	// The node's own fallback points at its local decoy/panel loopback, same as the
 	// panel's own layout. Egress lanes resolve against the node's OWN proxy pool.
-	cfg, err := xray.Generate(ns, users, opts, proxies)
+	opts := m.genOpts()
+	opts.ServerID = n.ID
+	opts.Access = in.access
+	if list, err := m.store.EnabledInbounds(n.ID); err != nil {
+		// Soft, as in genOptsFor: the built-in lanes still keep the server reachable.
+		logErr("inbounds: load failed", "server", n.ID, "err", err)
+	} else {
+		opts.Custom = list
+	}
+	cfg, err := xray.Generate(ns, users, opts, m.getNodeProxies(n.ID))
 	if err != nil {
 		return nil, err
 	}
@@ -182,10 +175,7 @@ func (m *Manager) NodeDesiredState(n *model.Node) (*nodeapi.NodeState, error) {
 	if err != nil {
 		return nil, err
 	}
-	connGuardPorts := make([]int, 0, len(opts.Custom)+2)
-	if ns.VLESSEnabled {
-		connGuardPorts = append(connGuardPorts, ns.VLESSPort)
-	}
+	connGuardPorts := []int{ns.VLESSPort}
 	if ns.RealityEnabled {
 		connGuardPorts = append(connGuardPorts, ns.RealityPort)
 	}
@@ -193,9 +183,9 @@ func (m *Manager) NodeDesiredState(n *model.Node) (*nodeapi.NodeState, error) {
 	// public listeners on the same box, and leaving them out would make "add a custom
 	// inbound" quietly the way to bypass the guard. Only the TCP ones: the guard's
 	// rules count connections, which UDP/QUIC has none of.
-	for _, in := range opts.Custom {
-		if in.Protocol != model.InbHysteria {
-			connGuardPorts = append(connGuardPorts, in.Port)
+	for _, inb := range opts.Custom {
+		if inb.Protocol != model.InbHysteria {
+			connGuardPorts = append(connGuardPorts, inb.Port)
 		}
 	}
 	// ACME: the node's own provider/email/EAB when set, otherwise the panel's.
@@ -224,16 +214,14 @@ func (m *Manager) NodeDesiredState(n *model.Node) (*nodeapi.NodeState, error) {
 		DecoyTemplate:     n.DecoyTemplate,
 		GeoRefreshHours:   n.GeoRefreshHours, // the node's OWN geo cadence
 		XrayPinnedVersion: xray.PinnedVersion,
-		SpeedLimits:       speedLimits,
+		SpeedLimits:       in.speed,
 	}
-	if access, err := m.store.AccessMap(); err == nil {
-		meta.AWG = m.nodeAWGState(n, ns, users, access)
-	}
+	meta.AWG = m.nodeAWGState(n, ns, users, in.access)
 	// What the source policy has refused, for this node's own firewall. Read here
 	// rather than pushed on each block so a node that was offline catches up on its
 	// next sync, and so the hash covers it (a lifted block reaches the node too).
-	if len(blocked) > 0 {
-		meta.BlockedIPs = blocked
+	if len(in.blocked) > 0 {
+		meta.BlockedIPs = in.blocked
 		meta.BlockTTLHours = int(policyTTL(set.ConnPolicy) / time.Hour)
 	}
 	if ns.OperaEnabled {
@@ -246,145 +234,86 @@ func (m *Manager) NodeDesiredState(n *model.Node) (*nodeapi.NodeState, error) {
 		return nil, err
 	}
 	h := sha256.Sum256(append(raw, metaRaw...))
-	state := &nodeapi.NodeState{
+	return &nodeapi.NodeState{
 		Hash:       hex.EncodeToString(h[:]),
 		XrayConfig: raw,
 		Meta:       meta,
-	}
-
-	m.nodeDesiredMu.Lock()
-	if m.nodeDesiredCache == nil {
-		m.nodeDesiredCache = make(map[int64]cachedNodeState)
-	}
-	m.nodeDesiredCache[n.ID] = cachedNodeState{
-		fingerprint: fp,
-		state:       state,
-	}
-	m.nodeDesiredMu.Unlock()
-	return state, nil
+	}, nil
 }
 
-const fnvPrime = 1099511628211
-const fnvOffset = 14695981039346656037
-
-func fnvInt64(h uint64, val int64) uint64 {
-	return (h ^ uint64(val)) * fnvPrime
+// nodeInputs are the parts of every node's desired state that no node owns: the working
+// users' credentials, the access map, the speed caps and the blocked addresses.
+//
+// Each node's sync used to read all four for itself, twice a poll and again on every
+// wake — and a wake reaches every node at once. With 20,000 users that was ~28ms of
+// the ~36ms a node's state took, repeated per node. Read once, they are shared by
+// every node until something changes.
+//
+// "Something changes" is a wake: every change nodes must see already wakes them (a
+// user sync, a node or policy edit), and the registry counts wakes, so a snapshot
+// taken before the latest one is never used. What changes with no wake at all — a
+// blocked address running out, say — is picked up when the snapshot ages out, which
+// nodeInputsTTL keeps well inside a poll.
+type nodeInputs struct {
+	gen     uint64
+	at      time.Time
+	users   []model.User // read-only: copy before changing a user (see nodeAWGState)
+	access  map[int64]model.Access
+	speed   map[string]int
+	blocked []string
 }
 
-func fnvInt(h uint64, val int) uint64 {
-	return (h ^ uint64(val)) * fnvPrime
-}
+const nodeInputsTTL = 10 * time.Second
 
-func fnvBool(h uint64, val bool) uint64 {
-	var b uint64
-	if val {
-		b = 1
+// nodeInputs returns the shared inputs, reading them afresh when the cached ones
+// predate the latest wake or have aged out. Callers must not modify what they get.
+func (m *Manager) nodeInputs() (*nodeInputs, error) {
+	m.nodeInputsMu.Lock()
+	defer m.nodeInputsMu.Unlock()
+	gen := m.nodes.generation()
+	if c := m.nodeInputsCache; c != nil && c.gen == gen && time.Since(c.at) < nodeInputsTTL {
+		return c, nil
 	}
-	return (h ^ b) * fnvPrime
-}
-
-func fnvBoolPtr(h uint64, val *bool) uint64 {
-	if val == nil {
-		return (h ^ 2) * fnvPrime
+	// The generation is taken before reading: a wake that lands mid-read leaves this
+	// snapshot one generation behind, so the next caller reads again.
+	in := &nodeInputs{gen: gen, at: time.Now()}
+	var err error
+	if in.users, err = m.store.WorkingCredentials(in.at.Unix()); err != nil {
+		return nil, err
 	}
-	return fnvBool(h, *val)
-}
-
-func fnvString(h uint64, s string) uint64 {
-	for i := 0; i < len(s); i++ {
-		h = (h ^ uint64(s[i])) * fnvPrime
+	// A hard failure, as in genOptsFor: without the access map every restricted
+	// user's credential would be written into every lane.
+	if in.access, err = m.store.AccessMap(); err != nil {
+		return nil, fmt.Errorf("load access map: %w", err)
 	}
-	return h
-}
-
-func computeNodeFingerprint(
-	set *model.Settings,
-	n *model.Node,
-	users []model.User,
-	customInbounds []model.Inbound,
-	speedLimits map[string]int,
-	blockedIPs []string,
-	proxies map[string][]model.ProxyEndpoint,
-) uint64 {
-	h := uint64(fnvOffset)
-	h = fnvInt64(h, set.ConfigRevision)
-	h = fnvString(h, set.ACMEEmail)
-	h = fnvString(h, set.ACMEProvider)
-	h = fnvString(h, set.ZeroSSLEABKID)
-	h = fnvString(h, set.ZeroSSLEABHMAC)
-	h = fnvBool(h, set.HysteriaEnabled)
-	h = fnvInt(h, set.HysteriaPort)
-	h = fnvInt(h, set.HopStart)
-	h = fnvInt(h, set.HopEnd)
-	h = fnvString(h, set.ConnPolicy.Mode)
-	for _, c := range set.ConnPolicy.Countries {
-		h = fnvString(h, c)
-	}
-
-	h = fnvInt64(h, n.ID)
-	h = fnvString(h, n.Host)
-	h = fnvBool(h, n.Enabled)
-	h = fnvString(h, n.DecoyTemplate)
-	h = fnvInt(h, n.GeoRefreshHours)
-	h = fnvBoolPtr(h, n.VLESSEnabled)
-	h = fnvBoolPtr(h, n.HysteriaEnabled)
-	h = fnvBoolPtr(h, n.RealityEnabled)
-	h = fnvBoolPtr(h, n.AWGEnabled)
-	h = fnvString(h, n.RealityDest)
-	h = fnvString(h, n.RealityPublicKey)
-	h = fnvString(h, n.RealityShortID)
-	h = fnvString(h, n.AWGPublicKey)
-	h = fnvBool(h, n.WarpEnabled)
-	h = fnvBool(h, n.OperaEnabled)
-	h = fnvString(h, n.ACMEEmail)
-	h = fnvString(h, n.ACMEProvider)
-	h = fnvString(h, n.ZeroSSLEABKID)
-	h = fnvString(h, n.ZeroSSLEABHMAC)
-	if n.Routing != nil {
-		h = fnvInt(h, len(n.Routing.Lanes))
-		for _, l := range n.Routing.Lanes {
-			h = fnvString(h, l.ID)
-			h = fnvBool(h, l.Enabled)
+	complete := true
+	if capped, err := m.store.CappedUsers(in.at.Unix()); err != nil {
+		logErr("node state: cannot read speed caps", "err", err)
+		complete = false
+	} else if len(capped) > 0 {
+		in.speed = make(map[string]int, len(capped))
+		for id, kbps := range capped {
+			in.speed[model.UserEmail(id)] = kbps
 		}
 	}
-
-	h = fnvInt(h, len(customInbounds))
-	for _, in := range customInbounds {
-		h = fnvInt64(h, in.ID)
-		h = fnvInt(h, in.Port)
-		h = fnvString(h, in.Protocol)
-		h = fnvBool(h, in.Enabled)
+	if in.blocked, err = m.store.BlockedIPList(); err != nil {
+		logErr("node state: cannot read blocked addresses", "err", err)
+		complete = false
 	}
-
-	h = fnvInt(h, len(speedLimits))
-	for uid, lim := range speedLimits {
-		h = fnvString(h, uid)
-		h = fnvInt(h, lim)
+	// A read that failed softly serves this build but is not kept: sharing it would
+	// drop the caps or the blocks from every node's state for the whole TTL.
+	if complete {
+		m.nodeInputsCache = in
 	}
+	return in, nil
+}
 
-	h = fnvInt(h, len(blockedIPs))
-	for _, ip := range blockedIPs {
-		h = fnvString(h, ip)
-	}
-
-	h = fnvInt(h, len(proxies))
-	for laneID, eps := range proxies {
-		h = fnvString(h, laneID)
-		h = fnvInt(h, len(eps))
-		for _, ep := range eps {
-			h = fnvString(h, ep.Address)
-			h = fnvInt(h, ep.Port)
-		}
-	}
-
-	h = fnvInt(h, len(users))
-	for _, u := range users {
-		h = fnvInt64(h, u.ID)
-		h = fnvString(h, u.UUID)
-		h = fnvString(h, u.Password)
-		h = fnvBool(h, u.Enabled)
-	}
-	return h
+// dropNodeInputs forgets the shared inputs, so the next node state reads them afresh —
+// for a change made while building one, which no wake announces.
+func (m *Manager) dropNodeInputs() {
+	m.nodeInputsMu.Lock()
+	m.nodeInputsCache = nil
+	m.nodeInputsMu.Unlock()
 }
 
 // NodeXrayConfig returns one server's Xray config for the read-only viewer: the
@@ -421,6 +350,9 @@ func (m *Manager) NodeXrayConfig(id int64) ([]byte, error) {
 type nodeRegistry struct {
 	mu    sync.Mutex
 	waits map[int64]chan struct{}
+	// gen counts wakes. A wake is how a change reaches the nodes, so it is also what
+	// invalidates the inputs their desired state was built from (see nodeInputs).
+	gen atomic.Uint64
 }
 
 func newNodeRegistry() *nodeRegistry { return &nodeRegistry{waits: map[int64]chan struct{}{}} }
@@ -437,47 +369,52 @@ func (r *nodeRegistry) wakeChan(nodeID int64) chan struct{} {
 	return ch
 }
 
-// wakeOne closes and replaces one node's wake channel (any parked poll returns and
-// re-parks on the fresh channel). It only acts on an existing entry: a poll always
-// registers its channel via wakeChan before computing desired state, so there is
-// nothing to wake until then — and not creating entries here keeps the map from
-// accumulating channels for nodes that never poll.
+// wakeOne wakes the node if it is currently parked in a poll.
 func (r *nodeRegistry) wakeOne(nodeID int64) {
 	if r == nil {
 		return // no registry (tests) ⇒ no parked poll to wake
 	}
+	r.gen.Add(1)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if ch, ok := r.waits[nodeID]; ok {
+		delete(r.waits, nodeID)
 		close(ch)
-		r.waits[nodeID] = make(chan struct{})
 	}
 }
 
 // dropWaiter wakes and removes a node's entry (used on delete, so a tombstoned
 // node's channel isn't retained forever).
 func (r *nodeRegistry) dropWaiter(nodeID int64) {
+	r.gen.Add(1)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if ch, ok := r.waits[nodeID]; ok {
-		close(ch)
 		delete(r.waits, nodeID)
+		close(ch)
 	}
 }
 
-// wakeAll wakes every parked node — used after a user-set change that fans out to
-// all nodes. Nil-safe: a Manager assembled without a registry (tests) still has to
-// survive the paths that now reach here, and "no registry" means "no node to wake".
+// wakeAll closes every held channel so every connected node pulls a fresh state.
 func (r *nodeRegistry) wakeAll() {
 	if r == nil {
 		return
 	}
+	r.gen.Add(1)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for id, ch := range r.waits {
+		delete(r.waits, id)
 		close(ch)
-		r.waits[id] = make(chan struct{})
 	}
+}
+
+// generation is the registry's wake count; 0 without a registry.
+func (r *nodeRegistry) generation() uint64 {
+	if r == nil {
+		return 0
+	}
+	return r.gen.Load()
 }
 
 // NodeWakeChan exposes a node's wake channel to the sync handler.
@@ -1929,20 +1866,6 @@ func (m *Manager) IngestNodeSync(n *model.Node, req nodeapi.SyncRequest) (*nodea
 				SeenAt: now.Unix(),
 			})
 		}
-		// Read before the write: enforceAfterTraffic wants the pre-ingest snapshot to
-		// spot who just crossed a limit.
-		var snapshot []model.User
-		if len(deltas) > 0 {
-			userIDs := make([]int64, 0, len(deltas))
-			seen := make(map[int64]bool, len(deltas))
-			for _, d := range deltas {
-				if !seen[d.UserID] {
-					seen[d.UserID] = true
-					userIDs = append(userIDs, d.UserID)
-				}
-			}
-			snapshot, _ = m.store.GetUsersByIDs(userIDs)
-		}
 		claimed, err := m.store.ApplyNodeReport(n.ID, req.ReportID, deltas)
 		switch {
 		case err != nil:
@@ -1952,7 +1875,7 @@ func (m *Manager) IngestNodeSync(n *model.Node, req nodeapi.SyncRequest) (*nodea
 				"node", n.ID, "users", len(deltas), "err", err)
 			ack = 0
 		case claimed && len(deltas) > 0:
-			_ = m.enforceAfterTraffic(snapshot)
+			m.enforceTrafficSoon()
 		}
 		// claimed==false with err==nil ⇒ already-counted duplicate ⇒ ack it (a no-op).
 	}

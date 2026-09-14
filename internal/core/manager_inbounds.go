@@ -448,11 +448,12 @@ func (m *Manager) validateCandidate(ctx context.Context, serverID int64, set []m
 	}
 }
 
-// candidateConfig builds the Xray config a server would run with the given inbound
+// candidateConfig builds what config.json would look like with `custom` as the
+// server's inbounds: the settings of `serverID` + custom inbounds + working user
 // set — the same generator the real apply uses, so what is validated is what would
 // be applied.
 func (m *Manager) candidateConfig(serverID int64, custom []model.Inbound) (*xray.Config, error) {
-	users, err := m.store.WorkingUsers(time.Now().Unix())
+	users, err := m.store.WorkingCredentials(time.Now().Unix())
 	if err != nil {
 		return nil, err
 	}

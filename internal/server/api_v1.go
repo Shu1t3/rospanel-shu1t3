@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"reflect"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/core"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/i18n"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/sub"
 )
 
 // The external REST API is a stable, versioned contract for a surrounding system
@@ -35,6 +37,9 @@ type (
 		Name      string `json:"name"`
 		DataLimit int64  `json:"data_limit"` // bytes, 0 = unlimited
 		ExpireAt  int64  `json:"expire_at"`  // unix seconds, 0 = never
+		// HoldSeconds starts the term on the user's first connection instead of on a
+		// date: expire_at is set then, to that moment plus this. Not with expire_at.
+		HoldSeconds int64 `json:"hold_seconds,omitempty"`
 		// The rest are optional and applied to the fresh account in one call, because
 		// the alternative was three: create, then set a device limit, then a plan. Each
 		// of those is a separate reconcile, and a caller that failed halfway left a user
@@ -57,10 +62,19 @@ type (
 		ExpireAt    *int64  `json:"expire_at,omitempty"`
 		DeviceLimit *int    `json:"device_limit,omitempty"`
 		SpeedLimit  *int    `json:"speed_limit,omitempty"` // kbit/s, 0 = unlimited
+		// ExpireAt 0 is "never", which also takes away a term waiting for the first
+		// connection. HoldSeconds puts the term on hold until that connection instead
+		// (see apiCreateUserReq); 0 takes a pending term away. Not with a non-zero
+		// expire_at.
+		HoldSeconds *int64 `json:"hold_seconds,omitempty"`
 		// Note and Tags are the operator's own annotations; see model.User. An empty
 		// note or an empty tag list clears the field; a missing one leaves it alone.
 		Note *string   `json:"note,omitempty"` // up to model.MaxUserNoteLen characters
 		Tags *[]string `json:"tags,omitempty"` // normalised: lower-cased, sorted, no commas
+	}
+	// apiHappLinkResp is the answer of GET /v1/users/{id}/happ-link.
+	apiHappLinkResp struct {
+		Link string `json:"link"`
 	}
 	apiBulkReq struct {
 		IDs    []int64 `json:"ids"`
@@ -176,6 +190,7 @@ func (rt *Router) apiMux() http.Handler {
 	id("POST /v1/users/{id}/reset", rt.apiResetUser)
 	id("POST /v1/users/{id}/reset-period", rt.apiSetResetPeriod)
 	id("POST /v1/users/{id}/rotate-sub", rt.apiRotateSub)
+	id("GET /v1/users/{id}/happ-link", rt.apiUserHappLink)
 	id("POST /v1/users/{id}/plan", rt.apiApplyPlan)
 	id("POST /v1/users/{id}/plan/cancel", rt.apiCancelUserPlan)
 	id("GET /v1/users/{id}/connections", rt.apiUserConnections)
@@ -245,6 +260,7 @@ func (rt *Router) apiMux() http.Handler {
 	nodeAudit("POST /v1/nodes/{id}/update", "apiNodeUpdate", idFn(rt.apiUpdateNode))
 	nodeAudit("POST /v1/nodes/update-all", "apiNodesUpdateAll", rt.apiUpdateAllNodes)
 	nodeAudit("POST /v1/nodes/{id}/proxy", "apiSystemProxy", idFn(rt.apiSetServerProxy))
+	nodeAudit("POST /v1/nodes/{id}/placement", "apiPlacement", idFn(rt.apiSetServerPlacement))
 	id("GET /v1/nodes/{id}/health", rt.apiNodeHealth)
 	id("GET /v1/nodes/{id}/logs", rt.apiNodeLogs)
 
@@ -719,35 +735,29 @@ func (rt *Router) apiCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeAPIErr(w, http.StatusBadRequest, "bad_request", "name is required")
 		return
 	}
-	if req.DataLimit < 0 {
-		writeAPIErr(w, http.StatusBadRequest, "bad_request", "data_limit must not be negative")
+	// Everything below is applied to an account that already exists, so what a bad
+	// value costs is not a rejected request but a half-made user: a negative quota
+	// stored as "unlimited", a plan id that names nothing. Judged here, before the
+	// account is created, where the answer is still a plain 400.
+	if !apiNonNegative(w, map[string]int64{
+		"data_limit": req.DataLimit, "expire_at": req.ExpireAt,
+		"device_limit": int64(req.DeviceLimit), "speed_limit": int64(req.SpeedLimit),
+		"plan_id": req.PlanID, "hold_seconds": req.HoldSeconds,
+	}) {
 		return
 	}
-	if req.ExpireAt < 0 {
-		writeAPIErr(w, http.StatusBadRequest, "bad_request", "expire_at must not be negative")
-		return
-	}
-	if req.DeviceLimit < 0 {
-		writeAPIErr(w, http.StatusBadRequest, "bad_request", "device_limit must not be negative")
-		return
-	}
-	if req.SpeedLimit < 0 {
-		writeAPIErr(w, http.StatusBadRequest, "bad_request", "speed_limit must not be negative")
-		return
-	}
-	if req.PlanID < 0 {
-		writeAPIErr(w, http.StatusBadRequest, "bad_request", "plan_id must not be negative")
-		return
-	}
-	if req.PlanID > 0 {
-		if _, err := rt.mgr.Store().GetTariffPlan(req.PlanID); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				writeAPIErr(w, http.StatusBadRequest, "bad_request", "plan not found")
-				return
-			}
+	if req.HoldSeconds > 0 {
+		if err := core.ValidateHold(req.HoldSeconds); err != nil {
 			writeAPIManagerErr(w, err)
 			return
 		}
+		if req.ExpireAt > 0 {
+			writeAPIErr(w, http.StatusBadRequest, "bad_request", "hold_seconds and a non-zero expire_at contradict each other")
+			return
+		}
+	}
+	if req.PlanID > 0 && !rt.apiPlanExists(w, req.PlanID) {
+		return
 	}
 	if len(req.GroupIDs) > 0 {
 		for _, gid := range req.GroupIDs {
@@ -763,7 +773,7 @@ func (rt *Router) apiCreateUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	u, err := rt.mgr.CreateUser(r.Context(), req.Name, req.DataLimit, req.ExpireAt)
+	u, err := rt.mgr.CreateUserWithTerm(r.Context(), req.Name, req.DataLimit, req.ExpireAt, req.HoldSeconds)
 	if err != nil {
 		writeAPIManagerErr(w, err)
 		return
@@ -833,6 +843,32 @@ func (rt *Router) apiCreateUser(w http.ResponseWriter, r *http.Request) {
 	rt.apiUserViewStatus(w, *fresh, http.StatusCreated)
 }
 
+// apiUserHappLink returns the user's subscription as an encrypted Happ link. Its own
+// call rather than a field of the user object: each link is an RSA-4096 encryption,
+// and a user list of thousands would pay for thousands nobody asked for.
+func (rt *Router) apiUserHappLink(w http.ResponseWriter, _ *http.Request, id int64) {
+	u, err := rt.mgr.Store().GetUser(id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeAPIErr(w, http.StatusNotFound, "not_found", "user not found")
+			return
+		}
+		writeAPIManagerErr(w, err)
+		return
+	}
+	set, err := rt.mgr.Settings()
+	if err != nil {
+		writeAPIManagerErr(w, err)
+		return
+	}
+	link, err := sub.HappLink(set, u.SubToken)
+	if err != nil {
+		writeAPIManagerErr(w, err)
+		return
+	}
+	writeAPIData(w, http.StatusOK, apiHappLinkResp{Link: link})
+}
+
 func (rt *Router) apiGetUser(w http.ResponseWriter, _ *http.Request, id int64) {
 	u, err := rt.mgr.Store().GetUser(id)
 	if err != nil {
@@ -871,23 +907,70 @@ func (rt *Router) apiPatchUser(w http.ResponseWriter, r *http.Request, id int64)
 			return
 		}
 	}
-	// Limits are set as a unit; unspecified fields keep the user's current value.
-	if req.DataLimit != nil || req.ExpireAt != nil || req.DeviceLimit != nil {
-		dataLimit, expireAt, deviceLimit := cur.DataLimit, cur.ExpireAt, cur.DeviceLimit
-		if req.DataLimit != nil {
-			dataLimit = *req.DataLimit
-		}
-		if req.ExpireAt != nil {
-			expireAt = *req.ExpireAt
-		}
-		if req.DeviceLimit != nil {
-			deviceLimit = *req.DeviceLimit
-		}
-		if deviceLimit < 0 {
-			writeAPIErr(w, http.StatusBadRequest, "bad_request", "device_limit cannot be negative")
+	// Every number is judged before the first write: a PATCH sets limits, speed and
+	// the plan in turn, and a bad value in a later field must not leave the earlier
+	// ones applied.
+	check := map[string]int64{}
+	if req.DataLimit != nil {
+		check["data_limit"] = *req.DataLimit
+	}
+	if req.ExpireAt != nil {
+		check["expire_at"] = *req.ExpireAt
+	}
+	if req.DeviceLimit != nil {
+		check["device_limit"] = int64(*req.DeviceLimit)
+	}
+	if req.SpeedLimit != nil {
+		check["speed_limit"] = int64(*req.SpeedLimit)
+	}
+	if req.HoldSeconds != nil {
+		check["hold_seconds"] = *req.HoldSeconds
+	}
+	if !apiNonNegative(w, check) {
+		return
+	}
+	if req.HoldSeconds != nil {
+		if err := core.ValidateHold(*req.HoldSeconds); err != nil {
+			writeAPIManagerErr(w, err)
 			return
 		}
-		if err := rt.mgr.SetUserLimits(r.Context(), id, dataLimit, expireAt, deviceLimit); err != nil {
+		if *req.HoldSeconds > 0 && req.ExpireAt != nil && *req.ExpireAt > 0 {
+			writeAPIErr(w, http.StatusBadRequest, "bad_request", "hold_seconds and a non-zero expire_at contradict each other")
+			return
+		}
+	}
+	// Unspecified fields keep the user's current value. The term is written only when
+	// the request names it: a PATCH of the quota alone must not post back the expiry
+	// read a moment ago, which a first connection may have replaced since.
+	dataLimit, deviceLimit := cur.DataLimit, cur.DeviceLimit
+	if req.DataLimit != nil {
+		dataLimit = *req.DataLimit
+	}
+	if req.DeviceLimit != nil {
+		deviceLimit = *req.DeviceLimit
+	}
+	switch {
+	case req.ExpireAt != nil:
+		if err := rt.mgr.SetUserLimits(r.Context(), id, dataLimit, *req.ExpireAt, deviceLimit); err != nil {
+			writeAPIManagerErr(w, err)
+			return
+		}
+		// expire_at 0 is documented as "never": a term waiting for the first connection
+		// would contradict it, so it goes too — unless hold_seconds sets a new one.
+		if *req.ExpireAt == 0 && req.HoldSeconds == nil {
+			if err := rt.mgr.SetUserHold(r.Context(), id, 0); err != nil {
+				writeAPIManagerErr(w, err)
+				return
+			}
+		}
+	case req.DataLimit != nil || req.DeviceLimit != nil:
+		if err := rt.mgr.SetUserQuota(r.Context(), id, dataLimit, deviceLimit); err != nil {
+			writeAPIManagerErr(w, err)
+			return
+		}
+	}
+	if req.HoldSeconds != nil {
+		if err := rt.mgr.SetUserHold(r.Context(), id, *req.HoldSeconds); err != nil {
 			writeAPIManagerErr(w, err)
 			return
 		}
@@ -1185,4 +1268,36 @@ func (rt *Router) apiSystem(w http.ResponseWriter, _ *http.Request) {
 
 func (rt *Router) apiHealthReport(w http.ResponseWriter, _ *http.Request) {
 	writeAPIData(w, http.StatusOK, rt.mgr.Health())
+}
+
+// apiNonNegative refuses a request carrying a negative number where none can mean
+// anything, naming the field. Reports whether the request may go on.
+//
+// Zero is not negative and is meaningful everywhere here — "no quota", "no
+// expiry", "no cap" — so only values below zero are refused. Fields are checked
+// in a fixed order so the same request always names the same field first.
+func apiNonNegative(w http.ResponseWriter, fields map[string]int64) bool {
+	names := make([]string, 0, len(fields))
+	for name := range fields {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if fields[name] < 0 {
+			writeAPIErr(w, http.StatusBadRequest, "bad_request", name+" must not be negative")
+			return false
+		}
+	}
+	return true
+}
+
+// apiPlanExists refuses a plan id that names no plan, rather than letting the
+// account be created and the plan step fail afterwards. Reports whether to go on.
+func (rt *Router) apiPlanExists(w http.ResponseWriter, planID int64) bool {
+	p, err := rt.mgr.Store().GetTariffPlan(planID)
+	if err != nil || p == nil {
+		writeAPIErr(w, http.StatusBadRequest, "bad_request", "plan not found")
+		return false
+	}
+	return true
 }

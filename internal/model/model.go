@@ -123,6 +123,12 @@ type User struct {
 	LastDown  int64     `json:"-"` // last raw Xray downlink counter
 	CreatedAt time.Time `json:"created_at"`
 
+	// HoldSeconds is a term that has not started yet: the first connection the panel
+	// records sets ExpireAt to that moment plus this, and puts this back to 0. 0 = no
+	// pending term. Only ever above 0 while ExpireAt is 0 — the store keeps the two
+	// apart, so a date and a pending term never coexist.
+	HoldSeconds int64 `json:"hold_seconds"`
+
 	ResetPeriod string `json:"reset_period"` // none | daily | weekly | monthly | yearly
 	LastResetAt int64  `json:"-"`            // unix of the last automatic quota reset
 	LastSeen    int64  `json:"last_seen"`    // unix of last activity (0 = never); 0 ⇒ offline
@@ -164,6 +170,10 @@ type User struct {
 	// minted the first time a tunnel config is built for them and kept so every
 	// config they ever download carries the same identity. Encrypted at rest.
 	WGPrivateKey string `json:"-"`
+	// AWGSlot is the user's place on the AmneziaWG tunnel subnet (awg.ClientAddr), the
+	// same on every server; 0 until their tunnel key is first needed. Handed out, not
+	// derived from the id, so a panel's user ids can grow past the subnet's size.
+	AWGSlot int `json:"-"`
 
 	TgChatID int64 `json:"tg_chat_id"` // linked Telegram chat for the user bot (0 = not linked)
 
@@ -750,6 +760,11 @@ type Settings struct {
 	// subscription link, the QR and the client buttons, which is what an operator
 	// selling access usually wants handed out.
 	SubShowConfigs bool `json:"-"`
+	// SubHappCrypt makes the page's Happ button add the subscription through an
+	// encrypted happ://crypt4/ link instead of the plain address, so Happ never shows
+	// the address to the person using it. Off by default: an older Happ that does not
+	// know crypt4 would get a button that does nothing.
+	SubHappCrypt bool `json:"-"`
 
 	// SubRules are the subscription response rules, evaluated in order before the
 	// automatic format detection (see EvalSubRules). Stored as JSON in one column.

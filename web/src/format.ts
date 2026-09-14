@@ -79,6 +79,20 @@ export const speedLimitOptions = () => [
   })),
 ]
 
+// groupSpeedCap is the cap a user's groups put in force: the highest among the
+// groups that set one, with the group it comes from; null when none does. The same
+// rule the server shapes by (store.ShapedUsers).
+export function groupSpeedCap(
+  groups: { name: string; speed_limit?: number }[] | null | undefined,
+): { kbps: number; name: string } | null {
+  let best: { kbps: number; name: string } | null = null
+  for (const g of groups ?? []) {
+    const kbps = g.speed_limit ?? 0
+    if (kbps > 0 && (!best || kbps > best.kbps)) best = { kbps, name: g.name }
+  }
+  return best
+}
+
 // fmtSpeed renders a stored kbit/s cap the way the options above label it, for a
 // value that isn't one of the presets (set through the API, say).
 export const fmtSpeed = (kbps: number): string => {
@@ -144,6 +158,22 @@ export function fmtExpire(unix: number): string {
   if (!unix) return '∞'
   const d = new Date(unix * 1000)
   return d.toLocaleDateString()
+}
+
+// termModes are the two ways a manual term is given: an end date, or a length that
+// starts counting on the user's first connection.
+export const termModes = () => [
+  { value: 'date', label: i18n.t('usersPanel.termDate') },
+  { value: 'hold', label: i18n.t('usersPanel.termHold') },
+]
+
+// fmtTerm is a user's term as it reads today: the expiry date, or — while the term
+// waits for the first connection — its length, since there is no date to show yet.
+export function fmtTerm(expire_at: number, hold_seconds = 0): string {
+  if (!expire_at && hold_seconds > 0) {
+    return i18n.t('usersPanel.holdTerm', { count: Math.floor(hold_seconds / 86400) })
+  }
+  return fmtExpire(expire_at)
 }
 
 export function fmtQuota(used: number, limit: number): string {

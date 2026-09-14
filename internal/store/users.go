@@ -14,7 +14,7 @@ const userCols = `id, name, uuid, password, sub_token, enabled,
 	reset_period, last_reset_at, last_seen, device_limit, speed_limit, tg_chat_id,
 	plan_id, trial_used, tg_link_code, tg_link_code_at, notified_status,
 	notified_expire_at, notified_quota_at, device_over_since, note, tags, wg_private_key,
-	abuse_action, abuse_until, abuse_prev_speed, abuse_warned_day`
+	abuse_action, abuse_until, abuse_prev_speed, abuse_warned_day, hold_seconds, awg_slot`
 
 // errTagsInvalid is returned by SetUserTags for a list model.NormalizeTags refuses.
 // Callers validate before writing, so reaching this means a bug, not user input.
@@ -23,11 +23,22 @@ var errTagsInvalid = errors.New("store: invalid user tags")
 // CreateUser inserts a user with one credential set (UUID for VLESS, password
 // for Trojan + Hysteria2), a subscription token, and optional quota/expiry.
 func (s *Store) CreateUser(name, uuid, password, subToken string, dataLimit, expireAt int64, deviceLimit int) (*model.User, error) {
+	return s.createUser(name, uuid, password, subToken, dataLimit, expireAt, 0, deviceLimit)
+}
+
+// CreateUserOnHold inserts a user whose term starts on their first connection:
+// no expiry date yet, holdSeconds long once it starts. One statement, so a user
+// that should be on hold never exists for a moment without an end.
+func (s *Store) CreateUserOnHold(name, uuid, password, subToken string, dataLimit, holdSeconds int64) (*model.User, error) {
+	return s.createUser(name, uuid, password, subToken, dataLimit, 0, holdSeconds, 0)
+}
+
+func (s *Store) createUser(name, uuid, password, subToken string, dataLimit, expireAt, holdSeconds int64, deviceLimit int) (*model.User, error) {
 	var id int64
 	err := s.db.QueryRow(
-		`INSERT INTO users (name, uuid, password, sub_token, data_limit, expire_at, device_limit)
-		 VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-		name, uuid, encField(password), subToken, dataLimit, expireAt, deviceLimit,
+		`INSERT INTO users (name, uuid, password, sub_token, data_limit, expire_at, hold_seconds, device_limit)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+		name, uuid, encField(password), subToken, dataLimit, expireAt, holdSeconds, deviceLimit,
 	).Scan(&id)
 	if err != nil {
 		return nil, err
@@ -48,6 +59,7 @@ type ImportedUser struct {
 	SubToken    string
 	DataLimit   int64
 	ExpireAt    int64
+	HoldSeconds int64 // a term starting on the first connection; ignored with an ExpireAt
 	UsedUp      int64
 	UsedDown    int64
 	DeviceLimit int
@@ -81,12 +93,13 @@ func (s *Store) ImportUser(in ImportedUser) (*model.User, error) {
 	// with a monthly quota kept whatever usage they arrived with and never refilled.
 	// The cycle starts at the import, which is the only moment this panel knows about.
 	err := s.db.QueryRow(
-		`INSERT INTO users (name, uuid, password, sub_token, enabled, data_limit, expire_at,
+		`INSERT INTO users (name, uuid, password, sub_token, enabled, data_limit, expire_at, hold_seconds,
 		   used_up, used_down, device_limit, speed_limit, reset_period, last_reset_at, note, tags, wg_private_key)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, CASE WHEN ? > 0 THEN 0 ELSE ? END, ?, ?, ?, ?, ?,
 		   CASE WHEN ? = 'none' THEN 0 ELSE unixepoch() END,
 		   ?, ?, ?) RETURNING id`,
 		in.Name, in.UUID, encField(in.Password), in.SubToken, enabled, in.DataLimit, in.ExpireAt,
+		in.ExpireAt, max(in.HoldSeconds, 0),
 		in.UsedUp, in.UsedDown, in.DeviceLimit, in.SpeedLimit, period, period, in.Note,
 		model.EncodeTags(in.Tags), encField(in.WGPrivateKey),
 	).Scan(&id)
@@ -285,14 +298,87 @@ const deviceCountCTE = `SELECT CASE
 // device limit. enabled is an independent manual flag — expiry/quota/devices
 // never change it, they just exclude the user from the config here.
 func (s *Store) WorkingUsers(now int64) ([]model.User, error) {
-	since := now - model.DeviceOnlineWindow
-	// device_count decides, once, whether source addresses still enforce the limit — the
-	// same rule model.Settings.CountsIPAsDevice states, kept in SQL so every caller of
-	// this query and the status derivation agree without threading a flag through six of
-	// them. See migration 0055 and issue #66.
-	return s.queryUsersRaw(`WITH device_count AS (`+deviceCountCTE+`)
-		SELECT `+userCols+` FROM users
-		WHERE enabled = 1
+	return s.queryUsers(`WITH device_count AS (`+deviceCountCTE+`)
+		SELECT `+userCols+` FROM users `+workingUsersWhere+`
+		ORDER BY id ASC`, workingUsersArgs(now)...)
+}
+
+// WorkingUserIDs is WorkingUsers for a caller that only needs to know WHO: the ids,
+// from the same condition, without reading every column, deriving statuses and
+// decrypting every password and key. The access flush asks this every few seconds, and
+// every traffic pass after a stats poll or a node's report, to learn whether the
+// working set moved; with a couple of thousand users the full read was ~9x slower and
+// allocated ~250x more for an answer it threw away.
+func (s *Store) WorkingUserIDs(now int64) ([]int64, error) {
+	rows, err := s.db.Query(`WITH device_count AS (`+deviceCountCTE+`)
+		SELECT id FROM users `+workingUsersWhere+`
+		ORDER BY id ASC`, workingUsersArgs(now)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// WorkingCredentials is WorkingUsers for building a proxy config: the same users in
+// the same order, each carrying only what a config is made of — ID, UUID, Password,
+// WGPrivateKey and AWGSlot. Every other field is zero, and no status is derived.
+//
+// A node asks for its config twice a poll and again on every wake, and the master
+// rebuilds its own on every user sync. With 5000 users the full read took ~20ms of
+// that, scanning thirty-odd columns and counting devices a config never looks at;
+// these few columns take ~4ms.
+func (s *Store) WorkingCredentials(now int64) ([]model.User, error) {
+	rows, err := s.db.Query(`WITH device_count AS (`+deviceCountCTE+`)
+		SELECT id, uuid, password, wg_private_key, awg_slot FROM users `+workingUsersWhere+`
+		ORDER BY id ASC`, workingUsersArgs(now)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	// Scanned into a few fields and widened once at the end: appending whole users grew
+	// a slice of large structs over and over, and decrypting after the last row gives
+	// the one connection back sooner.
+	type cred struct {
+		id                 int64
+		uuid, password, wg string
+		slot               int
+	}
+	var creds []cred
+	for rows.Next() {
+		var c cred
+		if err := rows.Scan(&c.id, &c.uuid, &c.password, &c.wg, &c.slot); err != nil {
+			return nil, err
+		}
+		creds = append(creds, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]model.User, len(creds))
+	for i, c := range creds {
+		out[i] = model.User{ID: c.id, UUID: c.uuid, Password: decField(c.password), WGPrivateKey: decField(c.wg), AWGSlot: c.slot}
+	}
+	return out, nil
+}
+
+// workingUsersWhere is the one statement of who belongs in the proxy config, shared by
+// WorkingUsers, WorkingUserIDs and WorkingCredentials so they cannot drift apart. It
+// expects the device_count CTE and workingUsersArgs.
+//
+// device_count decides, once, whether source addresses still enforce the limit — the
+// same rule model.Settings.CountsIPAsDevice states, kept in SQL so every caller of
+// this query and the status derivation agree without threading a flag through six of
+// them. See migration 0055 and issue #66.
+const workingUsersWhere = `WHERE enabled = 1
 		  AND (expire_at = 0 OR expire_at > ?)
 		  AND (data_limit = 0 OR used_up + used_down < data_limit)
 		  AND (device_limit = 0 OR NOT (SELECT ip_counts FROM device_count)
@@ -306,41 +392,10 @@ func (s *Store) WorkingUsers(now int64) ([]model.User, error) {
 		       -- left behind by a network change or a carrier's address rotation leaves
 		       -- the window before this expires, so it never costs anyone a cut.
 		       OR device_over_since = 0
-		       OR device_over_since > ?)
-		ORDER BY id ASC`, now, since, now-model.DeviceLimitGrace)
-}
+		       OR device_over_since > ?)`
 
-// WorkingUserIDs returns only the IDs of users that should be in the proxy config
-// right now. It uses the exact same criteria as WorkingUsers but selects only the
-// user IDs, completely avoiding the overhead of reading 34 columns, decoding tags,
-// and decrypting passwords/keys with AES-GCM on every 5s access-flush tick.
-func (s *Store) WorkingUserIDs(now int64) ([]int64, error) {
-	since := now - model.DeviceOnlineWindow
-	rows, err := s.db.Query(`WITH device_count AS (`+deviceCountCTE+`)
-		SELECT id FROM users
-		WHERE enabled = 1
-		  AND (expire_at = 0 OR expire_at > ?)
-		  AND (data_limit = 0 OR used_up + used_down < data_limit)
-		  AND (device_limit = 0 OR NOT (SELECT ip_counts FROM device_count)
-		       OR (SELECT COUNT(DISTINCT c.ip) FROM connections c
-		           WHERE c.user_id = users.id AND c.last_seen > ?) <= device_limit
-		       OR device_over_since = 0
-		       OR device_over_since > ?)
-		ORDER BY id ASC`, now, since, now-model.DeviceLimitGrace)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := make([]int64, 0, 64)
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		out = append(out, id)
-	}
-	return out, rows.Err()
+func workingUsersArgs(now int64) []any {
+	return []any{now, now - model.DeviceOnlineWindow, now - model.DeviceLimitGrace}
 }
 
 // GetUser returns one user by id.
@@ -353,19 +408,6 @@ func (s *Store) GetUser(id int64) (*model.User, error) {
 		return nil, sql.ErrNoRows
 	}
 	return &users[0], nil
-}
-
-// GetUsersByIDs returns users matching the given ids in a single query.
-// Missing or non-existent ids are simply omitted from the returned slice.
-func (s *Store) GetUsersByIDs(ids []int64) ([]model.User, error) {
-	if len(ids) == 0 {
-		return nil, nil
-	}
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		args[i] = id
-	}
-	return s.queryUsers(`SELECT `+userCols+` FROM users WHERE id IN (`+placeholders(len(ids))+`)`, args...)
 }
 
 // GetUserByTgLinkCode resolves a pending one-time Telegram bind code to its user,
@@ -441,15 +483,58 @@ func updateTrafficOn(ex execer, id, addUp, addDown, lastUp, lastDown int64) erro
 // SetUserLimits sets the data limit (bytes), expiry (unix, 0 = none), and the
 // simultaneous device cap (0 = unlimited). Does not touch the manual enabled
 // flag; status is derived on read.
+//
+// An expiry date replaces a term waiting for the first connection; an expiry of 0
+// leaves one alone. That is what the limits form means by it: a user on hold has no
+// date to post back, and saving their quota must not cancel the term they were sold.
 func (s *Store) SetUserLimits(id, dataLimit, expireAt int64, deviceLimit int) error {
 	return setUserLimitsOn(s.db, id, dataLimit, expireAt, deviceLimit)
 }
 
 func setUserLimitsOn(ex execer, id, dataLimit, expireAt int64, deviceLimit int) error {
 	_, err := ex.Exec(
-		`UPDATE users SET data_limit = ?, expire_at = ?, device_limit = ? WHERE id = ?`,
-		dataLimit, expireAt, deviceLimit, id,
+		`UPDATE users SET data_limit = ?, expire_at = ?, device_limit = ?,
+		   hold_seconds = CASE WHEN ? > 0 THEN 0 ELSE hold_seconds END
+		 WHERE id = ?`,
+		dataLimit, expireAt, deviceLimit, expireAt, id,
 	)
+	return err
+}
+
+// SetUserQuota sets the data limit and the device cap and nothing else. The term is
+// not part of the write, so a quota saved by a caller that last read the user before
+// their first connection cannot write back the term that connection replaced.
+func (s *Store) SetUserQuota(id, dataLimit int64, deviceLimit int) error {
+	_, err := s.db.Exec(`UPDATE users SET data_limit = ?, device_limit = ? WHERE id = ?`,
+		dataLimit, deviceLimit, id)
+	return err
+}
+
+// SetUserLimitsIfTerm writes the quota, the device cap and the term — an expiry
+// date or a pending hold, never both — but only while the user's term is still the
+// one the caller saw. It reports false, having written nothing, when it is not: a
+// first connection or a payment moved it in the meantime, and the caller's picture
+// of the user is out of date. The check and the write are one statement, so nothing
+// can land between them.
+func (s *Store) SetUserLimitsIfTerm(id, dataLimit, expireAt, holdSeconds int64, deviceLimit int, seenExpireAt, seenHoldSeconds int64) (bool, error) {
+	res, err := s.db.Exec(`
+		UPDATE users SET data_limit = ?, expire_at = ?, hold_seconds = ?, device_limit = ?
+		WHERE id = ? AND expire_at = ? AND hold_seconds = ?`,
+		dataLimit, expireAt, holdSeconds, deviceLimit, id, seenExpireAt, seenHoldSeconds)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// SetUserHold puts a user's term on hold until their first connection: seconds long
+// once it starts, and no expiry date until then. 0 takes the hold away and leaves
+// the user with no expiry — the operator sets a date separately if they want one.
+func (s *Store) SetUserHold(id, seconds int64) error {
+	_, err := s.db.Exec(
+		`UPDATE users SET hold_seconds = ?, expire_at = CASE WHEN ? > 0 THEN 0 ELSE expire_at END
+		 WHERE id = ?`, max(seconds, 0), seconds, id)
 	return err
 }
 
@@ -467,6 +552,42 @@ func setUserSpeedLimitOn(ex execer, id int64, kbps int) error {
 	return err
 }
 
+// groupSpeedJoin attaches to each user row `u` the highest speed cap among the
+// groups they belong to, as gs.kbps (NULL when none of their groups sets one).
+// Highest, not lowest: groups add to what a member gets, the way their grants do.
+const groupSpeedJoin = `LEFT JOIN (
+		SELECT m.user_id, MAX(g.speed_limit) AS kbps
+		FROM group_members m JOIN groups g ON g.id = m.group_id
+		WHERE g.speed_limit > 0
+		GROUP BY m.user_id) gs ON gs.user_id = u.id`
+
+// effectiveSpeedExpr is the cap in force for a row joined with groupSpeedJoin: a
+// group's when one is set, taking priority over the user's own column (their
+// tariff's cap, or one set on their card); the user's own otherwise.
+//
+// A blocklist throttle is the exception nothing loosens. While one is in force the
+// user's column holds the throttle and abuse_prev_speed the cap it replaced, so the
+// stricter applies: of the throttle and a group's cap, or — with no group cap — of
+// the throttle and the user's own cap, which a tariff edit or leaving a group may
+// have made the stricter since.
+const effectiveSpeedExpr = `(CASE
+		WHEN COALESCE(gs.kbps, 0) = 0 THEN (CASE
+			WHEN u.abuse_action = '` + model.AbuseActionThrottle + `' AND u.abuse_prev_speed > 0 AND u.abuse_prev_speed < u.speed_limit THEN u.abuse_prev_speed
+			ELSE u.speed_limit END)
+		WHEN u.abuse_action = '` + model.AbuseActionThrottle + `' AND u.speed_limit > 0 AND u.speed_limit < gs.kbps THEN u.speed_limit
+		ELSE gs.kbps END)`
+
+// GroupSpeedLimit is the cap a user's groups give them: the highest among the groups
+// that set one, 0 when none does.
+func (s *Store) GroupSpeedLimit(userID int64) (int, error) {
+	var kbps int
+	err := s.db.QueryRow(`
+		SELECT COALESCE(MAX(g.speed_limit), 0)
+		FROM group_members m JOIN groups g ON g.id = m.group_id
+		WHERE m.user_id = ? AND g.speed_limit > 0`, userID).Scan(&kbps)
+	return kbps, err
+}
+
 // ShapedUsers returns every user with a speed cap, paired with the source addresses
 // they have been seen on since `since` — everything internal/shaper needs, in one
 // query rather than one per user.
@@ -482,10 +603,11 @@ func setUserSpeedLimitOn(ex execer, id int64, kbps int) error {
 // newest few are also the right ones: they are where the traffic being shaped is.
 func (s *Store) ShapedUsers(since int64) (map[int64]SpeedTarget, error) {
 	rows, err := s.db.Query(`
-		SELECT u.id, u.speed_limit, COALESCE(c.ip, '')
+		SELECT u.id, `+effectiveSpeedExpr+`, COALESCE(c.ip, '')
 		FROM users u
+		`+groupSpeedJoin+`
 		LEFT JOIN connections c ON c.user_id = u.id AND c.last_seen > ?
-		WHERE u.speed_limit > 0 AND u.enabled = 1
+		WHERE `+effectiveSpeedExpr+` > 0 AND u.enabled = 1
 		ORDER BY u.id, c.last_seen DESC`, since)
 	if err != nil {
 		return nil, err
@@ -519,10 +641,11 @@ func (s *Store) ShapedUsers(since int64) (map[int64]SpeedTarget, error) {
 // still worth shaping, since the limit is derived on read and they keep connecting.
 func (s *Store) CappedUsers(now int64) (map[int64]int, error) {
 	rows, err := s.db.Query(`
-		SELECT id, speed_limit FROM users
-		WHERE speed_limit > 0 AND enabled = 1
-		  AND (expire_at = 0 OR expire_at > ?)
-		  AND (data_limit = 0 OR used_up + used_down < data_limit)`, now)
+		SELECT u.id, `+effectiveSpeedExpr+` FROM users u
+		`+groupSpeedJoin+`
+		WHERE `+effectiveSpeedExpr+` > 0 AND u.enabled = 1
+		  AND (u.expire_at = 0 OR u.expire_at > ?)
+		  AND (u.data_limit = 0 OR u.used_up + u.used_down < u.data_limit)`, now)
 	if err != nil {
 		return nil, err
 	}
@@ -551,11 +674,87 @@ func (s *Store) SetUserName(id int64, name string) error {
 	return err
 }
 
-// SetUserWGKey stores a user's AmneziaWG private key (encrypted at rest). Written
-// once, when the first tunnel config is built for them; never rotated on its own.
-func (s *Store) SetUserWGKey(id int64, priv string) error {
-	_, err := s.db.Exec(`UPDATE users SET wg_private_key = ? WHERE id = ?`, encField(priv), id)
-	return err
+// AWGClaim asks for a user's tunnel identity. Key is a freshly minted private key,
+// kept only if the user has none yet.
+type AWGClaim struct {
+	UserID int64
+	Key    string
+}
+
+// AWGIdentity is a user's tunnel identity as stored: their private key and their
+// place on the subnet. Slot 0 is none — the subnet had no place left.
+type AWGIdentity struct {
+	Key  string
+	Slot int
+}
+
+// ClaimUsersAWG gives each claimed user a tunnel identity — a key (priv, encrypted at
+// rest) unless they already have one, and the lowest free slot in [first, last] unless
+// they already hold one — and returns what each user ends up with. A user deleted
+// meanwhile is left out of the result. Written once, when a tunnel config is first
+// built for the user; never rotated on its own.
+//
+// One transaction for the whole batch: the first tunnel a big panel brings up claims
+// for every user at once, and a statement-per-commit there held the one connection
+// for as long as it took to fsync them all. It is also what keeps claims consistent
+// when servers build their peer lists at the same moment: only the first key sticks
+// (a second would leave one server's peers holding a key the user's config no longer
+// has), and no slot is handed out twice.
+func (s *Store) ClaimUsersAWG(claims []AWGClaim, first, last int) (map[int64]AWGIdentity, error) {
+	out := make(map[int64]AWGIdentity, len(claims))
+	err := s.withTx(func(tx *sql.Tx) error {
+		used := map[int]bool{}
+		rows, err := tx.Query(`SELECT awg_slot FROM users WHERE awg_slot > 0`)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var slot int
+			if err := rows.Scan(&slot); err != nil {
+				rows.Close()
+				return err
+			}
+			used[slot] = true
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		next := first
+		for _, c := range claims {
+			if _, err := tx.Exec(`UPDATE users SET wg_private_key = ? WHERE id = ? AND wg_private_key = ''`,
+				encField(c.Key), c.UserID); err != nil {
+				return err
+			}
+			var key string
+			var slot int
+			err := tx.QueryRow(`SELECT wg_private_key, awg_slot FROM users WHERE id = ?`, c.UserID).Scan(&key, &slot)
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if slot == 0 {
+				for next <= last && used[next] {
+					next++
+				}
+				if next <= last {
+					if _, err := tx.Exec(`UPDATE users SET awg_slot = ? WHERE id = ? AND awg_slot = 0`, next, c.UserID); err != nil {
+						return err
+					}
+					slot = next
+					used[next] = true
+				}
+			}
+			out[c.UserID] = AWGIdentity{Key: decField(key), Slot: slot}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // SetUserNote replaces the operator's note on a user.
@@ -713,6 +912,12 @@ func (s *Store) UsersByIDs(ids []int64) ([]model.User, error) {
 	return s.queryUsers(`SELECT `+userCols+` FROM users WHERE id IN (`+placeholders(len(ids))+`)`, args...)
 }
 
+// GetUsersByIDs returns users matching the given ids in a single query.
+// Missing or non-existent ids are simply omitted from the returned slice.
+func (s *Store) GetUsersByIDs(ids []int64) ([]model.User, error) {
+	return s.UsersByIDs(ids)
+}
+
 // ResetTrafficMany zeroes usage for several users in one transaction, each
 // re-baselined to its own live counters and, like ResetTraffic, restarting a rolling
 // quota cycle from now. Returns the ids it wrote — the same list back, since a
@@ -750,19 +955,24 @@ func (s *Store) ResetTrafficMany(baselines map[int64][2]int64, now int64) ([]int
 	return done, nil
 }
 
-// SetUserExpiryMany writes a new expiry for several users in one transaction.
-func (s *Store) SetUserExpiryMany(expiries map[int64]int64) error {
-	if len(expiries) == 0 {
+// SetUserTermsMany writes new terms for several users in one transaction: an expiry
+// date for some, a longer pending term for those still waiting for their first
+// connection. A date clears a hold, as everywhere else.
+func (s *Store) SetUserTermsMany(expiries, holds map[int64]int64) error {
+	if len(expiries) == 0 && len(holds) == 0 {
 		return nil
 	}
 	return s.withTx(func(tx *sql.Tx) error {
-		stmt, err := tx.Prepare(`UPDATE users SET expire_at = ? WHERE id = ?`)
-		if err != nil {
-			return err
-		}
-		defer stmt.Close()
 		for id, expire := range expiries {
-			if _, err := stmt.Exec(expire, id); err != nil {
+			if _, err := tx.Exec(`UPDATE users SET expire_at = ?, hold_seconds = 0 WHERE id = ?`, expire, id); err != nil {
+				return err
+			}
+		}
+		// expire_at = 0 in the guard: a term that started between the caller's read and
+		// this write has a date now, and lengthening the spent hold would do nothing but
+		// claim it had been extended.
+		for id, hold := range holds {
+			if _, err := tx.Exec(`UPDATE users SET hold_seconds = ? WHERE id = ? AND expire_at = 0`, hold, id); err != nil {
 				return err
 			}
 		}
@@ -779,7 +989,7 @@ func (s *Store) BulkResetTraffic(resets map[int64][2]int64) error {
 
 // BulkSetUserExpiry updates expire_at for multiple users in a single transaction.
 func (s *Store) BulkSetUserExpiry(updates map[int64]int64) error {
-	return s.SetUserExpiryMany(updates)
+	return s.SetUserTermsMany(updates, nil)
 }
 
 // SetNotifiedExpireAt records the expiry a "runs out soon" warning was sent for.
@@ -935,22 +1145,14 @@ func deriveStatus(enabled bool, expireAt, used, limit, now int64, activeDevices,
 }
 
 func (s *Store) queryUsers(query string, args ...any) ([]model.User, error) {
-	users, err := s.queryUsersRaw(query, args...)
-	if err != nil {
-		return nil, err
-	}
-	s.applyUserStatus(users, time.Now().Unix())
-	return users, nil
-}
-
-func (s *Store) queryUsersRaw(query string, args ...any) ([]model.User, error) {
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	out := make([]model.User, 0, 64)
+	now := time.Now().Unix()
+	var out []model.User
 	for rows.Next() {
 		var u model.User
 		var created int64
@@ -962,7 +1164,7 @@ func (s *Store) queryUsersRaw(query string, args ...any) ([]model.User, error) {
 			&u.ResetPeriod, &u.LastResetAt, &u.LastSeen, &u.DeviceLimit, &u.SpeedLimit, &u.TgChatID,
 			&u.PlanID, &trialUsed, &u.TgLinkCode, &u.TgLinkCodeAt, &u.NotifiedStatus,
 			&u.NotifiedExpireAt, &u.NotifiedQuotaAt, &u.DeviceOverSince, &u.Note, &tags, &u.WGPrivateKey,
-			&u.AbuseAction, &u.AbuseUntil, &u.AbusePrevSpeed, &u.AbuseWarnedDay,
+			&u.AbuseAction, &u.AbuseUntil, &u.AbusePrevSpeed, &u.AbuseWarnedDay, &u.HoldSeconds, &u.AWGSlot,
 		); err != nil {
 			return nil, err
 		}
@@ -977,6 +1179,7 @@ func (s *Store) queryUsersRaw(query string, args ...any) ([]model.User, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	s.applyUserStatus(out, now)
 	return out, nil
 }
 
@@ -1004,13 +1207,12 @@ func (s *Store) applyUserStatus(users []model.User, now int64) {
 		)
 		return
 	}
-	counts, _ := s.ActiveDeviceCounts(now - model.DeviceOnlineWindow)
+	counts, _ := s.activeDeviceCounts(users, now-model.DeviceOnlineWindow)
 	// The displayed count stays honest — it is how many addresses were seen — but it only
 	// DRIVES the status while addresses are what enforces the limit. In "hwid" mode they
 	// do not, and a phone changing network still read as "device limit exceeded" (issue
 	// #66), the bot said so, and the HWID roster it is actually capped by showed one
 	// device. Showing the number and enforcing it are separate decisions.
-
 	for i := range users {
 		u := &users[i]
 		active := counts[u.ID]
@@ -1032,6 +1234,22 @@ func (s *Store) applyUserStatus(users []model.User, now int64) {
 			active, limit,
 		)
 	}
+}
+
+// activeDeviceCounts is ActiveDeviceCounts for the users being read. A read of one
+// user — every subscription fetch, bot command and API lookup — counted the devices
+// of everyone online to keep a single number: 2.7ms with 5000 users online. One user
+// is counted from their own rows instead, the way the working-set condition does, in
+// 0.05ms.
+func (s *Store) activeDeviceCounts(users []model.User, since int64) (map[int64]int, error) {
+	if len(users) != 1 {
+		return s.ActiveDeviceCounts(since)
+	}
+	n, err := s.ActiveDeviceCountForUser(users[0].ID, since)
+	if err != nil {
+		return nil, err
+	}
+	return map[int64]int{users[0].ID: n}, nil
 }
 
 // StampDeviceOverLimit records, for every user, when they first went over their device

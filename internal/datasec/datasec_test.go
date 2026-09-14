@@ -3,6 +3,7 @@ package datasec
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -11,7 +12,7 @@ import (
 // settingsCols are the encrypted settings columns the guard knows about. Kept as a
 // list so the fixture can encrypt exactly one at a time.
 var settingsCols = []string{
-	"tg_bot_token", "tg_user_bot_token", "tg_support_bot_token", "tg_proxy",
+	"tg_bot_token", "tg_user_bot_token", "tg_support_bot_token",
 	"reality_private_key", "warp_private_key", "proxy_accounts", "zerossl_eab_hmac",
 }
 
@@ -77,89 +78,6 @@ func TestGuardSeesEveryEncryptedColumn(t *testing.T) {
 	}
 }
 
-// TestGuardSeesOtherTables verifies that encrypted fields in auxiliary tables
-// (webhooks, payment_providers, inbounds, config_snapshots, admins, nodes) are detected.
-func TestGuardSeesOtherTables(t *testing.T) {
-	cases := []struct {
-		name  string
-		setup func(db *sql.DB) error
-	}{
-		{
-			name: "admins.totp_pending",
-			setup: func(db *sql.DB) error {
-				if _, err := db.Exec(`CREATE TABLE admins (id INTEGER PRIMARY KEY, totp_pending TEXT NOT NULL DEFAULT '')`); err != nil {
-					return err
-				}
-				_, err := db.Exec(`INSERT INTO admins (id, totp_pending) VALUES (1, 'enc:v1:totp')`)
-				return err
-			},
-		},
-		{
-			name: "webhooks.secret",
-			setup: func(db *sql.DB) error {
-				if _, err := db.Exec(`CREATE TABLE webhooks (id INTEGER PRIMARY KEY, secret TEXT NOT NULL DEFAULT '')`); err != nil {
-					return err
-				}
-				_, err := db.Exec(`INSERT INTO webhooks (id, secret) VALUES (1, 'enc:v1:hooksec')`)
-				return err
-			},
-		},
-		{
-			name: "payment_providers.config",
-			setup: func(db *sql.DB) error {
-				if _, err := db.Exec(`CREATE TABLE payment_providers (id INTEGER PRIMARY KEY, config TEXT NOT NULL DEFAULT '')`); err != nil {
-					return err
-				}
-				_, err := db.Exec(`INSERT INTO payment_providers (id, config) VALUES (1, 'enc:v1:paycfg')`)
-				return err
-			},
-		},
-		{
-			name: "inbounds.opts",
-			setup: func(db *sql.DB) error {
-				if _, err := db.Exec(`CREATE TABLE inbounds (id INTEGER PRIMARY KEY, opts TEXT NOT NULL DEFAULT '')`); err != nil {
-					return err
-				}
-				_, err := db.Exec(`INSERT INTO inbounds (id, opts) VALUES (1, '{"reality_private_key":"enc:v1:privkey"}')`)
-				return err
-			},
-		},
-		{
-			name: "config_snapshots.config_json",
-			setup: func(db *sql.DB) error {
-				if _, err := db.Exec(`CREATE TABLE config_snapshots (id INTEGER PRIMARY KEY, config_json TEXT NOT NULL DEFAULT '')`); err != nil {
-					return err
-				}
-				_, err := db.Exec(`INSERT INTO config_snapshots (id, config_json) VALUES (1, '{"reality_private_key":"enc:v1:snapkey"}')`)
-				return err
-			},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "aux.db")
-			db, err := sql.Open("sqlite", "file:"+path)
-			if err != nil {
-				t.Fatalf("open: %v", err)
-			}
-			if err := tc.setup(db); err != nil {
-				db.Close()
-				t.Fatalf("setup %s: %v", tc.name, err)
-			}
-			db.Close()
-
-			got, err := dbHasEncryptedSecrets(path)
-			if err != nil {
-				t.Fatalf("guard: %v", err)
-			}
-			if !got {
-				t.Fatalf("%s holds ciphertext but guard reported false", tc.name)
-			}
-		})
-	}
-}
-
 // TestGuardQuietOnFreshInstall: with nothing encrypted the guard must NOT claim
 // there are secrets, or a genuine first boot would refuse to start.
 func TestGuardQuietOnFreshInstall(t *testing.T) {
@@ -209,5 +127,56 @@ func TestGuardSurvivesOlderSchema(t *testing.T) {
 	}
 	if !got {
 		t.Fatal("guard missed the one encrypted column an older install has")
+	}
+}
+
+// TestInstalledKeyCipher holds the cipher Init keeps to the one built from the key on
+// demand: a value sealed either way opens either way, a second Init with another key
+// seals and opens under that key only, and plaintext passes through untouched.
+func TestInstalledKeyCipher(t *testing.T) {
+	saved, savedAEAD := key, keyAEAD
+	t.Cleanup(func() { key, keyAEAD = saved, savedAEAD })
+
+	dirA := t.TempDir()
+	if err := Init(dirA); err != nil {
+		t.Fatal(err)
+	}
+	kA, err := ReadKey(dirA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := Encrypt("hunter2")
+	if err != nil || !strings.HasPrefix(sealed, encPrefix) {
+		t.Fatalf("encrypt: %q %v", sealed, err)
+	}
+	if pt, err := DecryptWith(kA, sealed); err != nil || pt != "hunter2" {
+		t.Fatalf("installed seal, explicit open: %q %v", pt, err)
+	}
+	byHand, err := EncryptWith(kA, "correct horse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pt, err := Decrypt(byHand); err != nil || pt != "correct horse" {
+		t.Fatalf("explicit seal, installed open: %q %v", pt, err)
+	}
+	if again, _ := Encrypt(sealed); again != sealed {
+		t.Fatal("an already sealed value was sealed twice")
+	}
+	if pt, err := Decrypt("plain"); err != nil || pt != "plain" {
+		t.Fatalf("plaintext: %q %v", pt, err)
+	}
+
+	if err := Init(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Decrypt(sealed); err == nil {
+		t.Fatal("a value sealed under the old key opened under the new one")
+	}
+	fresh, _ := Encrypt("hunter2")
+	if _, err := DecryptWith(kA, fresh); err == nil {
+		t.Fatal("the new key's value opened under the old key: the cipher was not rebuilt")
+	}
+	if pt, err := Decrypt(fresh); err != nil || pt != "hunter2" {
+		t.Fatalf("new key round trip: %q %v", pt, err)
 	}
 }

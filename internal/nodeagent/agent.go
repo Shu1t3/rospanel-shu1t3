@@ -28,6 +28,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/decoy"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/firewall"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/geo"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/h2fix"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/hop"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/http80"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/ipblock"
@@ -916,15 +917,21 @@ func (a *Agent) buildSyncRequest() nodeapi.SyncRequest {
 
 	sha, selfSigned, certIssuer, certExpiresAt := a.certStatus()
 
+	const trafficChunkMax = 4000
+
 	a.statsMu.Lock()
-	// Nothing in flight and new traffic waiting → promote it to a fresh batch. An
-	// unacked in-flight batch is resent unchanged (same id) instead.
+	// Nothing in flight and new traffic waiting → promote it to a fresh batch.
+	// Cap the batch at trafficChunkMax: a fleet sync with tens of thousands of active
+	// users can otherwise build a request so large it hits nodeSyncBodyMax (8 MB) or
+	// makes SQLite transactions in the panel hold its lock long enough to stall the
+	// event loop. When more traffic waits behind the chunk, TrafficMore tells the
+	// panel to answer immediately without entering the long-poll hold, so the node
+	// burns through its backlog in back-to-back fast round-trips.
 	promoted := false
 	if len(a.inflight) == 0 && len(a.pending) > 0 {
 		a.reportSeq++
 		a.inflightID = a.reportSeq
-		a.inflight = a.pending
-		a.pending = map[int64]*nodeapi.TrafficDelta{}
+		a.inflight = takeTrafficChunk(&a.pending, trafficChunkMax)
 		promoted = true
 	}
 	var traffic []nodeapi.TrafficDelta
@@ -932,6 +939,7 @@ func (a *Agent) buildSyncRequest() nodeapi.SyncRequest {
 		traffic = append(traffic, *d)
 	}
 	rid := a.inflightID
+	trafficMore := len(a.inflight) >= trafficChunkMax && len(a.pending) > 0
 	a.statsMu.Unlock()
 
 	// Persist the watermark (outside statsMu) so a restart can't regress the report id.
@@ -1014,6 +1022,7 @@ func (a *Agent) buildSyncRequest() nodeapi.SyncRequest {
 		CertError:      a.certError(),
 		ReportID:       rid,
 		Traffic:        traffic,
+		TrafficMore:    trafficMore,
 		Conns:          a.takeConns(),
 		Logs:           logs,
 		GeoFiles:       geoFiles,
@@ -1036,6 +1045,25 @@ func (a *Agent) buildSyncRequest() nodeapi.SyncRequest {
 	}
 	req.Sites = a.takeSites(sitesBudget)
 	return req
+}
+
+// takeTrafficChunk moves at most max users' deltas out of *pending and returns them.
+// A pending batch within the limit is handed over whole, as it always was.
+func takeTrafficChunk(pending *map[int64]*nodeapi.TrafficDelta, max int) map[int64]*nodeapi.TrafficDelta {
+	if len(*pending) <= max {
+		out := *pending
+		*pending = map[int64]*nodeapi.TrafficDelta{}
+		return out
+	}
+	out := make(map[int64]*nodeapi.TrafficDelta, max)
+	for uid, d := range *pending {
+		if len(out) == max {
+			break
+		}
+		out[uid] = d
+		delete(*pending, uid)
+	}
+	return out
 }
 
 // logTail returns the node's recent log lines: the agent's own log ring (its slog
@@ -1154,17 +1182,19 @@ func (a *Agent) applyState(st *nodeapi.NodeState) error {
 
 	// Substitute the cert-path sentinels with the node's absolute paths and apply.
 	//
-	// IfChanged, not ApplyRaw: the desired state also carries host-level settings
-	// (certs, hop ranges, the connection guard, per-user speed caps) that change
-	// without the Xray config changing at all. Applying an identical config would
-	// restart Xray and drop every live connection on this node — an operator editing
-	// one user's speed limit would bounce the fleet.
-	changed, err := a.sup.ApplyRawIfChanged(substituteCertPaths(st.XrayConfig, a.certPath, a.keyPath))
+	// Live, not ApplyRaw: the desired state also carries host-level settings (certs,
+	// hop ranges, the connection guard, per-user speed caps) that change without the
+	// Xray config changing at all, and most config changes are users coming and going.
+	// Restarting for either drops every live connection on this node.
+	how, err := a.sup.ApplyRawLive(a.sup.APIAddr(), substituteCertPaths(st.XrayConfig, a.certPath, a.keyPath))
 	if err != nil {
 		return fmt.Errorf("apply xray config: %w", err)
 	}
-	if !changed {
+	switch how {
+	case xray.RawUnchanged:
 		slog.Info("node: state applied without an Xray restart (config unchanged)")
+	case xray.RawLive:
+		slog.Info("node: users changed without an Xray restart")
 	}
 	// The panel may have changed who is capped; put it in force now rather than at
 	// the shaper's next tick.
@@ -1325,7 +1355,10 @@ func (a *Agent) ensureDecoy(dest, template string) error {
 	}
 	a.decoySrv = srv
 	go func() {
-		_ = srv.Serve(&proxyproto.Listener{Listener: ln})
+		// h2fix: ReadHeaderTimeout is a raw read deadline net/http never disarms on an
+		// unencrypted HTTP/2 connection, so without it every h2 request to the decoy is
+		// capped at ten seconds. See internal/h2fix.
+		_ = srv.Serve(h2fix.Listener{Listener: &proxyproto.Listener{Listener: ln}})
 	}()
 	return nil
 }

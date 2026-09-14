@@ -10,6 +10,8 @@ export interface User {
   enabled: boolean
   data_limit: number
   expire_at: number
+  // A term that starts on the first connection, in seconds; only with expire_at 0.
+  hold_seconds: number
   used_up: number
   used_down: number
   created_at: string
@@ -48,6 +50,10 @@ export interface User {
 export interface GroupRef {
   id: number
   name: string
+  // The group's speed cap in kbit/s (0 = none); see Group.speed_limit.
+  speed_limit: number
+  // Whether membership restricts connections; see Group.limits_access.
+  limits_access: boolean
 }
 
 export interface DailyPoint {
@@ -518,18 +524,30 @@ export const deleteUser = (id: number) =>
   api<{ ok: boolean }>(`api/users/${id}`, { method: 'DELETE' })
 export const resetUserTraffic = (id: number) =>
   api<{ ok: boolean }>(`api/users/${id}/reset`, { method: 'POST' })
-export const setUserLimits = (
-  id: number,
-  data_limit: number,
-  expire_at: number,
-  device_limit: number,
-  // Omitted leaves the speed cap untouched — the server reads a missing field as
-  // "no opinion", not as "unlimited".
-  speed_limit?: number,
-) =>
+// UserLimitsSave is one save of the limits form. A field left out is left alone on
+// the server: the speed cap, and the whole term. The term goes with the one the form
+// was opened on (seen_*), and the server refuses it if that is no longer the user's —
+// a key picked up or a period paid for while the card sat open.
+export interface UserLimitsSave {
+  data_limit: number
+  device_limit: number
+  speed_limit?: number
+  term?: {
+    expire_at: number
+    hold_seconds: number
+    seen_expire_at: number
+    seen_hold_seconds: number
+  }
+}
+export const setUserLimits = (id: number, s: UserLimitsSave) =>
   api<{ ok: boolean }>(`api/users/${id}/limits`, {
     method: 'POST',
-    body: JSON.stringify({ data_limit, expire_at, device_limit, speed_limit }),
+    body: JSON.stringify({
+      data_limit: s.data_limit,
+      device_limit: s.device_limit,
+      speed_limit: s.speed_limit,
+      ...(s.term ?? {}),
+    }),
   })
 export const setUserEnabled = (id: number, enabled: boolean) =>
   api<{ ok: boolean }>(`api/users/${id}/enabled`, {
@@ -950,7 +968,10 @@ export interface SubSettings {
   // link of every lane). On by default; off leaves the page offering the
   // subscription link and the client buttons only.
   sub_show_configs: boolean
-  // How servers are ordered in a subscription: manual | nearest | load | nearest_load.
+  // The page's Happ button adds the subscription through an encrypted happ://crypt4/
+  // link, so Happ never shows the address. Off by default.
+  sub_happ_crypt: boolean
+  // How servers are ordered in a subscription: manual | nearest | load | nearest_load | random.
   sub_order_mode: string
   // Drop a node from subscriptions while it is offline (off by default).
   sub_hide_offline: boolean
@@ -1578,6 +1599,9 @@ export interface ConnPolicyInfo {
 export const getConnPolicy = () => api<ConnPolicyInfo>('api/security/conn-policy')
 export const saveConnPolicy = (p: ConnPolicy) =>
   api<{ ok: boolean }>('api/security/conn-policy', { method: 'POST', body: JSON.stringify(p) })
+export const getTrustedNets = () => api<{ nets: string[] }>('api/security/trusted')
+export const saveTrustedNets = (nets: string[]) =>
+  api<{ ok: boolean }>('api/security/trusted', { method: 'POST', body: JSON.stringify({ nets }) })
 export const unblockIP = (ip: string) =>
   api<{ ok: boolean }>('api/security/unblock', { method: 'POST', body: JSON.stringify({ ip }) })
 
@@ -1630,12 +1654,72 @@ export const disableTOTP = (current_password: string) =>
 
 export const logout = () => api<{ ok: boolean }>('api/logout', { method: 'POST' })
 
-export const listUsers = () => api<User[]>('api/users')
+// A user as one line of the users list: what the row draws and the filters read. The
+// links and the subscription URL come with the whole user (getUser), for the card.
+export type UserRow = Pick<
+  User,
+  | 'id'
+  | 'name'
+  | 'system_email'
+  | 'status'
+  | 'enabled'
+  | 'data_limit'
+  | 'expire_at'
+  | 'hold_seconds'
+  | 'used_up'
+  | 'used_down'
+  | 'last_seen'
+  | 'device_limit'
+  | 'active_devices'
+  | 'tags'
+  | 'groups'
+>
+// One window of the users list, and what the page's controls need beside it.
+export interface UsersPage {
+  users: UserRow[]
+  total: number // users the filter matches
+  all: number // every user
+  counts: Record<string, number> // per filter chip, over every user
+  tags: TagCount[]
+  ids?: number[] // every matching id, in list order, when asked for
+}
+export interface UsersPageQuery {
+  q?: string
+  filter?: string
+  tag?: string
+  sort?: string
+  lang?: string
+  offset?: number
+  limit?: number
+  ids?: boolean
+}
+export const listUsersPage = (p: UsersPageQuery) => {
+  const q = new URLSearchParams()
+  if (p.q) q.set('q', p.q)
+  if (p.filter && p.filter !== 'all') q.set('filter', p.filter)
+  if (p.tag) q.set('tag', p.tag)
+  if (p.sort) q.set('sort', p.sort)
+  if (p.lang) q.set('lang', p.lang)
+  if (p.offset) q.set('offset', String(p.offset))
+  if (p.limit !== undefined) q.set('limit', String(p.limit))
+  if (p.ids) q.set('ids', '1')
+  return api<UsersPage>(`api/users/page?${q}`)
+}
+export const getUser = (id: number) => api<User>(`api/users/${id}`)
+// A user as a picker names them.
+export interface UserBrief {
+  id: number
+  name: string
+  status: string
+}
+export const listUsersBrief = () => api<UserBrief[]>('api/users/brief')
+// The user's subscription as an encrypted Happ link; "" while those are switched off.
+export const getUserHappLink = (id: number) => api<{ link: string }>(`api/users/${id}/happ-link`)
 
-export const createUser = (name: string, data_limit = 0, expire_at = 0) =>
+export const createUser = (name: string, data_limit = 0, expire_at = 0, hold_seconds = 0) =>
   api<User>('api/users', {
     method: 'POST',
-    body: JSON.stringify({ name, data_limit, expire_at }),
+    body: JSON.stringify({ name, data_limit, expire_at, hold_seconds }),
   })
 
 export type HealthStatus = 'ok' | 'warn' | 'error' | 'info'
@@ -1688,6 +1772,7 @@ export interface ImportCandidate {
   password: string
   data_limit: number
   expire_at: number
+  hold_seconds?: number
   used_up: number
   used_down: number
   device_limit: number
@@ -2053,6 +2138,7 @@ export interface NodeView {
   // Traffic cap and what has been used against it in the current period.
   traffic_limit: number
   traffic_period: string
+  traffic_reset_day: number
   hide_when_over: boolean
   traffic_period_used: number
   traffic_over: boolean
@@ -2172,9 +2258,12 @@ export interface Placement {
   capacity: number
   hide_when_full: boolean
   // Bytes the server may carry per traffic_period ('month' | 'day'); 0 = no cap.
-  // hide_when_over drops it out of subscriptions once the cap is reached.
+  // A monthly cap starts over on traffic_reset_day (1–31, 0 = the 1st; a shorter
+  // month uses its last day). hide_when_over drops the server out of subscriptions
+  // once the cap is reached.
   traffic_limit: number
   traffic_period: string
+  traffic_reset_day: number
   hide_when_over: boolean
 }
 
@@ -2621,6 +2710,13 @@ export interface Group {
   grants: string[] | null
   members: number
   member_ids: number[] | null
+  // Members' speed cap in kbit/s, 0 = none. Takes priority over the cap a member's
+  // tariff or card gives them; a member of several capped groups gets the highest.
+  speed_limit: number
+  // Whether membership restricts a member's connections to the grants. Decided when
+  // the group is saved: with none ticked it does not (a tier for its speed alone). A
+  // group whose grants were swept with what they named still does.
+  limits_access: boolean
 }
 
 export interface GroupLaneOpt {
@@ -2656,10 +2752,13 @@ export interface GroupTarget {
 
 export const listGroups = () => api<Group[]>('api/groups')
 export const getGroupTargets = () => api<GroupTarget[]>('api/groups/targets')
-export const createGroup = (name: string, grants: string[]) =>
-  api<Group>('api/groups', { method: 'POST', body: JSON.stringify({ name, grants }) })
-export const updateGroup = (id: number, name: string, grants: string[]) =>
-  api<{ ok: boolean }>(`api/groups/${id}`, { method: 'POST', body: JSON.stringify({ name, grants }) })
+export const createGroup = (name: string, grants: string[], speed_limit: number) =>
+  api<Group>('api/groups', { method: 'POST', body: JSON.stringify({ name, grants, speed_limit }) })
+export const updateGroup = (id: number, name: string, grants: string[], speed_limit: number) =>
+  api<{ ok: boolean }>(`api/groups/${id}`, {
+    method: 'POST',
+    body: JSON.stringify({ name, grants, speed_limit }),
+  })
 export const deleteGroup = (id: number) =>
   api<{ ok: boolean }>(`api/groups/${id}`, { method: 'DELETE' })
 export const setGroupMembers = (groupId: number, userIds: number[]) =>

@@ -35,12 +35,17 @@ type TLSPaths struct {
 // admin's request (which flows through Xray) from being killed by the restart.
 const reconcileDebounce = 800 * time.Millisecond
 
-// accLast is pruned of entries older than accLastTTL once it grows past
-// accLastMax, so the access throttle map stays bounded to recently-active
-// user+IP pairs instead of leaking one entry per pair ever seen.
+// accLast exists for one thing: collapsing a user+IP to one recorded sighting per
+// accThrottle seconds. An entry older than that throttles nothing, so once the map
+// grows past accLastMax it is swept of exactly those — and swept at most once per
+// throttle window. It used to keep entries for an hour and sweep on EVERY sighting
+// while over the cap: past ~4096 pairs active within the hour (a couple of thousand
+// users on phones) every sighting walked the whole map under the access-log reader's
+// lock, and at 20,000 pairs that was ~0.1ms per sighting, thousands of times a second.
 const (
-	accLastMax = 4096
-	accLastTTL = int64(time.Hour / time.Second)
+	accThrottle = int64(10)
+	accLastMax  = 4096
+	accLastTTL  = accThrottle
 	// accPendingMax bounds the unflushed sighting buffer. Sized above accLastMax so
 	// the throttle, not this cap, is what normally limits it — this only catches the
 	// pathological case where flushes keep failing and the buffer stops draining.
@@ -63,9 +68,9 @@ type Manager struct {
 	// changed), vs a cheap live user-sync. Set by TriggerReconcile.
 	structuralPending atomic.Bool
 
-	accMu          sync.Mutex
-	accLast        map[accPendingKey]int64 // throttle key {userID, ip} → last recorded unix
-	accLastCleaned int64                   // unix secs of the last eviction sweep of accLast
+	accMu        sync.Mutex
+	accLast      map[accPendingKey]int64 // throttle key {userID, ip} → last recorded unix
+	accLastSwept int64                   // unix secs of the last eviction sweep of accLast
 	// accPending buffers sightings between flushes, so the access-log reader never
 	// touches the database on the hot path. Bounded by the throttle above: one entry
 	// per user+IP per flush interval, not per log line.
@@ -95,6 +100,16 @@ type Manager struct {
 
 	appliedMu sync.Mutex
 	applied   map[int64]struct{} // user IDs currently in the applied config
+
+	// enforceMu runs one traffic enforcement pass at a time, and enforcePending marks a
+	// pass already scheduled for node reports to share (see enforceTrafficSoon).
+	enforceMu      sync.Mutex
+	enforcePending atomic.Bool
+
+	// nodeInputsMu guards nodeInputsCache, the fleet-wide inputs every node's desired
+	// state is built from (see nodeInputs).
+	nodeInputsMu    sync.Mutex
+	nodeInputsCache *nodeInputs
 
 	tzMu sync.RWMutex
 	tz   *time.Location // operator timezone for the local-day stats boundary
@@ -274,6 +289,8 @@ type Manager struct {
 	// policy caches the source policy and the addresses it has recently ruled on
 	// (manager_connpolicy.go); the check runs on the connection path.
 	policy policyState
+	// trusted caches the networks no automatic ban may touch (manager_trusted.go).
+	trusted trustedState
 
 	// awg is the master's AmneziaWG tunnel (see manager_awg.go); awgLast holds the
 	// counters read at the previous poll, per peer public key.
@@ -465,12 +482,12 @@ func (m *Manager) RecordAccess(email, ip, dest string) {
 	pk := accPendingKey{userID: id, ip: ip}
 	m.accMu.Lock()
 	defer m.accMu.Unlock()
-	if now-m.accLast[pk] < 10 {
+	if now-m.accLast[pk] < accThrottle {
 		return
 	}
 	m.accLast[pk] = now
-	if len(m.accLast) > accLastMax && now-m.accLastCleaned >= 60 {
-		m.accLastCleaned = now
+	if len(m.accLast) > accLastMax && now-m.accLastSwept >= accThrottle {
+		m.accLastSwept = now
 		for k, ts := range m.accLast { // drop pairs not seen within the TTL
 			if now-ts > accLastTTL {
 				delete(m.accLast, k)
@@ -513,7 +530,8 @@ func (m *Manager) FlushAccess() {
 	clear(m.accPending)
 	m.accMu.Unlock()
 
-	if err := m.store.AddConnections(hits); err != nil {
+	started, err := m.store.RecordConnections(hits)
+	if err != nil {
 		// Put them back rather than drop them: the buffer was already drained, so
 		// returning here would silently lose the sightings, and stale last_seen /
 		// undercounted devices feed straight into the device cap. Merging (rather than
@@ -536,6 +554,7 @@ func (m *Manager) FlushAccess() {
 		logErr("access: flush failed, sightings requeued", "sightings", len(hits), "err", err)
 		return
 	}
+	m.noteTermsStarted(started)
 	now := time.Now().Unix()
 	// Stamp who is over their device limit before asking who should be in the config:
 	// the cut waits out model.DeviceLimitGrace, and the grace measures from this stamp.
@@ -638,7 +657,7 @@ func (m *Manager) syncUsers() error {
 	if err != nil {
 		return err
 	}
-	users, err := m.store.WorkingUsers(time.Now().Unix())
+	users, err := m.store.WorkingCredentials(time.Now().Unix())
 	if err != nil {
 		return err
 	}
@@ -766,7 +785,7 @@ func (m *Manager) reconcileLocked() error {
 	if err != nil {
 		return err
 	}
-	users, err := m.store.WorkingUsers(time.Now().Unix())
+	users, err := m.store.WorkingCredentials(time.Now().Unix())
 	if err != nil {
 		return err
 	}
@@ -802,22 +821,6 @@ func (m *Manager) setApplied(users []model.User) {
 	m.appliedMu.Lock()
 	m.applied = ids
 	m.appliedMu.Unlock()
-}
-
-// workingChanged reports whether the given working set differs from what's
-// currently applied (someone crossed a limit/expiry, or was reset/extended).
-func (m *Manager) workingChanged(users []model.User) bool {
-	m.appliedMu.Lock()
-	defer m.appliedMu.Unlock()
-	if len(users) != len(m.applied) {
-		return true
-	}
-	for _, u := range users {
-		if _, ok := m.applied[u.ID]; !ok {
-			return true
-		}
-	}
-	return false
 }
 
 // workingIDsChanged reports whether the given working user IDs differ from what's

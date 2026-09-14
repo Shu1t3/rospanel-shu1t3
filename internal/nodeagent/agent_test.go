@@ -231,3 +231,25 @@ func TestUserIDFromEmail(t *testing.T) {
 		}
 	}
 }
+
+func TestTakeTrafficChunk(t *testing.T) {
+	// Under limit: all taken at once
+	p1 := map[int64]*nodeapi.TrafficDelta{
+		1: {UserID: 1, Up: 10},
+		2: {UserID: 2, Up: 20},
+	}
+	chunk1 := takeTrafficChunk(&p1, 5)
+	if len(chunk1) != 2 || len(p1) != 0 {
+		t.Fatalf("expected all 2 taken, got chunk=%d remaining=%d", len(chunk1), len(p1))
+	}
+
+	// Over limit: only max taken, rest remains
+	p2 := map[int64]*nodeapi.TrafficDelta{}
+	for i := int64(1); i <= 10; i++ {
+		p2[i] = &nodeapi.TrafficDelta{UserID: i}
+	}
+	chunk2 := takeTrafficChunk(&p2, 4)
+	if len(chunk2) != 4 || len(p2) != 6 {
+		t.Fatalf("expected 4 taken and 6 remaining, got chunk=%d remaining=%d", len(chunk2), len(p2))
+	}
+}
