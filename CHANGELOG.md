@@ -130,11 +130,6 @@
   * **[B10] Безопасный endpoint pprof:** маршрут `/api/debug/pprof/*` с защитой токеном `X-Panel-Secret` и детектором утечек горутин `goroutineleak`.
 
 ## [2.24.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.23.4...v2.24.0) (2026-09-05)
-=======
-* **proxy:** a list host that fails a refresh no longer empties the lane ([8b7eab4](https://github.com/AppsGanin/rospanel/commit/8b7eab41d0cc215bd1b86b15550cfc97f8e3cbd3))
-
-## [3.1.0](https://github.com/AppsGanin/rospanel/compare/v3.0.0...v3.1.0) (2026-09-10)
->>>>>>> upstream/main
 
 
 ### Features
