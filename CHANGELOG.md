@@ -1,7 +1,24 @@
 # Changelog
 
-## [3.1.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v3.1.0...v3.1.1) (2026-09-11)
+## [3.2.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v3.1.1...v3.2.0) (2026-09-14)
 
+### Features
+
+* **backup:** a restore asks for the backup's own second factor ([90ed9d2](https://github.com/AppsGanin/rospanel/commit/90ed9d232e8807df247eeb7364ae52f8c52b8b95))
+* **routing:** never fall back to direct when a lane is down ([55be958](https://github.com/AppsGanin/rospanel/commit/55be9580c6b4abd8d0a1547db8f78efb88fe4b1e)), closes [#85](https://github.com/AppsGanin/rospanel/issues/85)
+
+### Bug Fixes
+
+* **overview:** the dashboard counts blocklist matches over the real window ([9ccddc1](https://github.com/AppsGanin/rospanel/commit/9ccddc163d0a28b74423446ea1cd95f8f67ada4e))
+* **server:** the API and node segments are compared in constant time ([4818a7a](https://github.com/AppsGanin/rospanel/commit/4818a7a627337e279eab9e2122297ff37719a07b))
+* **core:** the brute-force guard's cleanup stops with the manager ([836ca75](https://github.com/AppsGanin/rospanel/commit/836ca75333b9121851c2df7e15115a686bb46b63))
+* **ratelimit:** a flood can no longer reset a throttled address ([414961e](https://github.com/AppsGanin/rospanel/commit/414961ea35358a3de1206ca43faa99560a4bc1b6))
+* **backup:** restoring a backup asks for the second factor ([eb21357](https://github.com/AppsGanin/rospanel/commit/eb213576e15c1bb1df8bde46d4ff3f69c5f2a6e0))
+* **users:** bulk reset and import both anchor the quota cycle ([856c774](https://github.com/AppsGanin/rospanel/commit/856c774438ad4da5ae25a589cf8b1933a39e803c))
+* **proxy:** a list host that fails a refresh no longer empties the lane ([8b7eab4](https://github.com/AppsGanin/rospanel/commit/8b7eab41d0cc215bd1b86b15550cfc97f8e3cbd3))
+* **deps:** bump golang.org/x/crypto in the go-dependencies group ([2bf70d2](https://github.com/AppsGanin/rospanel/commit/2bf70d21b3f253afcf6320c7ca603dd6a8b7c065))
+
+## [3.1.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v3.1.0...v3.1.1) (2026-09-11)
 
 ### Bug Fixes
 
@@ -30,7 +47,6 @@
 
 ## [2.25.5](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.25.4...v2.25.5) (2026-09-08)
 
-
 ### Bug Fixes
 
 * add AmneziaWG 3.1 support and performance-focused architecture documentation ([b19bcde](https://github.com/Shu1t3/rospanel-shu1t3/commit/b19bcde3cb7f120c07cffdaf9bfed66693c5222b))
@@ -38,7 +54,6 @@
 * **http:** a held HTTP/2 response outlives ReadHeaderTimeout ([2000a0e](https://github.com/Shu1t3/rospanel-shu1t3/commit/2000a0e2bc2651916411b82c75a9fd1565214446))
 * **nodeagent:** a held poll clears the node's sync-failure window ([6c6e30e](https://github.com/Shu1t3/rospanel-shu1t3/commit/6c6e30eb52d5185d8c7128af65d5ee9439e4692a))
 * sync upstream fixes for nodeagent sync window and master AWG restart alert ([14a2def](https://github.com/Shu1t3/rospanel-shu1t3/commit/14a2def0ae6704249d09a91559ba8159c6200880))
-
 
 ### Refactoring
 
@@ -115,6 +130,11 @@
   * **[B10] Безопасный endpoint pprof:** маршрут `/api/debug/pprof/*` с защитой токеном `X-Panel-Secret` и детектором утечек горутин `goroutineleak`.
 
 ## [2.24.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v2.23.4...v2.24.0) (2026-09-05)
+=======
+* **proxy:** a list host that fails a refresh no longer empties the lane ([8b7eab4](https://github.com/AppsGanin/rospanel/commit/8b7eab41d0cc215bd1b86b15550cfc97f8e3cbd3))
+
+## [3.1.0](https://github.com/AppsGanin/rospanel/compare/v3.0.0...v3.1.0) (2026-09-10)
+>>>>>>> upstream/main
 
 
 ### Features

@@ -1,6 +1,6 @@
 ---
 name: go-code-review
-description: Use when reviewing Go code or checking code against community style standards. Also use proactively before submitting a Go PR or when reviewing any Go code changes, even if the user doesn't explicitly request a style review. Does not cover language-specific syntax — delegates to specialized skills.
+description: Use when explicitly asked for a Go style review, Go community standards compliance, or before opening a public PR. For immediate uncommitted git diff audits, use review-diff instead.
 allowed-tools: Bash(bash:*)
 ---
 
@@ -18,7 +18,7 @@ allowed-tools: Bash(bash:*)
 
 > Use `assets/review-template.md` when formatting the output of a code review to ensure consistent structure with Must Fix / Should Fix / Nits severity grouping.
 
-1. Run `gofmt -d .` and `go vet ./...` to catch mechanical issues first
+1. Run `gofmt -d <changed_files>` and `go vet ./<changed_package>/...` on target files to catch mechanical issues without touching unrelated code
 2. Read the diff file-by-file; for each file, check the categories below in order
 3. Flag issues with specific line references and the rule name
 4. After reviewing all files, re-read flagged items to verify they're genuine issues

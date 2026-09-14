@@ -295,6 +295,11 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// per-IP throttle blunts key-guessing and runaway clients. The segment itself
 	// is the obscurity layer — once it matches, the API answers with real REST
 	// status codes (401/403) so integrators can debug their credentials.
+	// Compared in constant time, like the panel secret and the payment segment below:
+	// all three are unguessable segments whose only defence is not being known, and a
+	// byte-by-byte == answers a few nanoseconds sooner the earlier it mismatches. Hard
+	// to measure across the internet, trivially cheap to rule out — and the two that
+	// were not constant-time were the odd ones out, not a considered exception.
 	if apiPath != "" && subtle.ConstantTimeCompare([]byte(seg), []byte(apiPath)) == 1 {
 		if !rt.apiLimiter.allow(clientIP(r)) {
 			// A real REST status, unlike every other surface below: reaching here means

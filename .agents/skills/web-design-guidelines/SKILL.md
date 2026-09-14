@@ -13,20 +13,19 @@ Review files for compliance with Web Interface Guidelines.
 
 ## How It Works
 
-1. Fetch the latest guidelines from the source URL below
+1. Read guidelines from local `references/command.md` (or fetch from the URL below if not present)
 2. Read the specified files (or prompt user for files/pattern)
-3. Check against all rules in the fetched guidelines
+3. Check against all rules in the guidelines
 4. Output findings in the terse `file:line` format
 
 ## Guidelines Source
 
-Fetch fresh guidelines before each review:
-
+Source URL for updates:
 ```
 https://raw.githubusercontent.com/vercel-labs/web-interface-guidelines/main/command.md
 ```
 
-Use WebFetch to retrieve the latest rules. The fetched content contains all the rules and output format instructions.
+Guidelines are cached locally in `references/command.md`. Retrieve from URL only when the user explicitly requests fresh guidelines.
 
 ## Usage
 

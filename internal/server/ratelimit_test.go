@@ -49,28 +49,47 @@ func TestLoginLimiterBoundedWhenAllBlocked(t *testing.T) {
 	}
 }
 
-func TestIPRateLimiterFloodDoesNotClearRateLimit(t *testing.T) {
-	l := newIPRateLimiter(5, 5*time.Minute)
-	const victim = "203.0.113.7"
-	for i := 0; i < 5; i++ {
-		if !l.allow(victim) {
-			t.Fatalf("unexpected rate limit hit early on attempt %d", i)
+// The same escape, on the limiter in front of the subscription endpoint and the /v1
+// API. It wiped its whole map once it overflowed, so an address already over its
+// limit could spray from throwaway addresses until the wipe, and come back with a
+// fresh window. A throttled address must stay throttled through a flood.
+func TestIPRateLimiterFloodDoesNotUnthrottle(t *testing.T) {
+	l := newIPRateLimiter(3, time.Minute)
+	l.maxKeys = 64
+
+	const attacker = "203.0.113.7"
+	for i := range 3 {
+		if !l.allow(attacker) {
+			t.Fatalf("request %d of 3 refused", i+1)
 		}
 	}
-	if l.allow(victim) {
-		t.Fatal("victim IP should be rate-limited after 5 hits")
+	if l.allow(attacker) {
+		t.Fatal("the fourth request inside the window was allowed — the limit is not in force")
 	}
 
-	// Flood well past maxKeys with unique addresses making 1 hit each
-	for i := 0; i < l.maxKeys*2; i++ {
-		l.allow(fmt.Sprintf("198.51.100.%d.%d", i/256, i%256))
+	// Far more distinct addresses than the map holds, each allowed once, as a spray is.
+	for i := range 10 * l.maxKeys {
+		l.allow(fmt.Sprintf("2001:db8::%x", i))
 	}
 
-	if l.allow(victim) {
-		t.Fatal("rate-limited victim IP was unblocked by an unrelated IP flood")
+	if l.allow(attacker) {
+		t.Error("a flood of throwaway addresses reset the throttled address's window")
 	}
-	if len(l.hits) > l.maxKeys {
-		t.Fatalf("hits map grew unbounded after flood: %d (cap %d)", len(l.hits), l.maxKeys)
+	if n := len(l.hits); n > l.maxKeys {
+		t.Errorf("the map holds %d entries past its cap of %d", n, l.maxKeys)
 	}
 }
 
+// Bounded even in the worst case: every entry throttled, so nothing is cheap to shed.
+func TestIPRateLimiterBoundedWhenAllThrottled(t *testing.T) {
+	l := newIPRateLimiter(1, time.Minute)
+	l.maxKeys = 32
+	for i := range 20 * l.maxKeys {
+		ip := fmt.Sprintf("198.51.100.%d-%d", i/250, i%250)
+		l.allow(ip) // allowed once, and now at its limit of 1
+		l.allow(ip) // throttled
+	}
+	if n := len(l.hits); n > l.maxKeys {
+		t.Errorf("with every address throttled the map still grew to %d, past its cap of %d", n, l.maxKeys)
+	}
+}

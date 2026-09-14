@@ -181,6 +181,12 @@ type Manager struct {
 	// master), so its lanes are resolved separately. Refreshed on the same cadence.
 	nodeProxies map[int64]map[string][]model.ProxyEndpoint
 
+	// proxyListMu guards proxyLists: the lines each proxy-list URL returned on its
+	// last successful fetch, which a failed fetch falls back to. Its own lock, not
+	// proxyMu, because buildProxies runs while callers are about to take proxyMu.
+	proxyListMu sync.Mutex
+	proxyLists  map[string][]string
+
 	guard *bruteGuard
 
 	// done is closed to stop background goroutines (shaperLoop, etc.) so tests that
@@ -322,7 +328,7 @@ func New(st *store.Store, sup *xray.Supervisor, opts xray.Options, tls TLSPaths,
 		abuseAlerted:     make(map[abuseAlertKey]struct{}),
 		applied:          make(map[int64]struct{}),
 		tz:               time.Local,
-		guard:            newBruteGuard(doneCh),
+		guard:            newBruteGuard(),
 		shaper:           shaper.New(),
 		devNotice:        newDeviceNotice(),
 		payNotice:        newNotice(6 * time.Hour),
@@ -374,6 +380,10 @@ func New(st *store.Store, sup *xray.Supervisor, opts xray.Options, tls TLSPaths,
 	m.sup.StartWatchdog() // auto-restart a wedged (alive-but-not-serving) Xray
 	// The same two alerts for the remote nodes. They have no bot of their own, and a
 	// node that stops syncing altogether can only be noticed on a timer.
+	// Every one of these goes through runAsync, so Close can wait for it. A loop that
+	// is started with a bare `go` is one Close cannot account for, and the failure is
+	// invisible until something it writes to has already been torn down.
+	m.runAsync(func() { m.guard.cleanupLoop(m.done) })
 	m.runAsync(m.nodeWatchLoop)
 	m.runAsync(m.reconcileLoop)
 	m.runAsync(m.proxyLoop)

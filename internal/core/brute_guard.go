@@ -36,21 +36,13 @@ type bruteGuard struct {
 	banned         map[string]time.Time // ip → expiry
 	nftMu          sync.Mutex
 	ensureFailedAt time.Time
-	done           <-chan struct{}
 }
 
-func newBruteGuard(done ...<-chan struct{}) *bruteGuard {
-	var d <-chan struct{}
-	if len(done) > 0 {
-		d = done[0]
-	}
-	g := &bruteGuard{
+func newBruteGuard() *bruteGuard {
+	return &bruteGuard{
 		attempts: make(map[string][]time.Time),
 		banned:   make(map[string]time.Time),
-		done:     d,
 	}
-	go g.cleanupLoop()
-	return g
 }
 
 func bruteNFTAvailable() bool {
@@ -166,13 +158,19 @@ func (g *bruteGuard) unban(ip string) {
 	logInfo("brute-guard: unbanned", "ip", ip)
 }
 
-// cleanupLoop checks every minute for expired bans and removes them.
-func (g *bruteGuard) cleanupLoop() {
+// cleanupLoop forgets expired bans and stale attempt lists once a minute, until done
+// closes. The firewall side needs nothing: the elements time out on their own.
+//
+// It is started by the manager through runAsync rather than from the constructor with
+// a bare go, which is what it used to be — and a loop over a ticker with no way out
+// outlives the manager that made it. Close could not wait for it, so every manager
+// ever built (every test builds several) left one ticking forever.
+func (g *bruteGuard) cleanupLoop(done <-chan struct{}) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-g.done:
+		case <-done:
 			return
 		case <-ticker.C:
 		}
