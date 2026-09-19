@@ -128,7 +128,9 @@ func (a *Agent) shapeLoop(ctx context.Context) {
 		case <-ctx.Done():
 			// Leave the host as we found it: the kernel keeps a qdisc tree until
 			// reboot, and an agent that stopped must not keep capping anyone.
-			a.shaper.Reset()
+			if a != nil && a.shaper != nil {
+				a.shaper.Reset()
+			}
 			return
 		case <-t.C:
 		}
@@ -136,6 +138,9 @@ func (a *Agent) shapeLoop(ctx context.Context) {
 }
 
 func (a *Agent) applyShaping() {
+	if a == nil || a.shaper == nil {
+		return
+	}
 	limits := a.speedLimits()
 	rules := a.seen.rules(limits, time.Now())
 	a.shaper.Apply(shaper.State{WAN: a.wanIface(), Rules: rules})

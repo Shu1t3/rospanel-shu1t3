@@ -136,3 +136,9 @@ func TestParseDefaultDev(t *testing.T) {
 		}
 	}
 }
+
+func TestNilApplierSafe(t *testing.T) {
+	var a *Applier
+	a.Apply(State{})
+	a.Reset()
+}

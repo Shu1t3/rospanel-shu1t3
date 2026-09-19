@@ -1298,7 +1298,9 @@ func (a *Agent) applyUsers(st *nodeapi.NodeState) error {
 	}
 	// The panel may have changed who is capped; put it in force now rather than at
 	// the shaper's next tick.
-	go a.applyShaping()
+	if a != nil && a.shaper != nil {
+		go a.applyShaping()
+	}
 	return nil
 }
 

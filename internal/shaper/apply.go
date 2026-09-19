@@ -31,7 +31,7 @@ func New() *Applier { return &Applier{} }
 // tears the tree down when nothing is shaped any more, and degrades to a logged
 // warning wherever tc is unavailable.
 func (a *Applier) Apply(st State) {
-	if runtime.GOOS != "linux" {
+	if a == nil || runtime.GOOS != "linux" {
 		return
 	}
 	hash := Hash(st)
@@ -89,6 +89,9 @@ func (a *Applier) Apply(st State) {
 // the host left as they found it; the kernel would otherwise keep the tree until
 // reboot.
 func (a *Applier) Reset() {
+	if a == nil {
+		return
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.teardownLocked()

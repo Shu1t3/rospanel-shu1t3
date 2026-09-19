@@ -9,6 +9,7 @@ import (
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/nodeapi"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/nodestate"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/shaper"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/xray"
 )
 
@@ -40,6 +41,7 @@ func splitAgent(t *testing.T) (*Agent, *nodestate.Parts) {
 		sup:          xray.NewSupervisor("", filepath.Join(dir, "config.json"), dir),
 		certPath:     filepath.Join(dir, "cert.pem"),
 		state:        &persistState{},
+		shaper:       shaper.New(),
 		pending:      map[int64]*nodeapi.TrafficDelta{},
 		inflight:     map[int64]*nodeapi.TrafficDelta{},
 		lastCounters: map[string]xray.Traffic{},
