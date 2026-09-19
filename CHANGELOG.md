@@ -1,5 +1,78 @@
 # Changelog
 
+## [3.4.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v3.3.0...v3.4.0) (2026-09-19)
+
+
+### Features
+
+* **inbounds:** WireGuard over calls (TURN), experimental ([43dadda](https://github.com/Shu1t3/rospanel-shu1t3/commit/43dadda12bb28dd9a45f8fbe74cf6b6259f954cb))
+* **panel:** a name that lands in a config file offers only {server} and {user} ([9465617](https://github.com/Shu1t3/rospanel-shu1t3/commit/9465617731ce15528e41bbf8ca52959261213c15))
+* **security:** ban an address from a user's addresses, and one list of every ban ([6997aa7](https://github.com/Shu1t3/rospanel-shu1t3/commit/6997aa77054e8ed561280431c7533307f2b27fc5))
+* **security:** the panel says when a server cannot drop addresses, and the installer brings nftables ([9b019e4](https://github.com/Shu1t3/rospanel-shu1t3/commit/9b019e4054068e1771795a051685b57dfb5d8819))
+* **sub:** every app on the subscription page links to its own page ([8b92ede](https://github.com/Shu1t3/rospanel-shu1t3/commit/8b92ede96ae5436500aec9c322efc11b355a2c8e))
+* sync upstream updates (v3.3.0..v3.6.0) preserving fork enhancements ([be0e9bc](https://github.com/Shu1t3/rospanel-shu1t3/commit/be0e9bcb03b64f6d9fd1d8990be5fe5e826914dd))
+* **ui:** the whole panel reads dates and times in the panel's timezone ([9d60c7d](https://github.com/Shu1t3/rospanel-shu1t3/commit/9d60c7dcb791775761785e4908072db2f4878afb))
+* **user-detail:** clarify device list labels and tooltips ([38cb9a2](https://github.com/Shu1t3/rospanel-shu1t3/commit/38cb9a21ec0fa52d32ab009690120fec27eca7ec))
+
+
+### Bug Fixes
+
+* **branding:** labels on the accent turn dark when the accent is too light for white ([d42af09](https://github.com/Shu1t3/rospanel-shu1t3/commit/d42af09b7abb0c1c82f72f10173d925e533051fc))
+* **deps:** pion/dtls v3.1.9, past the panic on a crafted ServerKeyExchange ([7ed4b82](https://github.com/Shu1t3/rospanel-shu1t3/commit/7ed4b829d40626cd78bfdf5afbf4f168b1a2a711))
+* **dns:** refuse servers Xray cannot use, and ask host-named resolvers last ([390cbc9](https://github.com/Shu1t3/rospanel-shu1t3/commit/390cbc9ad2ee6ba10491d079c2f650b7deec5dc2))
+* **journal:** the actor for a user's own action reads "user" ([6cde852](https://github.com/Shu1t3/rospanel-shu1t3/commit/6cde852b34988228299224d689f17525bc56a5d7))
+* **memory:** the panel and the node agent keep their Go heap under a soft limit ([3a00604](https://github.com/Shu1t3/rospanel-shu1t3/commit/3a00604699f24478ead1da876f13f66ae708fb0e))
+* **memory:** the panel's heap limit leaves room for the Xray it runs ([9b08124](https://github.com/Shu1t3/rospanel-shu1t3/commit/9b0812444e4b85d45b30fe67ad0c38e511caf22b))
+* **nodeagent:** bound the sites budget by the body's length before subtracting ([1faa745](https://github.com/Shu1t3/rospanel-shu1t3/commit/1faa745aa824e4ddc0f9f202c7da25c90632beda))
+* **nodes:** a node's health reads a state held in parts as its sync would ([db498f0](https://github.com/Shu1t3/rospanel-shu1t3/commit/db498f0acd63f210a9ebf582960f9f4ba155e92b))
+* **nodes:** a node's report is believed only about the users its config lets in ([4805e6b](https://github.com/Shu1t3/rospanel-shu1t3/commit/4805e6b5d644534d9601948fd01f3abb6a9d5146))
+* **nodes:** connection samples are no longer dropped past 8,192 pairs ([b7da819](https://github.com/Shu1t3/rospanel-shu1t3/commit/b7da819853c3769d11fad772c2a2a0ce759e17a1))
+* **nodes:** destination rows fit what the panel takes, and users take turns ([facaea9](https://github.com/Shu1t3/rospanel-shu1t3/commit/facaea90cc57c436dec91fcf88cfa9d665949468))
+* **nodes:** the users a node is believed about come from the newest read ([d547bbc](https://github.com/Shu1t3/rospanel-shu1t3/commit/d547bbcf25ae3b4777b909eb097157558d0403f3))
+* **shaper:** a nil applier shapes nothing instead of panicking ([7feb4bb](https://github.com/Shu1t3/rospanel-shu1t3/commit/7feb4bb94a3ba51854b008fa32308779aa9326e6))
+* **subscriptions:** connection names drop {flag} and {country} ([a7e1659](https://github.com/Shu1t3/rospanel-shu1t3/commit/a7e16590a11f850a4e2a201f7773337bfaa056f2))
+* **sub:** sing-box 1.13 and 1.14 load the generated profile again ([c13aea8](https://github.com/Shu1t3/rospanel-shu1t3/commit/c13aea80a34fe4291b588cde71c61f1612abbc69)), closes [#89](https://github.com/Shu1t3/rospanel-shu1t3/issues/89)
+* **turn:** stopping a relay closes its legs instead of deadlining them ([3c9dd4c](https://github.com/Shu1t3/rospanel-shu1t3/commit/3c9dd4cf022215a5240111ec5aa23b4a9e226678))
+* **ui:** a settings hint with nothing beside it spans its row ([52a2baf](https://github.com/Shu1t3/rospanel-shu1t3/commit/52a2baf4466764c72a1d270f95fd769c19d372a8))
+* **ui:** a user's addresses show even when device binding is on ([1a3521b](https://github.com/Shu1t3/rospanel-shu1t3/commit/1a3521b45dcca8949806fbea2634e6db4d629ae8))
+* **ui:** the API tab's save bar sits at the bottom, below the webhooks ([5c8fcef](https://github.com/Shu1t3/rospanel-shu1t3/commit/5c8fcef9158c8b48fce820a3992d18faaf58b2ce))
+* **users:** the list's loading placeholder has the page's shape ([8955df1](https://github.com/Shu1t3/rospanel-shu1t3/commit/8955df1f956fd548d623ec68888f8d326ff229de))
+* **xray:** a live change whose api call cannot reach xray is asked again before the full reload ([3c1b486](https://github.com/Shu1t3/rospanel-shu1t3/commit/3c1b486c725a0d3d19d54078cb5bb54f72a2b1f9))
+* **xray:** adding or removing a Hysteria2 user no longer drops everyone on the lane ([5a8a704](https://github.com/Shu1t3/rospanel-shu1t3/commit/5a8a704043abb062f5a05a3ca03ec31c521dc087))
+* **xray:** the API client refuses a message too big for a gRPC frame ([8535b5e](https://github.com/Shu1t3/rospanel-shu1t3/commit/8535b5ee0725075706bf09784883ec079550337f))
+
+
+### Performance Improvements
+
+* **connections:** a connected device is written every 45 seconds, and device limits are checked every 30 ([cf7310a](https://github.com/Shu1t3/rospanel-shu1t3/commit/cf7310a78558384c1edb55d7c138669c994d2a74))
+* **connections:** connection sightings are written with prepared statements ([d70666c](https://github.com/Shu1t3/rospanel-shu1t3/commit/d70666c586dbeed2c87c4d8b5d61cfc88e994aeb))
+* **dashboard:** the status feed recounts users every 15 seconds, not every 2 ([c1ce800](https://github.com/Shu1t3/rospanel-shu1t3/commit/c1ce800996436759e2785b84cb061468dbac08e5))
+* **nodes:** a node is sent the users that changed, not its whole config again ([718644e](https://github.com/Shu1t3/rospanel-shu1t3/commit/718644ef0c6b2482d2ca8fdec3f9d5796f315aa8))
+* **nodes:** a node that is current is told so without its state being rebuilt ([5e0c5b3](https://github.com/Shu1t3/rospanel-shu1t3/commit/5e0c5b3304577ce26c277e2cb30964d647633cf7))
+* **nodes:** a node's certificate status does not count against its remembered state ([9cb5bf6](https://github.com/Shu1t3/rospanel-shu1t3/commit/9cb5bf6be813e0983fb6aa9d8ceaad38f5be99de))
+* **nodes:** a node's config is built alone, and hashed without a copy of itself ([43f0025](https://github.com/Shu1t3/rospanel-shu1t3/commit/43f00256b14d873b13fe8767ad9cdaeadca69221))
+* **nodes:** a node's state is held under the gate until it is encoded, and written out after ([2f7bb87](https://github.com/Shu1t3/rospanel-shu1t3/commit/2f7bb87d06755d8f72a9c295396db717172c8bd0))
+* **nodes:** config pushes go out gzip-compressed ([19c3aaf](https://github.com/Shu1t3/rospanel-shu1t3/commit/19c3aaf1059659f57fffb9cc6a32907e60ac1154))
+* **nodes:** one read of the working set answers both reconcile questions ([1c3a498](https://github.com/Shu1t3/rospanel-shu1t3/commit/1c3a498768a2ba7dd33e2137ac911c0239875464))
+* **nodes:** the nodes are woken only for a change they can see, and the shared read keeps the credentials it has ([eec904c](https://github.com/Shu1t3/rospanel-shu1t3/commit/eec904cf53253452a2ab9c22b90ce614a1c0afac))
+* **settings:** the settings are decoded once and read again only when they change ([c22a16c](https://github.com/Shu1t3/rospanel-shu1t3/commit/c22a16c3c821ef8a9e152b58baa266f2de8478d0))
+* **stats:** the stats poll and the enforcement pass stop reading every user whole ([0422c11](https://github.com/Shu1t3/rospanel-shu1t3/commit/0422c11f26d6581c2fb8894bbef30331f7583636))
+* **sub:** the certificate file is read when it changes, not on every fetch ([3633860](https://github.com/Shu1t3/rospanel-shu1t3/commit/3633860b33befe34887fc60e5b24787dff97a09c))
+* **sub:** the per-server online count answers for two seconds ([ece3e0d](https://github.com/Shu1t3/rospanel-shu1t3/commit/ece3e0d7a49357b547ef4316a893ecf5fc4280a8))
+* **sub:** what every subscription shares is read once for a few seconds ([2d391f8](https://github.com/Shu1t3/rospanel-shu1t3/commit/2d391f821d26ed093b35c9cc465c4c94a7fee459))
+* **traffic:** a traffic batch is written in two statements, not three per user ([35982af](https://github.com/Shu1t3/rospanel-shu1t3/commit/35982af8f51fe0df28146a1d84d9c5ec5153c6a7))
+* **users:** an edit to one user rereads that row of the list, and each order is sorted once ([14040f9](https://github.com/Shu1t3/rospanel-shu1t3/commit/14040f977fc07f4d072d5bb81590258c354446a1))
+* **users:** subscription and Telegram lookups use their indexes ([6ca60c6](https://github.com/Shu1t3/rospanel-shu1t3/commit/6ca60c6d5eca50b1840bf18825cab149ce9b0844))
+* **users:** the users list is read once for a burst of requests, and afresh after any change ([06f2ff0](https://github.com/Shu1t3/rospanel-shu1t3/commit/06f2ff074fac6c9f2a0d04ecc7f2dd5ebf0b0214))
+* **users:** the users page reads summaries, not whole users ([fa20987](https://github.com/Shu1t3/rospanel-shu1t3/commit/fa2098746ac044ca03be69b58b30747ea176100f))
+* **users:** the users page works out its counts, tags and search text once per read ([b2f6b3b](https://github.com/Shu1t3/rospanel-shu1t3/commit/b2f6b3b2b0e663b8cdac0305aca571fb1db9e724))
+
+
+### Refactoring
+
+* **stats:** drop the unused whole-list state read ([35e3b50](https://github.com/Shu1t3/rospanel-shu1t3/commit/35e3b50057b8ba0d49712f26ce7403793318b73a))
+* **web:** use Section component for external servers ([a5d8de3](https://github.com/Shu1t3/rospanel-shu1t3/commit/a5d8de3ec16cb0b09e3024d3cf0e82c5823996b8))
+
 ## [3.3.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v3.2.0...v3.3.0) (2026-09-14)
 
 
