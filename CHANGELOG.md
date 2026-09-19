@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.4.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v3.4.0...v3.4.1) (2026-09-19)
+
+
+### Bug Fixes
+
+* **shaper:** prevent nil pointer dereference in shaper.Apply and nodeagent ([73b7957](https://github.com/Shu1t3/rospanel-shu1t3/commit/73b795710f2140b38e0ffb554daf63a45293dd21))
+
 ## [3.4.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v3.3.0...v3.4.0) (2026-09-19)
 
 
