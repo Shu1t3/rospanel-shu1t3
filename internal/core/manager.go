@@ -4,6 +4,8 @@ package core
 
 import (
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,6 +22,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/shaper"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/sysstat"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/turnrelay"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/xray"
 )
 
@@ -42,20 +45,30 @@ const reconcileDebounce = 800 * time.Millisecond
 // while over the cap: past ~4096 pairs active within the hour (a couple of thousand
 // users on phones) every sighting walked the whole map under the access-log reader's
 // lock, and at 20,000 pairs that was ~0.1ms per sighting, thousands of times a second.
+//
+// accThrottle only holds back a pair already recorded: a new address is recorded on
+// its first line, so a new device counts at once. For a pair that stays connected it
+// decides how fresh last_seen is, and that has to stay inside the two-minute online
+// window (model.DeviceOnlineWindow) or a connected device drops out of the count. At
+// 45s a pair seen on every node sync (13–27s apart) is written every 45–72s, and one
+// seen by the master's minute-long tunnel poll on every poll. It was 10s, which wrote
+// every sync's worth of sightings again: with 50,000 active users that was the
+// largest share of the panel's CPU spent on writes.
 const (
-	accThrottle = int64(10)
+	accThrottle = int64(45)
 	accLastMax  = 4096
 	accLastTTL  = accThrottle
-	// accPendingMax bounds the unflushed sighting buffer. Sized above accLastMax so
-	// the throttle, not this cap, is what normally limits it — this only catches the
-	// pathological case where flushes keep failing and the buffer stops draining.
-	accPendingMax = 8192
+	// accFlushAt is how many buffered sightings bring the next flush forward instead of
+	// waiting out the interval. accPendingMax bounds the buffer for the case where
+	// flushes keep failing and it stops draining.
+	//
+	// The cap used to be 8,192 and nothing flushed early. A node's sync hands over up
+	// to that many samples at once, so two busy nodes landing in one flush interval
+	// overflowed it, and every sighting past the cap was dropped — device counts and
+	// online status for whoever came last.
+	accFlushAt    = 8192
+	accPendingMax = 1 << 17
 )
-
-type cachedNodeState struct {
-	fingerprint uint64
-	state       *nodeapi.NodeState
-}
 
 // Manager is the application service layer.
 type Manager struct {
@@ -63,14 +76,30 @@ type Manager struct {
 	sup         *xray.Supervisor
 	opts        xray.Options
 	tls         TLSPaths
+	certFacts   certFacts // what the certificate file said, while it is the same file
 	reconcileCh chan struct{}
+	// done is closed by Close and is what every background loop watches. wg counts
+	// those loops so Close can WAIT for them rather than just asking them to stop:
+	// the whole point is that when Close returns, nothing is left that could still
+	// touch the store — a goroutine that outlives the database it writes to shows up
+	// as "sql: database is closed" long after the code that caused it has moved on.
+	done      chan struct{}
+	wg        sync.WaitGroup
+	closeOnce sync.Once
 	// structuralPending marks the next queued reload as a full restart (config
 	// changed), vs a cheap live user-sync. Set by TriggerReconcile.
 	structuralPending atomic.Bool
 
-	accMu        sync.Mutex
-	accLast      map[accPendingKey]int64 // throttle key {userID, ip} → last recorded unix
-	accLastSwept int64                   // unix secs of the last eviction sweep of accLast
+	accMu   sync.Mutex
+	accLast map[string]int64 // throttle key "uN|ip" → last recorded unix
+	// accFlushDue asks the access flush loop to flush now (see accFlushAt).
+	accFlushDue chan struct{}
+	// accLastSwept is when accLast was last swept (unix), so a map that stays over its
+	// cap with genuinely active pairs is not re-walked on every sighting.
+	accLastSwept int64
+	// deviceCheckedAt is when a flush last re-checked the device limits (unix; see
+	// deviceCheckEvery).
+	deviceCheckedAt atomic.Int64
 	// accPending buffers sightings between flushes, so the access-log reader never
 	// touches the database on the hot path. Bounded by the throttle above: one entry
 	// per user+IP per flush interval, not per log line.
@@ -106,10 +135,35 @@ type Manager struct {
 	enforceMu      sync.Mutex
 	enforcePending atomic.Bool
 
+	// stateGate keeps node states from being built and encoded side by side.
+	stateGate stateGate
 	// nodeInputsMu guards nodeInputsCache, the fleet-wide inputs every node's desired
 	// state is built from (see nodeInputs).
-	nodeInputsMu    sync.Mutex
-	nodeInputsCache *nodeInputs
+	nodeInputsMu      sync.Mutex
+	nodeInputsCache   *nodeInputs
+	nodeInputsVersion uint64
+	// nodeInputsLast is the last complete read, kept when the cache is dropped: each new
+	// version is compared with it and what differs goes in nodeJournal (see
+	// manager_node_split.go).
+	nodeInputsLast *nodeInputs
+	nodeJournal    inputsJournal
+
+	// summaryMu guards the user counts SystemStatus reuses (see recentSummary).
+	summaryMu    sync.Mutex
+	summaryCache *Summary
+	summaryAt    time.Time
+
+	// nodeStateMu guards nodeStates, each node's last built state fingerprint and hash
+	// (see NodeStateChange).
+	nodeStateMu sync.Mutex
+	nodeStates  map[int64]nodeStateMemo
+	nodeSplits  map[int64]nodeSplitMemo
+	// boot tells this process's split-state tags from an earlier one's (see bootID).
+	boot     string
+	bootOnce sync.Once
+	// served is who each node's last built state lets in: what its reports are
+	// believed about (see manager_node_served.go).
+	served servedRegistry
 
 	tzMu sync.RWMutex
 	tz   *time.Location // operator timezone for the local-day stats boundary
@@ -158,12 +212,6 @@ type Manager struct {
 	// same user — which would otherwise lose or double a paid period.
 	applyPlanMu sync.Mutex
 
-	nodeDesiredMu    sync.RWMutex
-	nodeDesiredCache map[int64]cachedNodeState
-
-	bgWg      sync.WaitGroup
-	closeOnce sync.Once
-
 	vpnMu       sync.Mutex
 	vpnUp       int64 // current VPN throughput (bytes/sec), from Xray stats deltas
 	vpnDown     int64
@@ -176,6 +224,7 @@ type Manager struct {
 	geoSite   []string     // cached geosite category codes
 	geoIP     []string     // cached geoip category codes
 	geoGroups geo.GroupSet // cached iplist groups ("<source>/<group>" → rules)
+	geoGen    uint64       // counts changes of geoGroups, so a node state knows its groups are current
 
 	// countryLookup resolves connection IPs to countries for the geo breakdown, built
 	// lazily from geoip.dat and rebuilt when the file changes (a geo refresh).
@@ -204,10 +253,6 @@ type Manager struct {
 
 	guard *bruteGuard
 
-	// done is closed to stop background goroutines (shaperLoop, etc.) so tests that
-	// build a Manager through New can drain them before the store is closed.
-	done chan struct{}
-
 	// shaper installs the per-user speed caps on this machine; wan is the interface
 	// it acts on, resolved once (see manager_shaper.go).
 	shaper *shaper.Applier
@@ -222,6 +267,9 @@ type Manager struct {
 	// re-reads an unresolved order every 25s, so an alert with no throttle is thousands
 	// of identical Telegram messages a day for one order.
 	payNotice *deviceNotice
+	// siteNotice keeps a node that sends more destination rows than the panel takes
+	// from logging it on every sync.
+	siteNotice *deviceNotice
 
 	// connGuardWanted records whether the operator asked for the per-IP connection
 	// guard (ROSPANEL_CONNLIMIT != off). Needed to tell "off on purpose" apart from
@@ -273,8 +321,12 @@ type Manager struct {
 	// nodeHostStats is each node's last-reported machine state (disk/RAM/guards) for
 	// its diagnostics page, under nodeGeoMu with the other "last reported" caches.
 	// Bounded by the node count; a deleted node's entry is dead weight of one struct.
-	nodeHostStats  map[int64]nodeapi.HostStats
-	nodeAWG        map[int64]nodeAWGState
+	nodeHostStats map[int64]nodeapi.HostStats
+	// nodeAWG is each node's last-reported AmneziaWG state. Absent until a node
+	// reports one, which is how an agent older than the feature is told apart from a
+	// tunnel that is genuinely down — the difference between "nothing known" and "it
+	// is broken", and alerting on the first would page every operator mid-upgrade.
+	nodeAWG map[int64]nodeAWGState
 	nodeAWGRunning map[int64]bool
 	nodeAWGErr     map[int64]string
 	nodeComponents map[int64][]nodeapi.ComponentStatus
@@ -286,6 +338,13 @@ type Manager struct {
 	// not lift the other's blocks. Nil in a test manager, where both are no-ops.
 	probeBlock  *ipblock.Blocker
 	policyBlock *ipblock.Blocker
+	// ipBan drops the addresses an operator banned by hand (manager_ipban.go): its own
+	// permanent table, since a ban lasts until it is lifted. banMu serializes placing,
+	// lifting and re-applying bans, so the table and the kernel cannot cross over; hosts
+	// resolves the servers' host names a ban must not cover (nil: none are resolved).
+	ipBan *ipblock.Blocker
+	banMu sync.Mutex
+	hosts *hostAddrs
 	// policy caches the source policy and the addresses it has recently ruled on
 	// (manager_connpolicy.go); the check runs on the connection path.
 	policy policyState
@@ -297,6 +356,9 @@ type Manager struct {
 	awg     awg.Device
 	awgMu   sync.Mutex
 	awgLast map[string]awg.PeerStat
+
+	// turn runs the master's TURN relays, one per WireGuard inbound (manager_wireguard.go).
+	turn *turnrelay.Relay
 
 	// nodeLogs holds the most recent log tail reported by each node, plus which
 	// nodes an operator is currently viewing (so the panel asks them for logs).
@@ -310,6 +372,9 @@ type Manager struct {
 	// nodeSyncFails holds each node's last-reported count of sync failures in the past
 	// hour — the "limping transport" signal that a still-online node is degraded.
 	nodeSyncFails map[int64]int
+	// nodeHas is what each node last said it holds — the parts revision it speaks and the
+	// tag of its state — so the health report can ask the question a sync would.
+	nodeHas map[int64]NodeHas
 
 	// nodeAlerts is what admins were last told about each node's reachability, Xray
 	// and certificate — the fleet-wide half of the "Xray failure" / "TLS certificate"
@@ -331,45 +396,48 @@ type nodeLogEntry struct {
 // panel's loopback fallback dest); tls carries the managed cert paths; operaDir
 // is where the opera-proxy helper binary is downloaded/run from.
 func New(st *store.Store, sup *xray.Supervisor, opts xray.Options, tls TLSPaths, operaDir string) *Manager {
-	doneCh := make(chan struct{})
 	m := &Manager{
-		done:             doneCh,
-		store:            st,
-		sup:              sup,
-		opts:             opts,
-		tls:              tls,
-		reconcileCh:      make(chan struct{}, 1),
-		accLast:          make(map[accPendingKey]int64),
-		accPending:       make(map[accPendingKey]store.ConnectionHit),
-		abusePending:     make(map[abusePendingKey]store.AbuseHit),
-		abuseAlerted:     make(map[abuseAlertKey]struct{}),
-		applied:          make(map[int64]struct{}),
-		tz:               time.Local,
-		guard:            newBruteGuard(),
-		shaper:           shaper.New(),
-		devNotice:        newDeviceNotice(),
-		payNotice:        newNotice(6 * time.Hour),
-		operaDir:         operaDir,
-		operaSup:         opera.New(filepath.Join(operaDir, "opera-proxy")),
-		webhookCh:        make(chan webhookJob, webhookQueueSize),
-		nodes:            newNodeRegistry(),
-		probes:           newProbeRegistry(),
-		checks:           newCheckRegistry(),
-		nodeRestart:      map[int64]*nodeRestartReq{},
-		nodeLogs:         map[int64]nodeLogEntry{},
-		nodeGeoFiles:     map[int64][]nodeapi.GeoFile{},
-		nodeHostStats:    map[int64]nodeapi.HostStats{},
-		nodeAWG:          map[int64]nodeAWGState{},
-		nodeAWGRunning:   map[int64]bool{},
-		nodeAWGErr:       map[int64]string{},
-		nodeComponents:   map[int64][]nodeapi.ComponentStatus{},
-		awg:              awg.New(),
-		probeBlock:       ipblock.New(ipblock.TableProbes),
-		policyBlock:      ipblock.New(ipblock.TablePolicy),
-		nodeSyncFails:    map[int64]int{},
-		nodeLogsWanted:   map[int64]int64{},
-		nodeAlerts:       map[int64]*nodeAlertState{},
-		nodeDesiredCache: make(map[int64]cachedNodeState),
+		store:          st,
+		sup:            sup,
+		opts:           opts,
+		tls:            tls,
+		reconcileCh:    make(chan struct{}, 1),
+		done:           make(chan struct{}),
+		accLast:        make(map[string]int64),
+		accPending:     make(map[accPendingKey]store.ConnectionHit),
+		accFlushDue:    make(chan struct{}, 1),
+		abusePending:   make(map[abusePendingKey]store.AbuseHit),
+		abuseAlerted:   make(map[abuseAlertKey]struct{}),
+		applied:        make(map[int64]struct{}),
+		tz:             time.Local,
+		guard:          newBruteGuard(),
+		shaper:         shaper.New(),
+		devNotice:      newDeviceNotice(),
+		payNotice:      newNotice(6 * time.Hour),
+		siteNotice:     newNotice(time.Hour),
+		operaDir:       operaDir,
+		operaSup:       opera.New(filepath.Join(operaDir, "opera-proxy")),
+		webhookCh:      make(chan webhookJob, webhookQueueSize),
+		nodes:          newNodeRegistry(),
+		probes:         newProbeRegistry(),
+		checks:         newCheckRegistry(),
+		nodeRestart:    map[int64]*nodeRestartReq{},
+		nodeLogs:       map[int64]nodeLogEntry{},
+		nodeGeoFiles:   map[int64][]nodeapi.GeoFile{},
+		nodeHostStats:  map[int64]nodeapi.HostStats{},
+		nodeAWG:        map[int64]nodeAWGState{},
+		nodeAWGRunning: map[int64]bool{},
+		nodeAWGErr:     map[int64]string{},
+		nodeComponents: map[int64][]nodeapi.ComponentStatus{},
+		awg:            awg.New(),
+		turn:           turnrelay.New(),
+		probeBlock:     ipblock.New(ipblock.TableProbes),
+		policyBlock:    ipblock.New(ipblock.TablePolicy),
+		ipBan:          ipblock.NewPermanent(ipblock.TableBanned),
+		hosts:          newHostAddrs(nil),
+		nodeSyncFails:  map[int64]int{},
+		nodeLogsWanted: map[int64]int64{},
+		nodeAlerts:     map[int64]*nodeAlertState{},
 	}
 	if set, err := st.GetSettings(); err == nil {
 		m.tz = loadLocation(set.Timezone)
@@ -380,7 +448,7 @@ func New(st *store.Store, sup *xray.Supervisor, opts xray.Options, tls TLSPaths,
 		// master's SeedProxies, which service.go runs unconditionally at boot). Without
 		// this, a node's URL lanes would stay empty until the first proxyLoop tick — and
 		// forever when auto-refresh is "never", since the loop is cadence-gated.
-		m.runAsync(func() { m.RefreshNodeProxies() })
+		m.runAsync(m.RefreshNodeProxies)
 		if set.OperaEnabled {
 			// Bring the helper up in the background so a cold-cache download can't
 			// stall startup; the "opera" lane falls back to direct until it's ready.
@@ -460,18 +528,21 @@ type accPendingKey struct {
 
 // RecordAccess notes a connection from an Xray access-log line (email "uN" +
 // source IP, and the destination host when the line carried a usable one).
-// Throttled to one recorded sighting per user+IP per 10s to absorb bursts, then
-// buffered — FlushAccess writes them.
+// Throttled to one recorded sighting per user+IP per accThrottle, then buffered —
+// FlushAccess writes them.
 //
 // This is called from the access-log reader for every line Xray emits, so it does
 // no I/O at all: it takes a lock, updates two maps, and returns.
 func (m *Manager) RecordAccess(email, ip, dest string) {
-	id, ok := userIDFromEmail(email)
-	if !ok {
+	if !strings.HasPrefix(email, "u") {
+		return
+	}
+	id, err := strconv.ParseInt(email[1:], 10, 64)
+	if err != nil {
 		return
 	}
 	// Abuse matching runs BEFORE the throttle, deliberately: the throttle below
-	// collapses a user+IP to one sighting per 10s (right for counting devices), and a
+	// collapses a user+IP to one sighting per accThrottle (right for counting devices), and a
 	// low-volume malware callback is exactly the traffic that gate would hide. Matched
 	// on the FULL destination — feeds list specific hosts, and a listed subdomain of an
 	// unlisted parent must not be missed. Memory-only lookup, so it costs the hot path
@@ -479,13 +550,25 @@ func (m *Manager) RecordAccess(email, ip, dest string) {
 	m.recordAbuse(id, dest)
 
 	now := time.Now().Unix()
-	pk := accPendingKey{userID: id, ip: ip}
+	key := email + "|" + ip
 	m.accMu.Lock()
 	defer m.accMu.Unlock()
-	if now-m.accLast[pk] < accThrottle {
+	if now-m.accLast[key] < accThrottle {
 		return
 	}
-	m.accLast[pk] = now
+	pk := accPendingKey{userID: id, ip: ip}
+	h, buffered := m.accPending[pk]
+	// Bound the buffer. It normally drains every few seconds, but a persistent write
+	// failure (a full disk, say) makes FlushAccess requeue instead — and the throttle
+	// above stops protecting us as soon as accLast evicts a key, since that reopens
+	// the pair for buffering. Dropping the newest sighting for a pair we are not
+	// already tracking costs a last_seen update; growing without limit costs the
+	// process. Checked before the throttle is armed: a sighting turned away here is
+	// taken again on the pair's next line rather than throttled as if it were kept.
+	if !buffered && len(m.accPending) >= accPendingMax {
+		return
+	}
+	m.accLast[key] = now
 	if len(m.accLast) > accLastMax && now-m.accLastSwept >= accThrottle {
 		m.accLastSwept = now
 		for k, ts := range m.accLast { // drop pairs not seen within the TTL
@@ -494,22 +577,22 @@ func (m *Manager) RecordAccess(email, ip, dest string) {
 			}
 		}
 	}
-	h, buffered := m.accPending[pk]
-	// Bound the buffer. It normally drains every few seconds, but a persistent write
-	// failure (a full disk, say) makes FlushAccess requeue instead — and the throttle
-	// above stops protecting us as soon as accLast evicts a key, since that reopens
-	// the pair for buffering. Dropping the newest sighting for a pair we are not
-	// already tracking costs a last_seen update; growing without limit costs the
-	// process.
-	if !buffered && len(m.accPending) >= accPendingMax {
-		return
-	}
 	h.UserID, h.IP, h.Hits = id, ip, h.Hits+1
 	if now > h.SeenAt {
 		h.SeenAt = now
 	}
 	m.accPending[pk] = h
+	if len(m.accPending) >= accFlushAt {
+		select {
+		case m.accFlushDue <- struct{}{}:
+		default: // already asked, or no loop to ask (tests)
+		}
+	}
 }
+
+// AccessFlushDue fires when enough sightings are buffered that the access flush loop
+// should not wait for its next tick.
+func (m *Manager) AccessFlushDue() <-chan struct{} { return m.accFlushDue }
 
 // FlushAccess writes the buffered access sightings in one transaction and, if the
 // new devices changed who should be online, syncs Xray.
@@ -556,6 +639,13 @@ func (m *Manager) FlushAccess() {
 	}
 	m.noteTermsStarted(started)
 	now := time.Now().Unix()
+	// The device check below is two passes over everyone online, and the flush runs
+	// every few seconds; with 50,000 active users that was a third of what the flush
+	// cost, repeating an answer that cannot change faster than the grace allows.
+	if last := m.deviceCheckedAt.Load(); now-last < deviceCheckEvery {
+		return
+	}
+	m.deviceCheckedAt.Store(now)
 	// Stamp who is over their device limit before asking who should be in the config:
 	// the cut waits out model.DeviceLimitGrace, and the grace measures from this stamp.
 	// Sightings have just landed, so this is the moment the answer can change.
@@ -565,38 +655,115 @@ func (m *Manager) FlushAccess() {
 	// A new device (source IP) may push the user over their device cap — re-check
 	// the working set and sync promptly so the over-limit user drops out, instead
 	// of waiting for the next periodic reconcile.
-	if workingIDs, err := m.store.WorkingUserIDs(now); err == nil && m.workingIDsChanged(workingIDs) {
+	if working, err := m.store.WorkingUserIDs(now); err == nil && m.workingIDsChanged(working) {
 		m.TriggerUserSync()
 	}
 }
 
-// TriggerReconcile requests a full config reload (structural change: inbounds,
-// TLS, routing, port changes). Coalesced over reconcileDebounce so the reload happens
-// shortly after so the triggering HTTP response flushes first.
+// deviceCheckEvery is how often a flush re-checks who is over their device limit.
+// A user is cut only once DeviceLimitGrace (150s) has passed since the stamp. The stamp
+// can come up to this much after the extra device appears, and the check that notices
+// the grace running out up to this much after that, so the cut comes 150–210s after
+// the device rather than 150–160s. (The enforcement pass after node reports reads the
+// working set too, and usually notices sooner.)
+const deviceCheckEvery = int64(30)
+
+// TriggerReconcile requests a FULL config reload (regenerate + restart Xray) for
+// structural changes (protocols, routing, DNS, WARP, TLS, ports). Non-blocking;
+// the reload happens shortly after so the triggering HTTP response flushes first.
 func (m *Manager) TriggerReconcile() {
-	m.InvalidateNodeDesiredCache(0)
 	m.structuralPending.Store(true)
 	m.signalReload()
+}
+
+// runAsync starts a background goroutine that Close will wait for. Every long-lived
+// loop and every fire-and-forget task the manager owns goes through here; the ones
+// that do not are exactly the ones that can still be running after the store is gone.
+func (m *Manager) runAsync(fn func()) {
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		fn()
+	}()
+}
+
+// wait blocks for d and reports whether the caller should carry on. It answers false
+// the moment Close is called, which turns every "sleep then work" loop into one that
+// stops promptly instead of on its own cadence — a geo refresh sleeps an hour, and
+// waiting an hour to shut down is indistinguishable from a hang.
+func (m *Manager) wait(d time.Duration) bool {
+	if d <= 0 {
+		return !m.stopped()
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-m.done:
+		return false
+	}
+}
+
+// stopped reports whether Close has been called, for the loops that check between
+// steps rather than at a wait.
+func (m *Manager) stopped() bool {
+	select {
+	case <-m.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// Close stops every background goroutine the manager owns and waits for them.
+//
+// Waiting is the contract: after Close returns, nothing of the manager's is still
+// running, so the caller can close the store without a loop writing into a closed
+// database behind it. That failure is quiet and misattributed — it surfaces as
+// "sql: database is closed" from whichever loop happened to tick last, in a test
+// that has already reported success or a shutdown that looks clean.
+//
+// Idempotent, and safe to call on a manager whose loops were never started (a test
+// building one directly): done is closed once and the WaitGroup is simply empty.
+func (m *Manager) Close() {
+	m.closeOnce.Do(func() {
+		if m.done != nil {
+			close(m.done)
+		}
+	})
+	// Bounded, because not everything the manager starts is a loop that can stop on a
+	// signal: a geo refresh triggered seconds before shutdown is a multi-megabyte
+	// download with nowhere to check. The loops all return in microseconds, so this
+	// budget is only ever spent on one of those, and spending it is better than either
+	// hanging the shutdown or leaving the task unaccounted for entirely.
+	stopped := make(chan struct{})
+	go func() {
+		m.wg.Wait()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(closeGrace):
+		logWarn("shutdown: background work did not finish in time; continuing",
+			"grace", closeGrace)
+	}
+}
+
+// closeGrace is how long Close waits for background work. Generous next to the loops
+// (which stop at once) and short next to a network download, which is the only thing
+// that can reach it.
+const closeGrace = 5 * time.Second
+
+// Wait blocks until all asynchronous tasks spawned via runAsync complete.
+func (m *Manager) Wait() {
+	m.wg.Wait()
 }
 
 // TriggerUserSync requests a live user-set sync (add/remove users via the Xray
 // API, no restart) for user-only changes — far cheaper than a full reload.
 func (m *Manager) TriggerUserSync() {
-	m.InvalidateNodeDesiredCache(0)
 	m.signalReload()
-}
-
-// InvalidateNodeDesiredCache clears the cached desired state for nodeID (or all nodes if nodeID == 0).
-func (m *Manager) InvalidateNodeDesiredCache(nodeID int64) {
-	m.nodeDesiredMu.Lock()
-	defer m.nodeDesiredMu.Unlock()
-	if m.nodeDesiredCache != nil {
-		if nodeID == 0 {
-			clear(m.nodeDesiredCache)
-		} else {
-			delete(m.nodeDesiredCache, nodeID)
-		}
-	}
 }
 
 func (m *Manager) signalReload() {
@@ -613,6 +780,8 @@ func (m *Manager) reconcileLoop() {
 			return
 		case <-m.reconcileCh:
 		}
+		// The debounce is a wait like any other: a Close during it returns instead of
+		// starting a reload nobody will see the end of.
 		if !m.wait(reconcileDebounce) { // let the response flush + coalesce bursts
 			return
 		}
@@ -621,50 +790,99 @@ func (m *Manager) reconcileLoop() {
 		// reload; otherwise a live user-sync suffices.
 		if m.structuralPending.Swap(false) {
 			m.reconcileOnce()
-		} else {
-			m.syncUsersOnce()
+			// The config just changed locally — wake every connected node so it
+			// re-pulls its desired state (all nodes serve the same user set).
+			m.notifyNodes()
+			continue
 		}
-		// The working set / config just changed locally — wake every connected node
-		// so it re-pulls its desired state (all nodes serve the same user set).
-		m.notifyNodes()
+		// Most requests to sync are for a change no node can see: a limit raised, a
+		// name or a note edited, a tariff renewed for a user who was never cut off.
+		// A wake reaches every node at once and costs the panel a re-read of
+		// everything the fleet is served, so the cheap half of that read is done here
+		// and the nodes are left alone when it says nothing moved. Being wrong in
+		// that direction only delays: a node re-reads on its next poll regardless,
+		// which is half a minute at the outside.
+		//
+		// With nodes waiting, one read of the working set answers both questions —
+		// whether the master's own config must change and whether the fleet's has —
+		// where it was two scans of every user back to back. Without them only the
+		// first is asked, and the ids alone are the cheaper read for it.
+		var ws *workingSet
+		var wsErr error
+		if m.nodes.parked() > 0 {
+			ws, wsErr = m.readWorkingSet()
+		}
+		if m.syncUsersOnce(ws, wsErr) || (ws != nil && m.fleetChanged(ws)) {
+			m.notifyNodes()
+		}
 	}
 }
 
 // syncUsersOnce runs one live user-sync, falling back to a full reconcile on any
-// error so Xray never drifts from the DB.
-func (m *Manager) syncUsersOnce() {
+// error so Xray never drifts from the DB. It reports whether anything was applied —
+// a panic or a fallback counts as yes, since what was applied is then unknown.
+func (m *Manager) syncUsersOnce(ws *workingSet, wsErr error) (changed bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			logErr("user sync: panic recovered", "panic", r)
+			changed = true
 		}
 	}()
-	if err := m.syncUsers(); err != nil {
+	changed, err := m.syncUsers(ws, wsErr)
+	if err != nil {
 		logWarn("user sync failed, falling back to full reconcile", "err", err)
 		m.reconcileOnce()
+		return true
 	}
+	return changed
 }
 
 // syncUsers brings the running Xray's inbound users in line with the current
 // working set using the live add/remove-user API (no restart), then rewrites
 // config.json so a crash-restart preserves the change.
-func (m *Manager) syncUsers() error {
+//
+// ws is the working set the caller already read, with wsErr the error reading it;
+// nil and nil when it read none, and the sync reads the ids itself.
+func (m *Manager) syncUsers(ws *workingSet, wsErr error) (bool, error) {
 	m.applyMu.Lock()
 	defer m.applyMu.Unlock()
 	if !m.sup.Running() {
-		return m.reconcileLocked() // can't live-update a stopped Xray
+		return true, m.reconcileLocked() // can't live-update a stopped Xray
+	}
+	// Who is in the config is a cheap read; what their credentials are is not, and
+	// most syncs are asked for a change that moves nobody in or out. The ids settle
+	// that before a single password is decrypted; the credentials below are read
+	// afresh and the change derived from them, so a set that moves in between is
+	// applied as it is then, not as it was here.
+	if wsErr != nil {
+		return false, wsErr
+	}
+	var ids []int64
+	if ws != nil {
+		ids = ws.ids
+	} else {
+		var err error
+		if ids, err = m.store.WorkingUserIDs(time.Now().Unix()); err != nil {
+			return false, err
+		}
+	}
+	if !m.workingIDsChanged(ids) {
+		return false, nil
 	}
 	set, err := m.store.GetSettings()
 	if err != nil {
-		return err
+		return false, err
 	}
 	users, err := m.store.WorkingCredentials(time.Now().Unix())
 	if err != nil {
-		return err
+		return false, err
 	}
 
-	working := make(map[int64]model.User, len(users))
-	for _, u := range users {
-		working[u.ID] = u
+	// Ids, not the users themselves: a map of fifty thousand whole users is tens of
+	// megabytes of garbage for a question about who is in it.
+	working := make(map[int64]struct{}, len(users))
+	for i := range users {
+		working[users[i].ID] = struct{}{}
 	}
 
 	m.appliedMu.Lock()
@@ -675,15 +893,15 @@ func (m *Manager) syncUsers() error {
 			removedEmails = append(removedEmails, model.UserEmail(id))
 		}
 	}
-	for id, u := range working {
-		if _, ok := m.applied[id]; !ok {
-			added = append(added, u)
+	for i := range users {
+		if _, ok := m.applied[users[i].ID]; !ok {
+			added = append(added, users[i])
 		}
 	}
 	m.appliedMu.Unlock()
 
 	if len(added) == 0 && len(removedEmails) == 0 {
-		return nil
+		return false, nil
 	}
 	logInfo("user sync (live)", "added", len(added), "removed", len(removedEmails))
 
@@ -693,54 +911,51 @@ func (m *Manager) syncUsers() error {
 	// here would keep working through every custom inbound until then.
 	opts, err := m.genOptsFor(model.LocalNodeID)
 	if err != nil {
-		return err
+		return true, err
 	}
 	custom := opts.Custom
+	// A user added here may have no tunnel identity yet, and a WireGuard inbound they are
+	// allowed on needs one to hold them.
+	wgUsers, _, _ := m.claimWireGuard(users, custom, opts.Access)
 
 	apiAddr := m.sup.APIAddr()
 	if len(removedEmails) > 0 {
 		if err := m.sup.RemoveUsers(apiAddr, xray.EnabledInboundTags(set, custom), removedEmails); err != nil {
-			return err
+			return true, err
 		}
 	}
 	if len(added) > 0 {
 		if err := m.sup.AddUsers(apiAddr, xray.UserInbounds(set, custom, added, model.LocalNodeID, opts.Access)); err != nil {
-			return err
+			return true, err
 		}
 	}
 	// Keep config.json current (no restart) so the monitor's crash-restart loads
 	// the right user set.
-	cfg, err := xray.Generate(set, users, opts, m.getProxies())
+	cfg, err := xray.Generate(set, wgUsers, opts, m.getProxies())
 	if err != nil {
-		return err
+		return true, err
 	}
 	if err := m.sup.WriteConfig(cfg); err != nil {
-		return err
+		return true, err
 	}
 	m.setApplied(users)
-	// Xray's HandlerService can't live-apply user changes to a Hysteria2 (QUIC)
-	// inbound: `adu` rejects it outright, and `rmu` reports success while removing
-	// nothing — so a revoked user would keep their QUIC access. The live adu/rmu above
-	// therefore skip Hysteria entirely (see xray.UserInbounds / EnabledInboundTags),
-	// and its user set is swapped by REBUILDING the inbound through the API.
+	// Hysteria2 users, on the built-in lane and on every custom QUIC inbound, go through
+	// the supervisor: it adds and removes them without closing anyone else's connection
+	// and cuts off the open connections of those removed (see xray/hysteria_live.go).
+	// The list comes from the generated config by protocol, so a custom inbound is
+	// never left out.
 	//
-	// That rebuild replaces what used to be a full Xray restart. A restart dropped
-	// every other lane's connections and the panel's own (:443 is Xray's; the panel
-	// sits on its fallback) for a change confined to one inbound. Only the QUIC
-	// sessions of the rebuilt lane are lost now — the users whose set just changed.
-	//
-	// A CUSTOM Hysteria2 inbound counts exactly the same, which is why the list comes
-	// from the generated config by protocol rather than from the built-in lane alone.
-	if hy := xray.HysteriaInbounds(cfg); len(hy) > 0 {
-		if err := m.sup.ReplaceInbounds(apiAddr, hy); err != nil {
-			// rmi may already have landed, so that lane could be down. A full
-			// reconcile is the one thing guaranteed to put it back.
-			logWarn("xray: rebuilding the hysteria inbounds failed; falling back to a full reload", "err", err)
-			m.TriggerReconcile()
-		}
+	// A failure there is returned: the process then holds users no config describes, and
+	// the full reload that follows restarts it.
+	if err := m.sup.SyncHysteria(apiAddr, xray.HysteriaInbounds(cfg)); err != nil {
+		return true, err
+	}
+	// WireGuard peers likewise, through the API (see xray/wireguard_live.go).
+	if err := m.sup.SyncWireGuard(apiAddr, xray.WireGuardInbounds(cfg)); err != nil {
+		return true, err
 	}
 	m.syncAWGLocked(set, users)
-	return m.store.MarkConfigApplied()
+	return true, m.store.MarkConfigApplied()
 }
 
 // reconcileOnce runs one reconcile, recovering from panics so a single bad
@@ -795,7 +1010,8 @@ func (m *Manager) reconcileLocked() error {
 		_ = m.store.SetConfigError(err.Error())
 		return err
 	}
-	cfg, err := xray.Generate(set, users, opts, m.getProxies())
+	wgUsers, _, _ := m.claimWireGuard(users, opts.Custom, opts.Access)
+	cfg, err := xray.Generate(set, wgUsers, opts, m.getProxies())
 	if err != nil {
 		logErr("reconcile: config generation failed", "err", err)
 		_ = m.store.SetConfigError(err.Error())
@@ -808,6 +1024,7 @@ func (m *Manager) reconcileLocked() error {
 	}
 	m.setApplied(users)
 	logInfo("reconcile: config applied", "users", len(users))
+	m.syncTurnLocked(opts.Custom)
 	m.syncAWGLocked(set, users)
 	return m.store.MarkConfigApplied()
 }
@@ -823,8 +1040,9 @@ func (m *Manager) setApplied(users []model.User) {
 	m.appliedMu.Unlock()
 }
 
-// workingIDsChanged reports whether the given working user IDs differ from what's
-// currently applied, without allocating or decoding model.User objects.
+// workingIDsChanged reports whether the given working set differs from what's
+// currently applied (someone crossed a limit/expiry, or was reset/extended). It takes
+// ids alone, which is all it compares: see store.WorkingUserIDs.
 func (m *Manager) workingIDsChanged(ids []int64) bool {
 	m.appliedMu.Lock()
 	defer m.appliedMu.Unlock()
@@ -837,63 +1055,4 @@ func (m *Manager) workingIDsChanged(ids []int64) bool {
 		}
 	}
 	return false
-}
-
-// runAsync spawns fn in a goroutine tracked by m.bgWg for deterministic shutdown.
-func (m *Manager) runAsync(fn func()) {
-	m.bgWg.Add(1)
-	go func() {
-		defer m.bgWg.Done()
-		fn()
-	}()
-}
-
-func (m *Manager) wait(d time.Duration) bool {
-	if d <= 0 {
-		return !m.stopped()
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-t.C:
-		return true
-	case <-m.done:
-		return false
-	}
-}
-
-func (m *Manager) stopped() bool {
-	select {
-	case <-m.done:
-		return true
-	default:
-		return false
-	}
-}
-
-// Close stops the manager-owned background work and waits for it. The bounded
-// wait prevents shutdown from hanging indefinitely on an in-flight network call.
-func (m *Manager) Close() {
-	m.closeOnce.Do(func() {
-		if m.done != nil {
-			close(m.done)
-		}
-	})
-	stopped := make(chan struct{})
-	go func() {
-		m.bgWg.Wait()
-		close(stopped)
-	}()
-	select {
-	case <-stopped:
-	case <-time.After(closeGrace):
-		logWarn("shutdown: manager background work did not finish in time", "grace", closeGrace)
-	}
-}
-
-const closeGrace = 5 * time.Second
-
-// Wait blocks until all asynchronous tasks spawned via runAsync complete.
-func (m *Manager) Wait() {
-	m.bgWg.Wait()
 }

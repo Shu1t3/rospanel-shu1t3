@@ -2,7 +2,6 @@ package sub
 
 import (
 	"fmt"
-
 	"github.com/Shu1t3/rospanel-shu1t3/internal/extsub"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 )
@@ -53,11 +52,7 @@ func (s Server) externalEndpoints() []extsub.Endpoint {
 func Servers(sets []*model.Settings, custom map[int64][]model.Inbound, access model.Access) []Server {
 	out := make([]Server, 0, len(sets))
 	for _, set := range sets {
-		out = append(out, Server{
-			Set:    set,
-			Custom: filterInbounds(custom[set.ServerID]),
-			Access: access,
-		})
+		out = append(out, Server{Set: set, Custom: enabledOnly(custom[set.ServerID]), Access: access})
 	}
 	return out
 }
@@ -68,14 +63,14 @@ func One(set *model.Settings) []Server {
 	return []Server{{Set: set, Access: model.UnrestrictedAccess()}}
 }
 
-// filterInbounds filters out inbounds the operator has switched off.
-func filterInbounds(list []model.Inbound) []model.Inbound {
+// enabledOnly filters out inbounds the operator has switched off, so a parked
+// configuration never reaches a client.
+func enabledOnly(list []model.Inbound) []model.Inbound {
 	out := make([]model.Inbound, 0, len(list))
 	for _, in := range list {
-		if !in.Enabled {
-			continue
+		if in.Enabled {
+			out = append(out, in)
 		}
-		out = append(out, in)
 	}
 	return out
 }

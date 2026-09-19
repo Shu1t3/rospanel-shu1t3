@@ -50,7 +50,7 @@ func clashProxies(u model.User, srv Server) []clashProxy {
 	if set.TLSInsecure {
 		sv = "true"
 	}
-	out := make([]clashProxy, 0, 2+len(srv.Custom))
+	var out []clashProxy
 	if set.VLESSEnabled && srv.allowsBuiltin(model.LaneVLESS) {
 		n := link.LabelFor(model.ProtoVLESS, u, set)
 		out = append(out, clashProxy{n, fmt.Sprintf(
@@ -82,6 +82,11 @@ func clashProxies(u model.User, srv Server) []clashProxy {
 			out = append(out, p)
 		}
 	}
+	for _, e := range srv.externalEndpoints() {
+		if name, line, ok := extsub.ClashProxy(e); ok {
+			out = append(out, clashProxy{name, line})
+		}
+	}
 	return out
 }
 
@@ -94,18 +99,6 @@ func clashObfs(obfs string) string {
 		return ""
 	}
 	return fmt.Sprintf(", obfs: salamander, obfs-password: %q", obfs)
-}
-
-// clashExternalProxies builds Clash proxy entries for allowed external servers.
-func clashExternalProxies(access model.Access, ext []model.ExtServer) []clashProxy {
-	endpoints := ExternalEndpoints(ext, access)
-	out := make([]clashProxy, 0, len(endpoints))
-	for _, e := range endpoints {
-		if name, line, ok := extsub.ClashProxy(e); ok {
-			out = append(out, clashProxy{name, line})
-		}
-	}
-	return out
 }
 
 // clashCustom renders one custom inbound as a Clash proxy, or reports false when
@@ -210,11 +203,12 @@ func firstShortID(o model.InboundOpts) string {
 	return ""
 }
 
-// clashProxiesAll concatenates a user's proxy entries across physical servers and external servers.
-// Names are unique because Settings.ProtoLabel appends the node label, and uniqueLabel ensures
-// lanes whose names resolve to the same variable expansion never collide.
-func clashProxiesAll(u model.User, servers []Server, ext []model.ExtServer, access model.Access) []clashProxy {
-	out := make([]clashProxy, 0, len(servers)*2+len(ext))
+// clashProxiesAll concatenates a user's proxy entries across every server (local +
+// each node), giving each a name no other entry shares. The node label keeps servers
+// apart on its own; what needs de-duplicating is two lanes on one server whose names
+// carry variables that happen to resolve alike (see uniqueLabel).
+func clashProxiesAll(u model.User, servers []Server) []clashProxy {
+	var out []clashProxy
 	seen := map[string]int{}
 	for _, srv := range servers {
 		for _, p := range clashProxies(u, srv) {
@@ -229,34 +223,69 @@ func clashProxiesAll(u model.User, servers []Server, ext []model.ExtServer, acce
 			out = append(out, p)
 		}
 	}
-	for _, p := range clashExternalProxies(access, ext) {
-		uniq := uniqueLabel(seen, p.name)
-		if uniq != p.name {
-			p.line = strings.Replace(p.line, fmt.Sprintf("%q", p.name), fmt.Sprintf("%q", uniq), 1)
-			p.name = uniq
-		}
-		out = append(out, p)
-	}
 	return out
 }
 
 // ClashYAML renders a minimal self-contained Clash-Meta config for one server.
 func ClashYAML(u model.User, set *model.Settings) string {
-	return GenerateClash(Request{User: u, Settings: set, Servers: One(set), Access: model.UnrestrictedAccess()})
+	return ClashYAMLMulti(u, One(set))
 }
 
-// ClashYAMLMulti renders a Clash-Meta (Mihomo) config across physical servers (legacy helper).
+// ClashYAMLMulti renders a Clash-Meta (Mihomo) config spanning every server: all
+// proxies under one select group. servers[0] is the local server (group title + rules).
 func ClashYAMLMulti(u model.User, servers []Server) string {
-	var set *model.Settings
-	if len(servers) > 0 {
-		set = servers[0].Set
+	if len(servers) == 0 {
+		return ""
 	}
-	return GenerateClash(Request{
-		User:     u,
-		Settings: set,
-		Servers:  servers,
-		Access:   model.UnrestrictedAccess(),
-	})
+	local := servers[0].Set
+	proxies := clashProxiesAll(u, servers)
+	var b strings.Builder
+	// Encrypted DNS (DoH) to defeat DNS poisoning/blocking on plaintext UDP/53.
+	b.WriteString("dns:\n" +
+		"  enable: true\n" +
+		"  enhanced-mode: fake-ip\n" +
+		"  nameserver: [\"https://1.1.1.1/dns-query\", \"https://dns.google/dns-query\"]\n")
+	b.WriteString("proxies:\n")
+	quoted := make([]string, len(proxies))
+	for i, p := range proxies {
+		b.WriteString(p.line + "\n")
+		quoted[i] = fmt.Sprintf("%q", p.name)
+	}
+	group := clashGroupName(u, local)
+	// A user whose groups grant nothing has no proxies at all. A select group with no
+	// members is a LOAD ERROR in mihomo, so emitting one makes the client reject the
+	// whole document — the account looks broken rather than empty. Reachable without
+	// misconfiguration: any membership row restricts the user, so a group that grants
+	// nothing yet, or whose only grants were a deleted node's lanes, lands here.
+	if len(proxies) == 0 {
+		b.WriteString("rules:\n  - \"MATCH,DIRECT\"\n")
+		return b.String()
+	}
+	fmt.Fprintf(&b,
+		"proxy-groups:\n  - {name: %q, type: select, proxies: [%s]}\n",
+		group, strings.Join(quoted, ", "))
+	b.WriteString("rules:\n")
+	if local.BlockQUIC {
+		// Drop untunneled browser QUIC (UDP/443) so it can't bypass the obfuscated
+		// TCP lanes; the browser falls back to TCP+H2 inside the tunnel.
+		b.WriteString("  - AND,((NETWORK,udp),(DST-PORT,443)),REJECT\n")
+	}
+	// The WHOLE rule is one quoted YAML scalar, never `MATCH,%q`: a rule is a plain
+	// string that mihomo splits on commas itself, so quoting only the group name left
+	// the quotes IN the target and the profile was rejected outright with
+	// `rules[N] [MATCH,"..."] error: proxy ["..."] not found`. Quoting the whole line
+	// also keeps a title containing ": " from turning the list item into a YAML map.
+	fmt.Fprintf(&b, "  - %q\n", "MATCH,"+group)
+	return b.String()
+}
+
+// clashGroupName is the select-group name for the generated profile. Mihomo parses a
+// rule line by splitting on commas, so a comma in the operator's subscription title
+// (or the user name appended to it) would be read as a rule separator and shift the
+// MATCH target — strip it here, where both the group definition and the rule read the
+// same name.
+func clashGroupName(u model.User, set *model.Settings) string {
+	return strings.TrimSpace(strings.ReplaceAll(SubTitle(u, set), ",", " "))
 }
 
 // The two markers a mihomo template carries. Named constants because the operator's
@@ -268,26 +297,32 @@ const (
 	clashNamesMarker   = "    # LEAVE THIS LINE!"
 )
 
-// clashGroupName is the select-group name for the generated profile. Mihomo parses a
-// rule line by splitting on commas, so a comma in the operator's subscription title
-// (or the user name appended to it) would be read as a rule separator and shift the
-// MATCH target — strip it here, where both the group definition and the rule read the
-// same name.
-func clashGroupName(u model.User, set *model.Settings) string {
-	return strings.TrimSpace(strings.ReplaceAll(SubTitle(u, set), ",", " "))
-}
-
 // ClashWithTemplateMulti injects the user's proxies into a RoscomVPN-style Mihomo
-// routing template (legacy helper).
+// routing template. The template carries two "# LEAVE THIS LINE!" markers: the
+// `proxies:` line (full proxy definitions) and a slot inside the main select group
+// (proxy node names). Falls back to the plain config if the template has no proxies
+// marker.
 func ClashWithTemplateMulti(u model.User, servers []Server, template string) string {
-	var set *model.Settings
-	if len(servers) > 0 {
-		set = servers[0].Set
+	proxies := clashProxiesAll(u, servers)
+	if len(proxies) == 0 || !strings.Contains(template, clashProxiesMarker) {
+		return ClashYAMLMulti(u, servers)
 	}
-	return GenerateClashWithTemplate(Request{
-		User:     u,
-		Settings: set,
-		Servers:  servers,
-		Access:   model.UnrestrictedAccess(),
-	}, template)
+
+	defs := make([]string, len(proxies))
+	for i, p := range proxies {
+		defs[i] = p.line
+	}
+	out := strings.Replace(template,
+		clashProxiesMarker,
+		"proxies:\n"+strings.Join(defs, "\n"),
+		1,
+	)
+
+	// Add the proxy node names to the main select group (6-space list items).
+	var names strings.Builder
+	for _, p := range proxies {
+		fmt.Fprintf(&names, "      - %q\n", p.name)
+	}
+	out = strings.Replace(out, clashNamesMarker, strings.TrimRight(names.String(), "\n"), 1)
+	return out
 }

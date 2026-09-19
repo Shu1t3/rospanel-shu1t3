@@ -29,7 +29,6 @@ func (a *Agent) syncAWG(st *nodeapi.AWGState) {
 		}
 		a.awgMu.Lock()
 		a.awgEmails = nil
-		a.awgErr = ""
 		a.awgMu.Unlock()
 		return
 	}
@@ -72,18 +71,17 @@ func (a *Agent) setAWGError(msg string) {
 	a.awgMu.Unlock()
 }
 
+// awgState is what the sync reports: whether the tunnel is up, and why not.
+func (a *Agent) awgState() (bool, string) {
+	a.awgMu.Lock()
+	msg := a.awgErr
+	a.awgMu.Unlock()
+	return a.awg != nil && a.awg.Running(), msg
+}
+
 // awgErrMax truncates a reported failure, for the same reason nodeCertErrMax exists:
 // it is remote input that ends up in an admin's chat.
 const awgErrMax = 200
-
-func (a *Agent) awgStatus() (running bool, lastErr string) {
-	if a.awg == nil {
-		return false, ""
-	}
-	a.awgMu.Lock()
-	defer a.awgMu.Unlock()
-	return a.awg.Running(), a.awgErr
-}
 
 // sampleAWG folds the tunnel's counters into the pending traffic deltas and its
 // recent handshakes into the connection samples, exactly as sampleStats and the

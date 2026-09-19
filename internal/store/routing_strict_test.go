@@ -29,7 +29,7 @@ func TestStrictEgressSurvivesTheStore(t *testing.T) {
 		`{"block_ads":true,"routing_order":["warp","opera","direct"]}`); err != nil {
 		t.Fatal(err)
 	}
-	st.settingsCache.Store(nil)
+	st.invalidateSettingsCache()
 	if set, err = st.GetSettings(); err != nil {
 		t.Fatal(err)
 	}

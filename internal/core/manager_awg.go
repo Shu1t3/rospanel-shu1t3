@@ -82,6 +82,13 @@ func (m *Manager) claimAWG(users []*model.User) error {
 // without an address (the subnet is full) or without a usable key is left out and
 // logged rather than failing the whole tunnel.
 func (m *Manager) awgPeers(serverID int64, users []model.User, access map[int64]model.Access) []awg.Peer {
+	peers, _ := m.awgPeersClaimed(serverID, users, access)
+	return peers
+}
+
+// awgPeersClaimed is awgPeers that also says whether every allowed user's identity was
+// claimed; false leaves the users whose claim failed out of the peers.
+func (m *Manager) awgPeersClaimed(serverID int64, users []model.User, access map[int64]model.Access) ([]awg.Peer, bool) {
 	allowed := make([]*model.User, 0, len(users))
 	for i := range users {
 		if model.AccessOf(access, users[i].ID).AllowsBuiltin(serverID, model.LaneAWG) {
@@ -118,7 +125,7 @@ func (m *Manager) awgPeers(serverID int64, users []model.User, access map[int64]
 		logWarn("awg: no address left on the tunnel subnet, users left out",
 			"server", serverID, "users", unplaced, "capacity", awg.LastSlot-awg.FirstSlot+1)
 	}
-	return peers
+	return peers, claimed
 }
 
 // syncAWGLocked brings the master's tunnel in line with the settings and the
@@ -172,18 +179,14 @@ func (m *Manager) PollAWG() error {
 	if len(stats) == 0 {
 		return nil
 	}
-	users, err := m.store.ListUsers()
+	keys, err := m.store.UserTunnelKeys()
 	if err != nil {
 		return err
 	}
-	byPub := make(map[string]*model.User, len(users))
-	for i := range users {
-		u := &users[i]
-		if u.WGPrivateKey == "" {
-			continue
-		}
-		if pub, err := awg.PublicKey(u.WGPrivateKey); err == nil {
-			byPub[pub] = u
+	byPub := make(map[string]int64, len(keys))
+	for id, key := range keys {
+		if pub, err := awg.PublicKey(key); err == nil {
+			byPub[pub] = id
 		}
 	}
 	now := time.Now().Unix()
@@ -194,7 +197,7 @@ func (m *Manager) PollAWG() error {
 		m.awgLast = map[string]awg.PeerStat{}
 	}
 	for pub, st := range stats {
-		u, ok := byPub[pub]
+		userID, ok := byPub[pub]
 		if !ok {
 			continue
 		}
@@ -211,13 +214,13 @@ func (m *Manager) PollAWG() error {
 		m.awgLast[pub] = st
 		if addUp > 0 || addDown > 0 {
 			deltas = append(deltas, store.TrafficDelta{
-				UserID: u.ID, NodeID: model.LocalNodeID, Day: today,
+				UserID: userID, NodeID: model.LocalNodeID, Day: today,
 				AddUp: nonNeg(addUp), AddDown: nonNeg(addDown), SeenAt: now,
 			})
 		}
 		if st.LastHandshake > 0 && now-st.LastHandshake <= awgOnlineWindow {
 			if ip := awg.EndpointIP(st.Endpoint); ip != "" {
-				m.RecordAccessOn(model.LocalNodeID, model.UserEmail(u.ID), ip, "")
+				m.RecordAccessOn(model.LocalNodeID, model.UserEmail(userID), ip, "")
 			}
 		}
 	}
@@ -228,7 +231,7 @@ func (m *Manager) PollAWG() error {
 	if err := m.store.ApplyTrafficDeltas(deltas); err != nil {
 		return err
 	}
-	return m.enforceAfterTraffic(users)
+	return m.enforceTraffic()
 }
 
 // AWGStatus is what the Connections panel shows about the master's tunnel.
@@ -335,46 +338,25 @@ func (m *Manager) AWGClientConfig(u *model.User, s *model.Settings) (string, err
 	return awg.ClientConfig{
 		PrivateKey:      u.WGPrivateKey,
 		Address:         addr,
-		DNS:             awgDNSOr(s),
+		DNS:             awg.TunnelDNS(s),
 		Params:          awgParams(s.AWGParams),
 		ServerPublicKey: s.AWGPublicKey,
 		Endpoint:        net.JoinHostPort(s.Host, strconv.Itoa(s.AWGPort)),
 	}.Render(), nil
 }
 
-// awgDNSOr is what the client resolves through inside the tunnel: the operator's
-// own AmneziaWG DNS when they set one, otherwise the plain resolvers from this
-// server's DNS settings — the same ones Xray uses, so both lanes answer alike.
-// A DoH/DoT URL from those settings is skipped: a WireGuard DNS line takes plain
-// addresses, and a client handed a URL would silently fail to resolve anything.
-// Nothing usable there leaves it to awg.DefaultDNS.
-func awgDNSOr(s *model.Settings) string {
-	if v := strings.TrimSpace(s.AWGDNS); v != "" {
-		return v
-	}
-	var plain []string
-	for _, f := range strings.FieldsFunc(s.XrayDNS, func(r rune) bool {
-		return r == '\n' || r == '\r' || r == ',' || r == ' '
-	}) {
-		if ip := net.ParseIP(strings.TrimSpace(f)); ip != nil {
-			plain = append(plain, ip.String())
-		}
-	}
-	if len(plain) == 0 {
-		return awg.DefaultDNS
-	}
-	// Two is what a client needs; more only lengthens the config.
-	if len(plain) > 2 {
-		plain = plain[:2]
-	}
-	return strings.Join(plain, ", ")
-}
-
 // nodeAWGState is what a node needs to run its tunnel: its own identity and the
 // peers allowed on it. nil when the lane is off on that node.
 func (m *Manager) nodeAWGState(n *model.Node, ns *model.Settings, users []model.User, access map[int64]model.Access) *nodeapi.AWGState {
+	st, _ := m.nodeAWGStateClaimed(n, ns, users, access)
+	return st
+}
+
+// nodeAWGStateClaimed is nodeAWGState that also says whether every peer's identity was
+// claimed (true when there is no tunnel to claim for).
+func (m *Manager) nodeAWGStateClaimed(n *model.Node, ns *model.Settings, users []model.User, access map[int64]model.Access) (*nodeapi.AWGState, bool) {
 	if !ns.AWGEnabled || n.AWGPrivateKey == "" || ns.AWGPort == 0 {
-		return nil
+		return nil, true
 	}
 	params := awgParams(n.AWGParams)
 	// An agent that predates AmneziaWG 3.1 reads h1–h4 as numbers, and a range
@@ -385,16 +367,16 @@ func (m *Manager) nodeAWGState(n *model.Node, ns *model.Settings, users []model.
 	if params.NeedsAgent31() && !nodeSpeaks31(n.NodeVersion) {
 		logWarn("awg: node too old for the 3.1 parameters, tunnel state withheld",
 			"node", n.ID, "node_version", n.NodeVersion)
-		return nil
+		return nil, true
 	}
 	// awgPeers records a key it mints on the user it was handed, and these users are
 	// the snapshot every node shares (nodeInputs): it works on its own copy.
-	peers := m.awgPeers(n.ID, append([]model.User(nil), users...), access)
+	peers, claimed := m.awgPeersClaimed(n.ID, append([]model.User(nil), users...), access)
 	out := &nodeapi.AWGState{Port: ns.AWGPort, PrivateKey: n.AWGPrivateKey, Params: params}
 	for _, p := range peers {
 		out.Peers = append(out.Peers, nodeapi.AWGPeer{PublicKey: p.PublicKey, Addr: p.Addr.String(), Email: p.Email})
 	}
-	return out
+	return out, claimed
 }
 
 // awgAgent31 is the first panel release whose node agent reads AmneziaWG 3.1

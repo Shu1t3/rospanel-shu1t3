@@ -32,17 +32,6 @@ func (m *Manager) ExtServers() ([]model.ExtServer, error) {
 	return m.store.ExtServers()
 }
 
-// EnabledExtServers is what a subscription may hand a user (before their access
-// is applied).
-func (m *Manager) EnabledExtServers() []model.ExtServer {
-	list, err := m.store.EnabledExtServers()
-	if err != nil {
-		logErr("extsub: reading the enabled servers failed", "err", err)
-		return nil
-	}
-	return list
-}
-
 // CreateExtSubscription validates a source, stores it and reads it once, so the
 // operator sees the servers — or the reason there are none — in the same click.
 // A first read that fails does not undo the creation: the source is kept with its
@@ -95,6 +84,7 @@ func extSourceLabel(source string) string {
 	return "import"
 }
 
+// SyncExtSubscription re-reads one source and reconciles its servers. A failed read
 // cleanExtIdentity checks the overrides an operator typed. Every field is optional and
 // an empty one keeps the panel's default, so this only ever has to judge what was
 // actually written.
@@ -167,8 +157,8 @@ func (m *Manager) UpdateExtSubscriptionSource(ctx context.Context, id int64, sou
 	return m.SyncExtSubscription(ctx, id)
 }
 
-// SyncExtSubscription re-reads one source and reconciles its servers. A failed read
-// keeps the servers already there and records the error on the source.
+// SyncExtSubscription re-reads one subscription and reconciles its servers. A failed
+// read keeps the servers already there and records the error on the source.
 func (m *Manager) SyncExtSubscription(ctx context.Context, id int64) (ExtSyncReport, error) {
 	sub, err := m.store.ExtSubscription(id)
 	if err != nil {

@@ -8,6 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -108,9 +111,6 @@ func nodeSettings(set *model.Settings, n *model.Node) *model.Settings {
 	// Connection transport: the node's own if configured, otherwise inherit the
 	// master's (ns already carries the master's values from the shallow copy).
 	if c := n.Connections; c != nil {
-		if c.VLESSPort > 0 {
-			ns.VLESSPort = c.VLESSPort
-		}
 		ns.HysteriaPort = c.HysteriaPort
 		ns.HopStart = c.HopStart
 		ns.HopEnd = c.HopEnd
@@ -140,16 +140,72 @@ func derefBool(b *bool) bool { return b != nil && *b }
 // NodeDesiredState builds the full desired state for a node: its Xray config
 // (generated panel-side from nodeSettings + the working user set), the host-level
 // meta the agent needs, and a hash over both so the sync handler can skip no-ops.
+//
+// It always builds. A sync that only needs to know whether the node is current asks
+// NodeStateChange, which can answer without building.
 func (m *Manager) NodeDesiredState(n *model.Node) (*nodeapi.NodeState, error) {
-	set, err := m.store.GetSettings()
+	x, err := m.readNodeStateInputs(n)
 	if err != nil {
 		return nil, err
 	}
-	in, err := m.nodeInputs()
-	if err != nil {
+	if err := m.stateGate.acquire(context.Background()); err != nil {
 		return nil, err
 	}
-	users := in.users
+	defer m.stateGate.release()
+	state, _, err := m.buildNodeState(n, x)
+	return state, err
+}
+
+// buildNodeState builds a node's state from inputs already read. complete is false
+// when a part was left out on a soft failure — the custom inbounds unreadable, the
+// speed caps or blocks unreadable, a user's tunnel identity not claimed — so the state
+// serves this sync but is not remembered.
+//
+// The caller holds the state gate (see stateGate).
+func (m *Manager) buildNodeState(n *model.Node, x *nodeStateInputs) (state *nodeapi.NodeState, complete bool, err error) {
+	b, err := m.generateNodeState(n, x, x.in.users)
+	if err != nil {
+		return nil, false, err
+	}
+	// Who this state lets in is who the node's reports may speak for from now on.
+	m.noteNodeServed(n.ID, b.cfg, b.meta.AWG, x.servedSeq)
+	raw, err := json.Marshal(b.cfg)
+	if err != nil {
+		return nil, false, err
+	}
+	metaRaw, err := json.Marshal(b.meta)
+	if err != nil {
+		return nil, false, err
+	}
+	// Hashed as a stream, not over a joined copy: appending metaRaw to raw copied the
+	// whole config — another ten megabytes at 50,000 users — to hash bytes it already
+	// had. The digest is the same one.
+	h := sha256.New()
+	_, _ = h.Write(raw)
+	_, _ = h.Write(metaRaw)
+	return &nodeapi.NodeState{
+		Hash:       hex.EncodeToString(h.Sum(nil)),
+		XrayConfig: raw,
+		Meta:       b.meta,
+	}, b.complete, nil
+}
+
+// nodeBuild is a node's generated Xray config and host meta, not yet encoded.
+type nodeBuild struct {
+	cfg  *xray.Config
+	meta nodeapi.NodeMeta
+	// custom are the custom inbounds the config was generated with: none when they
+	// could not be read, which also makes the build incomplete.
+	custom   []model.Inbound
+	complete bool
+}
+
+// generateNodeState generates a node's config and meta for the given users — all the
+// working users for a whole state, or some of them for their part of one (see
+// manager_node_split.go). complete is as buildNodeState describes.
+func (m *Manager) generateNodeState(n *model.Node, x *nodeStateInputs, users []model.User) (*nodeBuild, error) {
+	set, in := x.set, x.in
+	complete := in.version != 0
 	ns := nodeSettings(set, n)
 	// Cert paths are sentinels the agent rewrites to its own absolute paths (the
 	// panel doesn't know the node's data dir); keeping them symbolic makes the hash
@@ -158,20 +214,22 @@ func (m *Manager) NodeDesiredState(n *model.Node) (*nodeapi.NodeState, error) {
 	ns.KeyPath = nodeapi.KeyPathSentinel
 	// The node's own fallback points at its local decoy/panel loopback, same as the
 	// panel's own layout. Egress lanes resolve against the node's OWN proxy pool.
-	opts := m.genOpts()
+	opts := x.opts
 	opts.ServerID = n.ID
 	opts.Access = in.access
-	if list, err := m.store.EnabledInbounds(n.ID); err != nil {
+	if x.inbErr != nil {
 		// Soft, as in genOptsFor: the built-in lanes still keep the server reachable.
-		logErr("inbounds: load failed", "server", n.ID, "err", err)
+		logErr("inbounds: load failed", "server", n.ID, "err", x.inbErr)
+		complete = false
 	} else {
-		opts.Custom = list
+		opts.Custom = x.inbounds
 	}
-	cfg, err := xray.Generate(ns, users, opts, m.getNodeProxies(n.ID))
-	if err != nil {
-		return nil, err
-	}
-	raw, err := json.Marshal(cfg)
+	// Users this node's WireGuard inbounds hold need a tunnel identity. A claim made here
+	// reaches the shared inputs on their next read (claimAWG drops them), so a state
+	// built on a fresh or failed claim is not remembered.
+	genUsers, wgClaimed, wgOK := m.claimWireGuard(users, opts.Custom, opts.Access)
+	complete = complete && wgOK && !wgClaimed
+	cfg, err := xray.Generate(ns, genUsers, opts, x.proxies)
 	if err != nil {
 		return nil, err
 	}
@@ -183,9 +241,9 @@ func (m *Manager) NodeDesiredState(n *model.Node) (*nodeapi.NodeState, error) {
 	// public listeners on the same box, and leaving them out would make "add a custom
 	// inbound" quietly the way to bypass the guard. Only the TCP ones: the guard's
 	// rules count connections, which UDP/QUIC has none of.
-	for _, inb := range opts.Custom {
-		if inb.Protocol != model.InbHysteria {
-			connGuardPorts = append(connGuardPorts, inb.Port)
+	for _, in := range opts.Custom {
+		if model.ProtoOf(in.Protocol) == "tcp" {
+			connGuardPorts = append(connGuardPorts, in.Port)
 		}
 	}
 	// ACME: the node's own provider/email/EAB when set, otherwise the panel's.
@@ -210,13 +268,16 @@ func (m *Manager) NodeDesiredState(n *model.Node) (*nodeapi.NodeState, error) {
 		HopEnd:            ns.HopEnd,
 		HopRanges:         nodeHopMeta(ns, opts.Custom),
 		ConnGuardPorts:    connGuardPorts,
+		TurnRelays:        nodeTurnRelays(opts.Custom),
 		LoopbackDest:      m.opts.PanelDest,
 		DecoyTemplate:     n.DecoyTemplate,
 		GeoRefreshHours:   n.GeoRefreshHours, // the node's OWN geo cadence
 		XrayPinnedVersion: xray.PinnedVersion,
 		SpeedLimits:       in.speed,
 	}
-	meta.AWG = m.nodeAWGState(n, ns, users, in.access)
+	var claimed bool
+	meta.AWG, claimed = m.nodeAWGStateClaimed(n, ns, users, in.access)
+	complete = complete && claimed
 	// What the source policy has refused, for this node's own firewall. Read here
 	// rather than pushed on each block so a node that was offline catches up on its
 	// next sync, and so the hash covers it (a lifted block reaches the node too).
@@ -224,21 +285,16 @@ func (m *Manager) NodeDesiredState(n *model.Node) (*nodeapi.NodeState, error) {
 		meta.BlockedIPs = in.blocked
 		meta.BlockTTLHours = int(policyTTL(set.ConnPolicy) / time.Hour)
 	}
+	// The addresses banned by hand, the same way.
+	if len(in.banned) > 0 {
+		meta.BannedIPs = in.banned
+	}
 	if ns.OperaEnabled {
 		meta.OperaEnabled = true
 		meta.OperaCountry = ns.OperaCountryOr()
 		meta.OperaPort = ns.OperaPortOr()
 	}
-	metaRaw, err := json.Marshal(meta)
-	if err != nil {
-		return nil, err
-	}
-	h := sha256.Sum256(append(raw, metaRaw...))
-	return &nodeapi.NodeState{
-		Hash:       hex.EncodeToString(h[:]),
-		XrayConfig: raw,
-		Meta:       meta,
-	}, nil
+	return &nodeBuild{cfg: cfg, meta: meta, custom: opts.Custom, complete: complete}, nil
 }
 
 // nodeInputs are the parts of every node's desired state that no node owns: the working
@@ -254,13 +310,21 @@ func (m *Manager) NodeDesiredState(n *model.Node) (*nodeapi.NodeState, error) {
 // taken before the latest one is never used. What changes with no wake at all — a
 // blocked address running out, say — is picked up when the snapshot ages out, which
 // nodeInputsTTL keeps well inside a poll.
+//
+// version numbers what the inputs say, not when they were read: a read that finds what
+// the last one found keeps its version, which is what lets a node's remembered state
+// outlive a wake that changed nothing (see NodeStateChange). 0 is a read that failed
+// softly and is not to be remembered.
 type nodeInputs struct {
 	gen     uint64
+	version uint64
 	at      time.Time
 	users   []model.User // read-only: copy before changing a user (see nodeAWGState)
+	ids     []int64      // the users' ids, in their order: what the next read compares
 	access  map[int64]model.Access
 	speed   map[string]int
 	blocked []string
+	banned  []string
 }
 
 const nodeInputsTTL = 10 * time.Second
@@ -274,38 +338,144 @@ func (m *Manager) nodeInputs() (*nodeInputs, error) {
 	if c := m.nodeInputsCache; c != nil && c.gen == gen && time.Since(c.at) < nodeInputsTTL {
 		return c, nil
 	}
-	// The generation is taken before reading: a wake that lands mid-read leaves this
-	// snapshot one generation behind, so the next caller reads again.
-	in := &nodeInputs{gen: gen, at: time.Now()}
-	var err error
-	if in.users, err = m.store.WorkingCredentials(in.at.Unix()); err != nil {
+	ws, err := m.readWorkingSet()
+	if err != nil {
 		return nil, err
+	}
+	return m.readNodeInputsLocked(ws)
+}
+
+// workingSet is one read of who belongs in the config and what their speed caps are
+// (store.WorkingSet), stamped with the wake generation and the time taken before it.
+type workingSet struct {
+	gen  uint64
+	at   time.Time
+	ids  []int64
+	caps map[int64]int
+}
+
+// readWorkingSet reads the working set. The generation is taken before reading: a
+// wake that lands mid-read leaves what is built from it one generation behind, so the
+// next caller reads again rather than trusting it.
+func (m *Manager) readWorkingSet() (*workingSet, error) {
+	ws := &workingSet{gen: m.nodes.generation(), at: time.Now()}
+	var err error
+	if ws.ids, ws.caps, err = m.store.WorkingSet(ws.at.Unix()); err != nil {
+		return nil, err
+	}
+	return ws, nil
+}
+
+// readNodeInputsLocked builds the shared inputs on the working set given and, unless
+// the rest of the read came back incomplete, makes them the snapshot every node
+// shares. The caller holds nodeInputsMu.
+func (m *Manager) readNodeInputsLocked(ws *workingSet) (*nodeInputs, error) {
+	prev := m.nodeInputsCache
+	in := &nodeInputs{gen: ws.gen, at: ws.at}
+	ids, capped := ws.ids, ws.caps
+	var err error
+	// The credentials cost several times the rest of this read put together, in time
+	// and in garbage both, and nothing can change one for a user already in the set:
+	// a uuid and a password are written when the account is made and never again, and
+	// a tunnel identity is claimed once — by a path that forgets this snapshot (see
+	// claimAWG). So while the set is the same, last read's credentials are the same.
+	if prev != nil && slices.Equal(prev.ids, ids) {
+		in.users, in.ids = prev.users, prev.ids
+	} else {
+		if in.users, err = m.store.WorkingCredentials(in.at.Unix()); err != nil {
+			return nil, err
+		}
+		// Taken from the users in hand rather than from the ids read a moment before:
+		// a set that moved in between must not pass for the one these are the
+		// credentials of, or the next read would reuse them for it.
+		in.ids = make([]int64, len(in.users))
+		for i := range in.users {
+			in.ids[i] = in.users[i].ID
+		}
 	}
 	// A hard failure, as in genOptsFor: without the access map every restricted
 	// user's credential would be written into every lane.
 	if in.access, err = m.store.AccessMap(); err != nil {
 		return nil, fmt.Errorf("load access map: %w", err)
 	}
-	complete := true
-	if capped, err := m.store.CappedUsers(in.at.Unix()); err != nil {
-		logErr("node state: cannot read speed caps", "err", err)
-		complete = false
-	} else if len(capped) > 0 {
+	if len(capped) > 0 {
 		in.speed = make(map[string]int, len(capped))
 		for id, kbps := range capped {
 			in.speed[model.UserEmail(id)] = kbps
 		}
 	}
+	complete := true
 	if in.blocked, err = m.store.BlockedIPList(); err != nil {
 		logErr("node state: cannot read blocked addresses", "err", err)
 		complete = false
 	}
+	if in.banned, err = m.store.BannedIPList(); err != nil {
+		logErr("node state: cannot read banned addresses", "err", err)
+		complete = false
+	}
 	// A read that failed softly serves this build but is not kept: sharing it would
-	// drop the caps or the blocks from every node's state for the whole TTL.
+	// drop the blocks from every node's state for the whole TTL.
 	if complete {
+		// Compared with the last complete read rather than the cache, which a change no
+		// wake announces drops: the same inputs keep their version either way, and a
+		// new version is told apart from the one before it (see inputsJournal).
+		last := m.nodeInputsLast
+		if last != nil && sameNodeInputs(last, in) {
+			in.version = last.version
+		} else {
+			m.nodeInputsVersion++
+			in.version = m.nodeInputsVersion
+			m.nodeJournal.record(last, in)
+		}
 		m.nodeInputsCache = in
+		m.nodeInputsLast = in
 	}
 	return in, nil
+}
+
+// fleetChanged builds the shared inputs afresh on the working set given and reports
+// whether what the nodes are served has moved since the last read — which is the whole
+// question behind waking them. The read that answers it is the read they would each
+// have made, so the snapshot it leaves behind is the one they get: asking costs the
+// fleet nothing.
+//
+// Anything it cannot answer counts as changed. A wake that was not needed is a little
+// work; one that was needed and skipped would hold a config back until the node's own
+// poll.
+func (m *Manager) fleetChanged(ws *workingSet) bool {
+	m.nodeInputsMu.Lock()
+	defer m.nodeInputsMu.Unlock()
+	prev := m.nodeInputsCache
+	in, err := m.readNodeInputsLocked(ws)
+	if err != nil {
+		logErr("node state: cannot tell whether the nodes' inputs changed", "err", err)
+		return true
+	}
+	return prev == nil || in.version == 0 || in.version != prev.version
+}
+
+// sameNodeInputs reports whether two reads found the same inputs. Users are compared on
+// what WorkingCredentials reads — the fields every config builder uses (see
+// TestGenerateReadsOnlyCredentials, and TestWorkingUserIDsMatchWorkingUsers for the
+// read itself).
+func sameNodeInputs(a, b *nodeInputs) bool {
+	if len(a.users) != len(b.users) || !maps.Equal(a.speed, b.speed) || !slices.Equal(a.blocked, b.blocked) ||
+		!slices.Equal(a.banned, b.banned) ||
+		!reflect.DeepEqual(a.access, b.access) {
+		return false
+	}
+	// The same users, reused rather than read again: there is nothing to walk.
+	if len(a.users) == 0 || &a.users[0] == &b.users[0] {
+		return true
+	}
+	for i := range a.users {
+		x, y := &a.users[i], &b.users[i]
+		if x.ID != y.ID || x.UUID != y.UUID || x.Password != y.Password ||
+			x.WGPrivateKey != y.WGPrivateKey || x.AWGSlot != y.AWGSlot {
+			return false
+		}
+	}
+	return true
 }
 
 // dropNodeInputs forgets the shared inputs, so the next node state reads them afresh —
@@ -369,7 +539,11 @@ func (r *nodeRegistry) wakeChan(nodeID int64) chan struct{} {
 	return ch
 }
 
-// wakeOne wakes the node if it is currently parked in a poll.
+// wakeOne closes and replaces one node's wake channel (any parked poll returns and
+// re-parks on the fresh channel). It only acts on an existing entry: a poll always
+// registers its channel via wakeChan before computing desired state, so there is
+// nothing to wake until then — and not creating entries here keeps the map from
+// accumulating channels for nodes that never poll.
 func (r *nodeRegistry) wakeOne(nodeID int64) {
 	if r == nil {
 		return // no registry (tests) ⇒ no parked poll to wake
@@ -378,8 +552,8 @@ func (r *nodeRegistry) wakeOne(nodeID int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if ch, ok := r.waits[nodeID]; ok {
-		delete(r.waits, nodeID)
 		close(ch)
+		r.waits[nodeID] = make(chan struct{})
 	}
 }
 
@@ -390,12 +564,14 @@ func (r *nodeRegistry) dropWaiter(nodeID int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if ch, ok := r.waits[nodeID]; ok {
-		delete(r.waits, nodeID)
 		close(ch)
+		delete(r.waits, nodeID)
 	}
 }
 
-// wakeAll closes every held channel so every connected node pulls a fresh state.
+// wakeAll wakes every parked node — used after a user-set change that fans out to
+// all nodes. Nil-safe: a Manager assembled without a registry (tests) still has to
+// survive the paths that now reach here, and "no registry" means "no node to wake".
 func (r *nodeRegistry) wakeAll() {
 	if r == nil {
 		return
@@ -404,9 +580,20 @@ func (r *nodeRegistry) wakeAll() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for id, ch := range r.waits {
-		delete(r.waits, id)
 		close(ch)
+		r.waits[id] = make(chan struct{})
 	}
+}
+
+// parked is how many nodes have a poll waiting. None means nothing to wake, and so
+// nothing to work out about what they would be woken for.
+func (r *nodeRegistry) parked() int {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.waits)
 }
 
 // generation is the registry's wake count; 0 without a registry.
@@ -649,7 +836,7 @@ func (m *Manager) NodeViews() ([]NodeView, error) {
 			TrafficCoefficient: model.NodeCoefficientOr(n.TrafficCoefficient),
 			Placement:          n.Placement,
 			OnlineUsers:        online[n.ID],
-			// The node's own REALITY identity (dest "" ⇒ inherits the panel's).
+			// The node's own REALITY identity (dest "" ⇒ inherits the panel's donor).
 			RealityDest:      n.RealityDest,
 			RealityPublicKey: n.RealityPublicKey,
 			RealityShortID:   n.RealityShortID,
@@ -1002,55 +1189,6 @@ func (m *Manager) ApplyNodeConnections(id int64, u ConnectionsUpdate) error {
 		maxTimeDiff = realityAntiReplayWindowMs
 	}
 
-	set, err := m.store.GetSettings()
-	if err != nil {
-		return err
-	}
-
-	vlessPort := u.VLESSPort
-	if vlessPort == 0 {
-		if nc := n.Connections; nc != nil && nc.VLESSPort > 0 {
-			vlessPort = nc.VLESSPort
-		} else {
-			vlessPort = set.VLESSPort
-		}
-	}
-	if vlessPort == 0 {
-		vlessPort = 443
-	}
-	if vlessPort < 1 || vlessPort > 65535 {
-		return invalidCode("err.portRange", "порт вне диапазона 1–65535")
-	}
-
-	// Two built-in TCP lanes cannot share the same port if both enabled.
-	if u.Protocols["vless"] && u.Protocols["reality"] && vlessPort == u.RealityPort {
-		return invalidCode("err.tcpPortTaken", "порт {{port}} уже занят (VLESS-Vision и REALITY не могут использовать один TCP-порт)", map[string]any{"port": vlessPort})
-	}
-
-	inbounds, err := m.store.Inbounds(id)
-	if err != nil {
-		return err
-	}
-	for _, in := range inbounds {
-		if !in.Enabled {
-			continue
-		}
-		inNet := portNetwork(in)
-		switch inNet {
-		case "tcp":
-			if u.Protocols["vless"] && in.Port == vlessPort {
-				return invalidCode("err.portTakenByInbound", "порт {{port}} уже занят подключением «{{who}}»", map[string]any{"port": vlessPort, "who": in.Name})
-			}
-			if u.Protocols["reality"] && in.Port == u.RealityPort {
-				return invalidCode("err.portTakenByInbound", "порт {{port}} уже занят подключением «{{who}}»", map[string]any{"port": u.RealityPort, "who": in.Name})
-			}
-		case "udp":
-			if u.Protocols["hysteria2"] && (in.Port == u.HysteriaPort || (u.HopEnd > u.HysteriaPort && in.Port >= u.HysteriaPort && in.Port <= u.HopEnd)) {
-				return invalidCode("err.portTakenByInbound", "порт {{port}} уже занят подключением «{{who}}»", map[string]any{"port": in.Port, "who": in.Name})
-			}
-		}
-	}
-
 	// Protocols (the node's own explicit on/off).
 	awgPort, awgDNS, err := validateAWGUpdate(u.AWGPort, u.AWGDNS)
 	if err != nil {
@@ -1075,16 +1213,6 @@ func (m *Manager) ApplyNodeConnections(id int64, u ConnectionsUpdate) error {
 			return err
 		}
 	}
-	if u.AWGParams != nil && !u.RegenAWGKeys && !u.AWGParams.IsZero() {
-		engineParams := awgParams(*u.AWGParams)
-		if err := engineParams.Validate(); err != nil {
-			return fmt.Errorf("awg: invalid parameters: %w", err)
-		}
-		if err := m.store.SaveNodeAWGKeys(id, n.AWGPrivateKey, n.AWGPublicKey, *u.AWGParams); err != nil {
-			return err
-		}
-		n.AWGParams = *u.AWGParams
-	}
 	// REALITY donor + optional key regeneration.
 	if err := m.store.SetNodeRealityDest(id, realityDest); err != nil {
 		return err
@@ -1108,7 +1236,6 @@ func (m *Manager) ApplyNodeConnections(id int64, u ConnectionsUpdate) error {
 	}
 	// Transport blob.
 	blob := &model.NodeConnections{
-		VLESSPort:          vlessPort,
 		HysteriaPort:       u.HysteriaPort,
 		HopStart:           u.HopStart,
 		HopEnd:             u.HopEnd,
@@ -1131,9 +1258,7 @@ func (m *Manager) ApplyNodeConnections(id int64, u ConnectionsUpdate) error {
 	if err := m.store.SetNodeConnections(id, blob); err != nil {
 		return err
 	}
-	if m.nodes != nil {
-		m.nodes.wakeOne(id)
-	}
+	m.nodes.wakeOne(id)
 	return nil
 }
 
@@ -1187,6 +1312,7 @@ func (m *Manager) DeleteNode(id int64) error {
 		}
 	}
 	m.nodes.dropWaiter(id)
+	m.served.forget(id)
 	return nil
 }
 
@@ -1652,6 +1778,24 @@ func (m *Manager) NodeHostStats(id int64) (nodeapi.HostStats, bool) {
 	return h, ok
 }
 
+// nodeAWGState is what a node last said about its AmneziaWG tunnel. Reported tells
+// "the node has never mentioned AWG" (an older agent, or one where the lane was never
+// switched on) apart from "the node says it is down", which are very different facts.
+type nodeAWGState struct {
+	Running  bool
+	Err      string
+	Reported bool
+}
+
+// NodeAWG returns a node's last-reported tunnel state (ok=false when it has never
+// reported one).
+func (m *Manager) NodeAWG(id int64) (nodeAWGState, bool) {
+	m.nodeGeoMu.Lock()
+	defer m.nodeGeoMu.Unlock()
+	st, ok := m.nodeAWG[id]
+	return st, ok && st.Reported
+}
+
 // NodeSyncFails returns a node's last-reported sync-failure count for the past hour
 // (0 if it hasn't reported one).
 func (m *Manager) NodeSyncFails(id int64) int {
@@ -1709,11 +1853,12 @@ func (m *Manager) randomDecoy() string {
 
 // --- sync ingest --------------------------------------------------------------
 
-// maxNodeSiteRows bounds how many destination rows one sync may contribute. The
-// agent budgets its own payload well below this; the cap is here because the panel
-// must not depend on a node behaving, and because applying an unbounded batch was
-// measured at ~23ms of CPU on the same lock the master's access-log tap needs.
-const maxNodeSiteRows = 4096
+// maxNodeSiteRows bounds how many destination rows one sync may contribute: the panel
+// must not depend on a node behaving, and applying an unbounded batch was measured at
+// ~23ms of CPU on the same lock the master's access-log tap needs. Current agents stay
+// within it themselves (nodeapi.MaxSiteRows); an older one sent up to ~6,500 rows from
+// a busy node and lost the rest here.
+const maxNodeSiteRows = nodeapi.MaxSiteRows
 
 // userIDCacheTTL bounds how stale the node-site user-id validation set may be. Short
 // enough that a new user's node sites start counting within seconds, long enough
@@ -1721,19 +1866,24 @@ const maxNodeSiteRows = 4096
 const userIDCacheTTL = 15 * time.Second
 
 // ingestNodeAbuse matches a node's reported destinations against the blocklists,
-// dropping rows for user ids that do not exist.
+// dropping rows for user ids that do not exist or that the node is not believed about.
 //
 // The id check keeps a node from buffering matches against fabricated users (the
 // EXISTS guard at write time would drop them anyway, but not before they cost buffer
 // space). A node that predates the IP-only switch may still report hostnames; those
 // simply never match and cost nothing beyond the row itself, since the per-sync abuse
 // budget is only spent on rows that actually matched.
-func (m *Manager) ingestNodeAbuse(nodeID int64, rows []nodeapi.SiteSample) {
+func (m *Manager) ingestNodeAbuse(nodeID int64, rows []nodeapi.SiteSample, believed func(userID int64) bool) {
 	if m.abuse == nil {
 		return
 	}
 	if len(rows) > maxNodeSiteRows {
-		logErr("node sync: site rows truncated", "got", len(rows), "cap", maxNodeSiteRows)
+		// An agent from before the cap was shared, on a node with thousands of users:
+		// every one of its syncs is over. Said once an hour per node, not every 20s.
+		if m.siteNotice.should(fmt.Sprintf("node-sites:%d", nodeID), time.Now()) {
+			logWarn("node sync: site rows over the cap, the rest dropped (update the node)",
+				"node", nodeID, "got", len(rows), "cap", maxNodeSiteRows)
+		}
 		rows = rows[:maxNodeSiteRows]
 	}
 	known, err := m.knownUserIDs()
@@ -1741,11 +1891,22 @@ func (m *Manager) ingestNodeAbuse(nodeID int64, rows []nodeapi.SiteSample) {
 		logErr("node sync: cannot validate site user ids", "err", err)
 		return
 	}
-	// Attributed to the reporting node: an abuse complaint names one server's IP,
-	// so which node emitted the traffic is the first thing the operator needs.
-	// Bounded so a hostile node cannot fill the whole match buffer (the feeds are
-	// public) and starve the master's own locally-observed matches.
-	m.RecordNodeAbuseBatch(nodeID, rows, known, abuseNodeMax)
+	abuseBudget := abuseNodeMax // cap this sync's contribution to the shared buffer
+	for _, s := range rows {
+		if !believed(s.UserID) {
+			continue
+		}
+		if _, ok := known[s.UserID]; !ok {
+			continue
+		}
+		// Attributed to the reporting node: an abuse complaint names one server's IP,
+		// so which node emitted the traffic is the first thing the operator needs.
+		// Bounded so a hostile node cannot fill the whole match buffer (the feeds are
+		// public) and starve the master's own locally-observed matches.
+		if abuseBudget > 0 && m.RecordNodeAbuse(nodeID, s.UserID, s.Host, s.Count) {
+			abuseBudget--
+		}
+	}
 }
 
 // knownUserIDs returns the set of existing user ids, cached briefly.
@@ -1772,8 +1933,9 @@ func (m *Manager) knownUserIDs() (map[int64]struct{}, error) {
 }
 
 // IngestNodeSync records a node's reported status, ingests its traffic deltas
-// idempotently, and computes the response (whether the node's applied hash still
-// matches desired state). It does NOT block for the long-poll — the handler owns
+// idempotently, and answers with the report's acknowledgement — or, for a node that is
+// switched off, that it is revoked. Whether the node's state must change is asked
+// separately (NodeStatePush). It does NOT block for the long-poll — the handler owns
 // the hold; this is the pure state transition.
 func (m *Manager) IngestNodeSync(n *model.Node, req nodeapi.SyncRequest) (*nodeapi.SyncResponse, error) {
 	// A disabled (or soft-deleted-but-unpurged) node's token still authenticates so we
@@ -1801,12 +1963,8 @@ func (m *Manager) IngestNodeSync(n *model.Node, req nodeapi.SyncRequest) (*nodea
 	if req.Host != nil {
 		m.nodeHostStats[n.ID] = *req.Host
 	}
-	// Always refreshed (a healthy node reports 0), so the "limping" badge clears the
-	// moment the transport recovers rather than sticking on a stale count.
-	m.nodeSyncFails[n.ID] = req.SyncFails
-	if m.nodeAWG == nil {
-		m.nodeAWG = map[int64]nodeAWGState{}
-	}
+	// The tunnel's own state. Recorded for every sync from an agent that reports it,
+	// so the health view and the alert both read one place.
 	if req.AWGRunning || req.AWGError != "" {
 		m.nodeAWG[n.ID] = nodeAWGState{Running: req.AWGRunning, Err: req.AWGError, Reported: true}
 	}
@@ -1822,6 +1980,13 @@ func (m *Manager) IngestNodeSync(n *model.Node, req nodeapi.SyncRequest) (*nodea
 	m.nodeAWGRunning[n.ID] = req.AWGRunning
 	m.nodeAWGErr[n.ID] = req.AWGError
 	m.nodeComponents[n.ID] = req.NormalizedComponents(n.AWGEnabled != nil && *n.AWGEnabled)
+	// Always refreshed (a healthy node reports 0), so the "limping" badge clears the
+	// moment the transport recovers rather than sticking on a stale count.
+	m.nodeSyncFails[n.ID] = req.SyncFails
+	if m.nodeHas == nil {
+		m.nodeHas = map[int64]NodeHas{}
+	}
+	m.nodeHas[n.ID] = NodeHas{DeltaRev: req.DeltaRev, StateTag: req.StateTag}
 	m.nodeGeoMu.Unlock()
 	// The node's own TLS state, for the fleet-wide "TLS certificate" alert. Recorded
 	// here, raised by the node sweep — see manager_nodes_notify.go.
@@ -1838,12 +2003,34 @@ func (m *Manager) IngestNodeSync(n *model.Node, req nodeapi.SyncRequest) (*nodea
 		ConfigHash:     req.ConfigHash,
 	})
 
+	// Everything below names users, and a node is believed only about its own (see
+	// manager_node_served.go). When that cannot be told, nothing is taken: the traffic
+	// is not acknowledged, so the node sends it again, and the samples are dropped.
+	served, err := m.nodeServedFor(n)
+	if err != nil {
+		logErr("node sync: cannot tell which users this node serves, its report is not taken",
+			"node", n.ID, "err", err)
+	}
+	foreign := 0
+	believed := func(userID int64) bool {
+		if served == nil {
+			return false
+		}
+		if served.allows(userID, now.Unix()) {
+			return true
+		}
+		foreign++
+		return false
+	}
+
 	// Idempotent traffic ingest: atomically claim the report id. A report at-or-below
 	// the stored watermark is a retry of an already-counted batch (lost response); the
 	// conditional claim also stops two concurrent syncs from both counting the same
 	// batch. The agent persists its report id, so a restart no longer regresses it.
 	ack := req.ReportID
-	if req.ReportID > 0 {
+	if req.ReportID > 0 && served == nil {
+		ack = 0
+	} else if req.ReportID > 0 {
 		// One commit for the node's whole batch, watermark included. Written per user
 		// this was three fsyncs each on the panel's single connection, every 20s, per
 		// node — the last write path whose cost still scaled with the user count.
@@ -1854,7 +2041,7 @@ func (m *Manager) IngestNodeSync(n *model.Node, req nodeapi.SyncRequest) (*nodea
 		deltas := make([]store.TrafficDelta, 0, len(req.Traffic))
 		for _, d := range req.Traffic {
 			up, down := nonNeg(d.Up), nonNeg(d.Down)
-			if up == 0 && down == 0 {
+			if (up == 0 && down == 0) || !believed(d.UserID) {
 				continue
 			}
 			// No Baseline: the node already subtracted on its side, and last_up/
@@ -1887,27 +2074,32 @@ func (m *Manager) IngestNodeSync(n *model.Node, req nodeapi.SyncRequest) (*nodea
 	// the master. Not gated on ReportID: connection samples are idempotent (upsert by
 	// user+ip) and independent of the traffic batch.
 	for _, c := range req.Conns {
-		m.RecordAccessOn(n.ID, c.Email, c.IP, "")
+		id, ok := userIDFromEmail(c.Email)
+		if !ok || !believed(id) {
+			continue
+		}
+		// Recorded under the tag as the panel writes it: "u007" is user 7 too, and a
+		// spelling of its own would be a throttle key of its own.
+		m.RecordAccessOn(n.ID, model.UserEmail(id), c.IP, "")
 	}
 
 	// Destinations arrive pre-aggregated with a count, so they bypass RecordAccess
 	// (which counts one connection per call) and are folded straight into the rolling
 	// view. Not gated on ReportID either: a duplicated sync would double-count a
 	// sampled top-N that ages out in hours, which is not worth an ack protocol.
-	if len(req.Sites) > 0 {
-		m.ingestNodeAbuse(n.ID, req.Sites)
+	if len(req.Sites) > 0 && served != nil {
+		m.ingestNodeAbuse(n.ID, req.Sites, believed)
+	}
+	if foreign > 0 && m.siteNotice.should(fmt.Sprintf("node-foreign:%d", n.ID), now) {
+		// Not a lag: a user who left the node's config is believed for an hour after.
+		// A node naming users it was never given is broken or no longer the operator's.
+		logWarn("node sync: report names users this node does not serve, those rows dropped",
+			"node", n.ID, "rows", foreign)
 	}
 
-	resp := &nodeapi.SyncResponse{AckReport: ack}
-	state, err := m.NodeDesiredState(n)
-	if err != nil {
-		return nil, err
-	}
-	if state.Hash != req.ConfigHash {
-		resp.Changed = true
-		resp.State = state
-	}
-	return resp, nil
+	// The state the node should have is the caller's to add (NodeStatePush): it is held
+	// until the response is encoded, which only the caller can know.
+	return &nodeapi.SyncResponse{AckReport: ack}, nil
 }
 
 // EnsureNodeAPIPath generates the node-API URL segment the first time a node is
@@ -1959,42 +2151,6 @@ func randomPathSegment() (string, error) {
 	return auth.RandomSecretPath()
 }
 
-// validateDNSList refuses a DNS setting the generated Xray config could not parse. nil
-// (inherit / leave alone) and an empty string are both fine.
-func validateDNSList(dns *string) error {
-	if dns == nil {
-		return nil
-	}
-	for _, e := range strings.FieldsFunc(*dns, func(r rune) bool {
-		return r == '\n' || r == '\r' || r == ',' || r == ' '
-	}) {
-		if !validDNSServer(e) {
-			return invalidCode("err.badDNS", "неверный DNS-адрес: {{detail}}", map[string]any{"detail": e})
-		}
-	}
-	return nil
-}
-
-// nodeAWGState is what a node last said about its AmneziaWG tunnel. Reported tells
-// "the node has never mentioned AWG" (an older agent, or one where the lane was never
-// switched on) apart from "the node says it is down", which are very different facts.
-type nodeAWGState struct {
-	Running  bool
-	Err      string
-	Reported bool
-}
-
-// NodeAWG returns a node's last-reported tunnel state (ok=false when it has never
-// reported one).
-func (m *Manager) NodeAWG(id int64) (nodeAWGState, bool) {
-	m.nodeGeoMu.Lock()
-	defer m.nodeGeoMu.Unlock()
-	if m.nodeAWG == nil {
-		return nodeAWGState{}, false
-	}
-	st, ok := m.nodeAWG[id]
-	return st, ok && st.Reported
-}
 
 // NodeAWGStatus reports the AmneziaWG running state and last error for a node.
 func (m *Manager) NodeAWGStatus(nodeID int64) (running bool, lastErr string) {
@@ -2020,7 +2176,6 @@ func (m *Manager) NodeComponents(nodeID int64) []nodeapi.ComponentStatus {
 			Version: m.sup.Version(),
 			Details: map[string]any{"uptime": m.sup.UptimeSeconds()},
 		})
-
 		awgConfigured := set != nil && set.AWGEnabled
 		awgRunning := false
 		awgErr := ""
@@ -2046,7 +2201,6 @@ func (m *Manager) NodeComponents(nodeID int64) []nodeapi.ComponentStatus {
 		})
 		return comps
 	}
-
 	m.nodeGeoMu.Lock()
 	defer m.nodeGeoMu.Unlock()
 	if list, ok := m.nodeComponents[nodeID]; ok && len(list) > 0 {
@@ -2128,4 +2282,30 @@ func AggregateComponentStatus(comps []nodeapi.ComponentStatus) string {
 		return "unhealthy"
 	}
 	return "degraded"
+}
+
+// validateDNSList refuses a DNS setting the generated Xray config could not parse. nil
+// (inherit / leave alone) and an empty string are both fine.
+func validateDNSList(dns *string) error {
+	if dns == nil {
+		return nil
+	}
+	for _, e := range strings.FieldsFunc(*dns, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == ',' || r == ' '
+	}) {
+		switch xray.CheckDNSServer(e) {
+		case xray.DNSOK:
+		case xray.DNSScheme:
+			return invalidCode("err.dnsScheme",
+				"DNS {{detail}}: у Xray нет клиента для этой схемы — подойдут https://, h2c://, tcp://, их варианты +local и quic+local://",
+				map[string]any{"detail": e})
+		case xray.DNSPort:
+			return invalidCode("err.dnsPort",
+				"DNS {{detail}}: порт указывается только в URL, например tcp://{{detail}}",
+				map[string]any{"detail": e})
+		default:
+			return invalidCode("err.badDNS", "неверный DNS-адрес: {{detail}}", map[string]any{"detail": e})
+		}
+	}
+	return nil
 }

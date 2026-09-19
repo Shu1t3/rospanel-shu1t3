@@ -52,9 +52,14 @@ type nodeAlertState struct {
 	offlineAlerted bool
 	offlineSince   int64 // node's last_seen when it went silent (for the downtime line)
 
-	xrayAlerted    bool
-	xrayDownAt     time.Time
-	lastXrayNotify time.Time
+	// diskLowAlerted records that admins were told this server is running out of
+	// space, so the all-clear is only sent for an alarm they saw.
+	diskLowAlerted bool
+
+	// trafficAlerted records that admins were told this server reached its traffic
+	// cap, so they are told once per crossing rather than once per sweep — and get an
+	// all-clear only for an alarm they actually saw.
+	trafficAlerted bool
 
 	// awgKnown is false until the tunnel has been observed once. The first sweep runs
 	// the moment the panel boots, while the tunnel is still coming up, so without a
@@ -64,20 +69,14 @@ type nodeAlertState struct {
 	// up, once when it comes back.
 	awgDownAlerted bool
 
+	xrayAlerted    bool
+	xrayDownAt     time.Time
+	lastXrayNotify time.Time
+
 	// certErr is the last TLS error this node reported (empty ⇒ its cert is fine),
 	// recorded on sync and acted on by the sweep.
 	certErr       string
 	lastCertErrAt time.Time
-
-	// diskLowAlerted remembers that admins were alerted about free space on this
-	// server, so the alarm doesn't repeat on every sweep and the all-clear only fires
-	// for an alert they actually saw.
-	diskLowAlerted bool
-
-	// trafficAlerted records that admins were told this server reached its traffic
-	// cap, so they are told once per crossing rather than once per sweep — and get an
-	// all-clear only for an alarm they actually saw.
-	trafficAlerted bool
 }
 
 // nodeAlertMsg is one pending message: which admin-event category gates it and the

@@ -59,20 +59,20 @@ func TestPlanDeviceLimitValidAndMax(t *testing.T) {
 		}
 	}
 
-	// Device limit exceeding MaxDevicesPerUser must be rejected.
+	// Device limit exceeding MaxDeviceLimit must be rejected.
 	overPlan := &model.TariffPlan{
 		Slug:        "plan-over",
 		Name:        "Over Plan",
 		PriceRub:    100,
 		PeriodDays:  30,
-		DeviceLimit: model.MaxDevicesPerUser + 1,
+		DeviceLimit: model.MaxDeviceLimit + 1,
 	}
 	if err := m.SaveTariffPlan(overPlan); err == nil {
-		t.Fatal("saving plan with device_limit > MaxDevicesPerUser must be rejected")
+		t.Fatal("saving plan with device_limit > MaxDeviceLimit must be rejected")
 	} else {
 		var ve *ValidationError
-		if !errors.As(err, &ve) || ve.Code != "err.planDeviceLimitRange" {
-			t.Errorf("got error %v, want code err.planDeviceLimitRange", err)
+		if !errors.As(err, &ve) || ve.Code != "err.deviceLimitTooHigh" {
+			t.Errorf("got error %v, want code err.deviceLimitTooHigh", err)
 		}
 	}
 }

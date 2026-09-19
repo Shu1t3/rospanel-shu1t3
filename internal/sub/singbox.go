@@ -1,21 +1,19 @@
 package sub
 
 import (
+	"encoding/json"
 	"fmt"
-
 	"github.com/Shu1t3/rospanel-shu1t3/internal/extsub"
+	"net"
+	"strings"
+
 	"github.com/Shu1t3/rospanel-shu1t3/internal/link"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 )
 
 // SingBoxJSON renders an importable sing-box configuration for a single server.
 func SingBoxJSON(u model.User, set *model.Settings) string {
-	return GenerateSingBox(Request{
-		User:     u,
-		Settings: set,
-		Servers:  One(set),
-		Access:   model.UnrestrictedAccess(),
-	})
+	return SingBoxJSONMulti(u, One(set))
 }
 
 // singboxProxies builds the protocol outbounds + their tags for one server. Tags
@@ -91,12 +89,7 @@ func singboxProxies(u model.User, srv Server) (proxies []any, tags []string) {
 			tags = append(tags, tag)
 		}
 	}
-	return proxies, tags
-}
-
-// singboxExternalProxies builds sing-box outbounds + tags for allowed external servers.
-func singboxExternalProxies(access model.Access, ext []model.ExtServer) (proxies []any, tags []string) {
-	for _, e := range ExternalEndpoints(ext, access) {
+	for _, e := range srv.externalEndpoints() {
 		if o, ok := extsub.SingBoxOutbound(e, e.Name); ok {
 			proxies = append(proxies, o)
 			tags = append(tags, e.Name)
@@ -190,18 +183,114 @@ func singboxCustom(u model.User, in model.Inbound, set *model.Settings) (map[str
 	return out, tag, true
 }
 
-// SingBoxJSONMulti renders a sing-box config spanning every server (legacy helper).
+// SingBoxJSONMulti renders a sing-box config spanning every server (local + each
+// node): one outbound per lane × server, all gathered under the selector/urltest
+// groups. servers[0] is the local server, used for the group title + DNS bootstrap
+// anchor.
 func SingBoxJSONMulti(u model.User, servers []Server) string {
-	var set *model.Settings
-	if len(servers) > 0 {
-		set = servers[0].Set
+	if len(servers) == 0 {
+		return "{}"
 	}
-	return GenerateSingBox(Request{
-		User:     u,
-		Settings: set,
-		Servers:  servers,
-		Access:   model.UnrestrictedAccess(),
-	})
+	local := servers[0].Set
+
+	proxies, tags := singboxProxiesAll(u, servers)
+
+	group := SubTitle(u, local)
+	// Nothing allowed ⇒ no tags. A urltest with an empty outbound list and a selector
+	// pointing at it are load errors in sing-box, so the client would refuse the entire
+	// profile instead of showing an account with no servers. Answer a direct-only
+	// config: valid, honest, and it starts working the moment access is granted.
+	if len(tags) == 0 {
+		out, err := json.MarshalIndent(map[string]any{
+			"log":       map[string]any{"level": "warn"},
+			"outbounds": []any{map[string]any{"type": "direct", "tag": "direct"}},
+			"route":     map[string]any{"final": "direct"},
+		}, "", "  ")
+		if err != nil {
+			return "{}"
+		}
+		return string(out)
+	}
+	outbounds := []any{
+		map[string]any{"type": "selector", "tag": group, "outbounds": append([]string{"auto"}, tags...), "default": "auto"},
+		map[string]any{"type": "urltest", "tag": "auto", "outbounds": tags,
+			"url": "https://www.gstatic.com/generate_204", "interval": "5m"},
+	}
+	outbounds = append(outbounds, proxies...)
+	outbounds = append(outbounds, map[string]any{"type": "direct", "tag": "direct"})
+
+	// Encrypted DNS (DoH) routed through the tunnel — defeats DNS poisoning/blocking
+	// the censor does on plaintext UDP/53.
+	//
+	// DNS servers are written in the typed form ("type" + "server") that sing-box 1.12
+	// introduced. The old one-string form ("address": "https://1.1.1.1/dns-query") was
+	// removed in 1.14, and a 1.14 client refuses the WHOLE profile over it — every
+	// server gone, not just DNS. The typed form loads on 1.12 and later, which is the
+	// floor this profile already had: tls.fragment below is 1.12 too.
+	dnsServers := []any{
+		map[string]any{"type": "https", "tag": "remote", "server": "1.1.1.1", "detour": group},
+	}
+	dns := map[string]any{"servers": dnsServers, "final": "remote", "strategy": "prefer_ipv4"}
+	route := map[string]any{"final": group, "auto_detect_interface": true}
+	// A server whose host is a domain has to be resolved before the tunnel exists, so
+	// it cannot go through "remote" — that detours through the very outbound it is
+	// resolving, and the first connect deadlocks. It is resolved directly instead,
+	// across all nodes, not just the local server.
+	//
+	// Which DNS server resolves an outbound's own host used to be picked by a DNS rule
+	// matching the host names. Since 1.12 it is route.default_domain_resolver, and 1.14
+	// refuses a profile that dials a domain without one. An all-IP profile resolves
+	// nothing, so it gets neither the bootstrap server nor the resolver.
+	//
+	// The bootstrap is Yandex's DoH, because it has to answer from the user's network
+	// with no tunnel up. It used to be Alibaba's 223.5.5.5, whose TLS handshake hangs
+	// after the ClientHello from Russian networks (measured 2026-09-15): the lookup
+	// timed out, and a domain-hosted profile never connected at all. A domestic
+	// resolver is also the one that survives a mobile whitelist, and all it ever
+	// resolves is the panel's own server names.
+	for _, srv := range servers {
+		if net.ParseIP(srv.Set.Host) == nil {
+			dns["servers"] = append(dnsServers,
+				map[string]any{"type": "https", "tag": "bootstrap", "server": "77.88.8.8"})
+			route["default_domain_resolver"] = "bootstrap"
+			break
+		}
+	}
+
+	routeRules := []any{
+		map[string]any{"action": "sniff"},
+		map[string]any{"protocol": "dns", "action": "hijack-dns"},
+	}
+	if local.BlockQUIC {
+		// Drop untunneled browser QUIC (UDP/443) so it can't slip past the obfuscated
+		// TCP lanes under the censor's QUIC classifiers — the browser falls back to
+		// TCP+H2 inside the tunnel.
+		routeRules = append(routeRules, map[string]any{"network": "udp", "port": 443, "action": "reject"})
+	}
+	routeRules = append(routeRules, map[string]any{"ip_is_private": true, "outbound": "direct"})
+	route["rules"] = routeRules
+
+	cfg := map[string]any{
+		"log": map[string]any{"level": "warn"},
+		"dns": dns,
+		"inbounds": []any{
+			map[string]any{
+				"type": "tun", "tag": "tun-in",
+				"address":      []string{"172.19.0.1/30"},
+				"auto_route":   true,
+				"strict_route": true,
+				"stack":        "system",
+			},
+		},
+		"outbounds": outbounds,
+		"route":     route,
+	}
+
+	b, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
 }
 
 // SingBoxWithTemplate renders the user's outbounds into the operator's own sing-box
@@ -214,16 +303,62 @@ func SingBoxJSONMulti(u model.User, servers []Server) string {
 // parse a profile drops all of it, so serving the plain one is always better than
 // serving a broken document.
 func SingBoxWithTemplate(u model.User, servers []Server, template string) (string, error) {
-	var set *model.Settings
-	if len(servers) > 0 {
-		set = servers[0].Set
+	if strings.TrimSpace(template) == "" {
+		return SingBoxJSONMulti(u, servers), nil
 	}
-	return GenerateSingBoxWithTemplate(Request{
-		User:     u,
-		Settings: set,
-		Servers:  servers,
-		Access:   model.UnrestrictedAccess(),
-	}, template)
+	if len(servers) == 0 {
+		return SingBoxJSONMulti(u, servers), nil
+	}
+	// A template saved before sing-box removed a field it uses parses fine and renders
+	// fine, and every client refuses it. Refused at save now, but one already stored
+	// still has to be caught here — the generated profile works on every current client.
+	if err := singboxLegacyErr(template); err != nil {
+		return SingBoxJSONMulti(u, servers), err
+	}
+	proxies, tags := singboxProxiesAll(u, servers)
+	// Nothing allowed: the generated profile has a direct-only answer for this, which
+	// is valid and honest. A template spliced with an empty proxy list would leave a
+	// selector pointing at nothing, which sing-box refuses outright.
+	if len(tags) == 0 {
+		return SingBoxJSONMulti(u, servers), nil
+	}
+	tagList := make([]any, len(tags))
+	for i, t := range tags {
+		tagList[i] = t
+	}
+	out, err := renderJSONTemplate(template,
+		map[string]any{TplGroup: SubTitle(u, servers[0].Set)},
+		map[string][]any{TplProxies: proxies, TplTags: tagList},
+	)
+	if err != nil {
+		return SingBoxJSONMulti(u, servers), err
+	}
+	return out, nil
+}
+
+// singboxProxiesAll gathers every server's outbounds, giving each a tag no other
+// outbound shares. A duplicate tag is fatal in sing-box — the selector would name it
+// twice and the profile is refused — so the de-duplication is not cosmetic; see
+// uniqueLabel for how two differently-named lanes end up asking for the same tag.
+func singboxProxiesAll(u model.User, servers []Server) ([]any, []string) {
+	var proxies []any
+	var tags []string
+	seen := map[string]int{}
+	for _, srv := range servers {
+		p, t := singboxProxies(u, srv)
+		for i := range p {
+			uniq := uniqueLabel(seen, t[i])
+			if uniq != t[i] {
+				if m, ok := p[i].(map[string]any); ok {
+					m["tag"] = uniq
+				}
+				t[i] = uniq
+			}
+			proxies = append(proxies, p[i])
+			tags = append(tags, t[i])
+		}
+	}
+	return proxies, tags
 }
 
 // singboxObfs adds sing-box's Salamander block to a Hysteria2 outbound, or leaves

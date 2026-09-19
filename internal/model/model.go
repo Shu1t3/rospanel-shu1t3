@@ -589,11 +589,36 @@ func UserEmail(id int64) string {
 	return string(strconv.AppendInt(buf[:1], id, 10))
 }
 
+// UserIDOfEmail reads a user id back out of an Xray client tag: "u" and digits only.
+func UserIDOfEmail(email string) (int64, bool) {
+	if !strings.HasPrefix(email, "u") {
+		return 0, false
+	}
+	var id int64
+	for _, c := range email[1:] {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		id = id*10 + int64(c-'0')
+		if id > 1<<40 {
+			return 0, false
+		}
+	}
+	return id, len(email) > 1
+}
+
 // Connection is a per-source-IP record of a user's connections.
 type Connection struct {
 	IP       string `json:"ip"`
 	LastSeen int64  `json:"last_seen"`
-	Count    int64  `json:"count"`
+	// Count is how many times the address was seen opening connections, at most once
+	// per sighting interval — cumulative for as long as the row lives.
+	Count int64 `json:"count"`
+	// ApproxSeconds is Count times that interval: a lower bound on how long the
+	// address was active, not a stopwatch.
+	ApproxSeconds int64 `json:"approx_seconds"`
+	// Banned is whether the address is dropped at the firewall right now, by any ban.
+	Banned bool `json:"banned"`
 }
 
 // UptimeDay is one server's liveness on one day: how many samples were taken and
@@ -1005,24 +1030,6 @@ type Settings struct {
 	// ServerPlacement is computed alongside ServerID: this server's placement, so
 	// the subscription can order the servers it spans (sub.Order).
 	ServerPlacement Placement `json:"-"`
-}
-
-// Clone returns a deep copy of Settings so that callers can mutate the returned
-// value without races or side-effects on cached singleton instances.
-func (s *Settings) Clone() *Settings {
-	if s == nil {
-		return nil
-	}
-	cp := *s
-	if s.ProxyAccounts != nil {
-		cp.ProxyAccounts = append([]SystemProxyAccount(nil), s.ProxyAccounts...)
-	}
-	if s.SubRules != nil {
-		cp.SubRules = append([]SubRule(nil), s.SubRules...)
-	}
-	cp.ConnPolicy = s.ConnPolicy.Clone()
-	cp.Routing = s.Routing.Clone()
-	return &cp
 }
 
 // WarpRegistered reports whether a WARP account has been provisioned.
@@ -1519,8 +1526,8 @@ func (s *Settings) DecorateName(name string, u *User) string { return s.decorate
 // decorate expands a name's variables and adds the multi-node prefix.
 //
 // The prefix is skipped when the name places the server itself: an operator who wrote
-// "{flag} {server} VLESS" has said where the server goes, and prefixing on top of that
-// produces "Netherlands · 🇳🇱 Netherlands VLESS".
+// "{server} VLESS" has said where the server goes, and prefixing on top of that
+// produces "Netherlands · Netherlands VLESS".
 func (s *Settings) decorate(name string, u *User) string {
 	rendered := name
 	// Resolving the timezone means reading the zone database, and this runs once per
@@ -1533,10 +1540,9 @@ func (s *Settings) decorate(name string, u *User) string {
 			server = s.MasterLabel
 		}
 		rendered = RenderName(name, NameVars{
-			Server:  server,
-			Country: s.ServerPlacement.Country,
-			User:    u,
-			Loc:     s.Location(),
+			Server: server,
+			User:   u,
+			Loc:    s.Location(),
 		})
 	}
 	// Multi-node: prefix with the server name so a client shows "Netherlands · VLESS"
@@ -1648,75 +1654,6 @@ type EgressLane struct {
 	Manual  []string `json:"manual"`  // "scheme://[user:pass@]host:port" entries
 	Domains []string `json:"domains"` // destinations routed through this lane
 	IPs     []string `json:"ips"`     // CIDRs or "geoip:xx"
-}
-
-// Clone returns a deep copy of EgressLane.
-func (l EgressLane) Clone() EgressLane {
-	cp := l
-	if l.URLs != nil {
-		cp.URLs = append([]string(nil), l.URLs...)
-	}
-	if l.Manual != nil {
-		cp.Manual = append([]string(nil), l.Manual...)
-	}
-	if l.Domains != nil {
-		cp.Domains = append([]string(nil), l.Domains...)
-	}
-	if l.IPs != nil {
-		cp.IPs = append([]string(nil), l.IPs...)
-	}
-	return cp
-}
-
-// Clone returns a deep copy of RoutingConfig.
-func (r RoutingConfig) Clone() RoutingConfig {
-	cp := r
-	if r.BlockIPs != nil {
-		cp.BlockIPs = append([]string(nil), r.BlockIPs...)
-	}
-	if r.BlockDomains != nil {
-		cp.BlockDomains = append([]string(nil), r.BlockDomains...)
-	}
-	if r.WarpDomains != nil {
-		cp.WarpDomains = append([]string(nil), r.WarpDomains...)
-	}
-	if r.WarpIPs != nil {
-		cp.WarpIPs = append([]string(nil), r.WarpIPs...)
-	}
-	if r.OperaDomains != nil {
-		cp.OperaDomains = append([]string(nil), r.OperaDomains...)
-	}
-	if r.OperaIPs != nil {
-		cp.OperaIPs = append([]string(nil), r.OperaIPs...)
-	}
-	if r.DirectDomains != nil {
-		cp.DirectDomains = append([]string(nil), r.DirectDomains...)
-	}
-	if r.DirectIPs != nil {
-		cp.DirectIPs = append([]string(nil), r.DirectIPs...)
-	}
-	if r.RoutingOrder != nil {
-		cp.RoutingOrder = append([]string(nil), r.RoutingOrder...)
-	}
-	if r.Lanes != nil {
-		cp.Lanes = make([]EgressLane, len(r.Lanes))
-		for i, lane := range r.Lanes {
-			cp.Lanes[i] = lane.Clone()
-		}
-	}
-	if r.ProxyURLs != nil {
-		cp.ProxyURLs = append([]string(nil), r.ProxyURLs...)
-	}
-	if r.ProxyManual != nil {
-		cp.ProxyManual = append([]string(nil), r.ProxyManual...)
-	}
-	if r.ProxyDomains != nil {
-		cp.ProxyDomains = append([]string(nil), r.ProxyDomains...)
-	}
-	if r.ProxyIPs != nil {
-		cp.ProxyIPs = append([]string(nil), r.ProxyIPs...)
-	}
-	return cp
 }
 
 // MaxEgressLanes caps how many lanes one config may define. Every active lane

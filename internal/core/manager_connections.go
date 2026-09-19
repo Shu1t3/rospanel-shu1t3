@@ -4,14 +4,12 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/auth"
@@ -191,12 +189,6 @@ func portFree(network string, port int) bool {
 	if network == "udp" {
 		c, err := net.ListenPacket("udp", addr)
 		if err != nil {
-			// In unprivileged test runners (e.g. CI without root / CAP_NET_BIND_SERVICE),
-			// low ports (< 1024) return EACCES/EPERM, which indicates lack of OS capability
-			// rather than a port collision with another running listener.
-			if errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM) {
-				return true
-			}
 			return false
 		}
 		_ = c.Close()
@@ -204,9 +196,6 @@ func portFree(network string, port int) bool {
 	}
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
-		if errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM) {
-			return true
-		}
 		return false
 	}
 	_ = l.Close()
@@ -242,7 +231,7 @@ func validateConnNames(names map[string]string, taken []string) (map[string]stri
 			return nil, invalidCode("err.inboundNameTooLong", "название подключения не длиннее 32 символов")
 		}
 		if raw != "" && !model.LaneNameRe.MatchString(raw) {
-			return nil, invalidCode("err.inboundNameCharset", "недопустимое название подключения {{value}} (буквы, цифры, эмодзи, пробел, . _ - ( ))", map[string]any{"value": raw})
+			return nil, invalidCode("err.inboundNameCharset", "недопустимое название подключения {{value}} (буквы, цифры, эмодзи, переменные в фигурных скобках, пробел, . _ - ( ) ·)", map[string]any{"value": raw})
 		}
 		display := raw
 		if display == "" {
@@ -271,7 +260,6 @@ type ConnectionsUpdate struct {
 	Protocols         map[string]bool   `json:"protocols"`    // key → enabled
 	Fingerprints      map[string]string `json:"fingerprints"` // key → uTLS fingerprint
 	Names             map[string]string `json:"names"`        // key → custom node name ("" = default)
-	VLESSPort         int               `json:"vless_port"`
 	HysteriaPort      int               `json:"hysteria_port"`
 	HopStart          int               `json:"hop_start"`
 	HopEnd            int               `json:"hop_end"`
@@ -293,12 +281,11 @@ type ConnectionsUpdate struct {
 	TLSMin13    bool `json:"tls_min13"`
 	BlockQUIC   bool `json:"block_quic"`
 
-	// AmneziaWG: port (0 = keep / pick one), in-tunnel DNS, custom obfuscation
-	// parameters (AWG 3.1), and a request for fresh keys + parameters.
-	AWGPort      int              `json:"awg_port"`
-	AWGDNS       string           `json:"awg_dns"`
-	AWGParams    *model.AWGParams `json:"awg_params,omitempty"`
-	RegenAWGKeys bool             `json:"regen_awg_keys"`
+	// AmneziaWG: port (0 = keep / pick one), in-tunnel DNS, and a request for a
+	// fresh keypair + parameters (every client config handed out so far dies).
+	AWGPort      int    `json:"awg_port"`
+	AWGDNS       string `json:"awg_dns"`
+	RegenAWGKeys bool   `json:"regen_awg_keys"`
 }
 
 // resolveObfs decides the Salamander key a save lands on: a freshly minted one when
@@ -400,16 +387,6 @@ func (m *Manager) ApplyConnections(u ConnectionsUpdate) error {
 	if err != nil {
 		return err
 	}
-	vlessPort := u.VLESSPort
-	if vlessPort == 0 {
-		vlessPort = set.VLESSPort
-	}
-	if vlessPort == 0 {
-		vlessPort = 443
-	}
-	if vlessPort < 1 || vlessPort > 65535 {
-		return invalidCode("err.portRange", "порт вне диапазона 1–65535")
-	}
 	if u.HysteriaPort < 1 || u.HysteriaPort > 65535 {
 		return invalidCode("err.portRange", "порт вне диапазона 1–65535")
 	}
@@ -430,53 +407,18 @@ func (m *Manager) ApplyConnections(u ConnectionsUpdate) error {
 	if u.RealityPort < 1 || u.RealityPort > 65535 {
 		return invalidCode("err.realityPortRange", "порт REALITY вне диапазона 1–65535")
 	}
-
-	// Two built-in TCP lanes cannot share the same port if both enabled.
-	if u.Protocols["vless"] && u.Protocols["reality"] && vlessPort == u.RealityPort {
-		return invalidCode("err.tcpPortTaken", "порт {{port}} уже занят (VLESS-Vision и REALITY не могут использовать один TCP-порт)", map[string]any{"port": vlessPort})
-	}
-
 	// A port we're about to (re)bind must be free on the host, so a typo'd or
 	// colliding port is rejected up front instead of crash-looping Xray. Hysteria's
 	// UDP listener is always up, so only a CHANGE needs checking; the REALITY inbound
 	// exists only while enabled, so check whenever it'll be enabled on a port our
 	// REALITY inbound isn't already holding.
-	if u.Protocols["hysteria2"] && u.HysteriaPort != set.HysteriaPort && !portFree("udp", u.HysteriaPort) {
+	if u.HysteriaPort != set.HysteriaPort && !portFree("udp", u.HysteriaPort) {
 		return invalidCode("err.udpPortTaken", "UDP-порт {{port}} уже занят — выберите другой", map[string]any{"port": u.HysteriaPort})
 	}
 	realityHeld := set.RealityEnabled && set.RealityPrivateKey != "" && set.RealityPort == u.RealityPort
-	if u.Protocols["reality"] && !realityHeld && u.RealityPort != set.VLESSPort && !portFree("tcp", u.RealityPort) {
+	if u.Protocols["reality"] && !realityHeld && !portFree("tcp", u.RealityPort) {
 		return invalidCode("err.tcpPortTaken", "TCP-порт {{port}} уже занят — выберите другой", map[string]any{"port": u.RealityPort})
 	}
-	vlessHeld := set.VLESSEnabled && set.VLESSPort == vlessPort
-	if u.Protocols["vless"] && !vlessHeld && vlessPort != set.RealityPort && !portFree("tcp", vlessPort) {
-		return invalidCode("err.tcpPortTaken", "TCP-порт {{port}} уже занят — выберите другой", map[string]any{"port": vlessPort})
-	}
-
-	inbounds, err := m.store.Inbounds(model.LocalNodeID)
-	if err != nil {
-		return err
-	}
-	for _, in := range inbounds {
-		if !in.Enabled {
-			continue
-		}
-		inNet := portNetwork(in)
-		switch inNet {
-		case "tcp":
-			if u.Protocols["vless"] && in.Port == vlessPort {
-				return invalidCode("err.portTakenByInbound", "порт {{port}} уже занят подключением «{{who}}»", map[string]any{"port": vlessPort, "who": in.Name})
-			}
-			if u.Protocols["reality"] && in.Port == u.RealityPort {
-				return invalidCode("err.portTakenByInbound", "порт {{port}} уже занят подключением «{{who}}»", map[string]any{"port": u.RealityPort, "who": in.Name})
-			}
-		case "udp":
-			if u.Protocols["hysteria2"] && (in.Port == u.HysteriaPort || (u.HopEnd > u.HysteriaPort && in.Port >= u.HysteriaPort && in.Port <= u.HopEnd)) {
-				return invalidCode("err.portTakenByInbound", "порт {{port}} уже занят подключением «{{who}}»", map[string]any{"port": in.Port, "who": in.Name})
-			}
-		}
-	}
-
 	// REALITY donor SNIs: comma-separated, the first is primary (used in links).
 	var dests []string
 	for _, d := range strings.Split(u.RealityDest, ",") {
@@ -531,23 +473,10 @@ func (m *Manager) ApplyConnections(u ConnectionsUpdate) error {
 			return err
 		}
 	}
-	if u.AWGParams != nil && !u.RegenAWGKeys && !u.AWGParams.IsZero() {
-		engineParams := awgParams(*u.AWGParams)
-		if err := engineParams.Validate(); err != nil {
-			return fmt.Errorf("awg: invalid parameters: %w", err)
-		}
-		if err := m.store.SaveAWGKeys(set.AWGPrivateKey, set.AWGPublicKey, *u.AWGParams); err != nil {
-			return err
-		}
-		set.AWGParams = *u.AWGParams
-	}
 	if err := m.store.SetFingerprints(vlessFp, realityFp); err != nil {
 		return err
 	}
 	if err := m.store.SetProtocolNames(connNames["vless"], connNames["reality"], connNames["hysteria2"]); err != nil {
-		return err
-	}
-	if err := m.store.SetVLESSPort(vlessPort); err != nil {
 		return err
 	}
 	if err := m.store.SetHysteriaPorts(u.HysteriaPort, u.HopStart, u.HopEnd, interval, obfs); err != nil {

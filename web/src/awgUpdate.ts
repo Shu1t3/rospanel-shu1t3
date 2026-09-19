@@ -33,6 +33,7 @@ export function buildAwgConnectionsUpdate(
     hop_end: status.hop_end,
     hop_interval: status.hop_interval || "5-10",
     hysteria_obfs: status.hysteria_obfs || "",
+    regen_obfs: false,
     reality_port: status.reality_port,
     reality_dest: status.reality_dest,
     reality_anti_replay: status.reality_anti_replay,

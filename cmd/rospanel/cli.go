@@ -17,7 +17,6 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/backup"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/core"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/datasec"
-	"github.com/Shu1t3/rospanel-shu1t3/internal/firewall"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/updater"
@@ -310,7 +309,7 @@ func runInstall() {
 		"Environment=ROSPANEL_ADMIN_ADDR=127.0.0.1:8080",
 	}
 	// Carry through optional config the operator passed when running install.
-	for _, k := range []string{"ROSPANEL_HOST", "ROSPANEL_ACME_EMAIL", "XRAY_BIN", "ROSPANEL_REPO"} {
+	for _, k := range []string{"ROSPANEL_HOST", "ROSPANEL_ACME_EMAIL", "XRAY_BIN"} {
 		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 			envLines = append(envLines, "Environment="+k+"="+v)
 		}
@@ -346,7 +345,6 @@ func runInstall() {
 		"AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN\n" +
 		"NoNewPrivileges=yes\n" +
 		"ProtectSystem=strict\n" +
-		"DeviceAllow=/dev/net/tun rw\n" +
 		"ReadWritePaths=/usr/local/bin /etc/systemd/system\n" +
 		"ProtectHome=yes\n" +
 		"PrivateTmp=yes\n" +
@@ -373,25 +371,6 @@ func runInstall() {
 	}
 	log.Print("install: done — service enabled and started")
 	log.Print("first-run credentials: journalctl -u rospanel | grep -A6 FIRST-RUN")
-
-	// Ensure system firewall (UFW) is configured and ports are opened.
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	installRules := []firewall.Rule{
-		firewall.TCPRule(80, "http-redirect"),
-		firewall.TCPRule(443, "vless"),
-	}
-	if dbSt, err := store.Open(filepath.Join(dataDir, "rospanel.db")); err == nil {
-		if r, rerr := core.HostFirewallRules(dbSt); rerr == nil && len(r) > 0 {
-			installRules = r
-		}
-		_ = dbSt.Close()
-	}
-	if err := firewall.Sync(ctx, installRules); err != nil {
-		log.Printf("install: firewall setup warning: %v", err)
-	} else {
-		log.Print("install: firewall (ufw) configured and enabled")
-	}
 }
 
 // runUninstall stops/disables the service and removes the unit file. Data under
@@ -506,15 +485,9 @@ func runUpdate(args []string) {
 	}
 
 	fmt.Println("Restarting the service…")
-	serviceName := "rospanel"
-	if _, err := os.Stat(nodeUnitPath); err == nil {
-		if _, err := os.Stat(systemdUnitPath); os.IsNotExist(err) {
-			serviceName = "rospanel-node"
-		}
-	}
-	if err := exec.Command("systemctl", "restart", serviceName).Run(); err != nil {
+	if err := exec.Command("systemctl", "restart", "rospanel").Run(); err != nil {
 		fmt.Fprintf(os.Stderr,
-			"The binary was updated but the restart failed: %v\nRun it manually: systemctl restart %s\n", err, serviceName)
+			"The binary was updated but the restart failed: %v\nRun it manually: systemctl restart rospanel\n", err)
 		os.Exit(1)
 	}
 	fmt.Printf("Done — updated to v%s.\n", rel.Version)

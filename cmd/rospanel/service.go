@@ -24,6 +24,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/datasec"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/decoy"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/geo"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/h2fix"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/http80"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/netinfo"
@@ -42,12 +43,10 @@ import (
 // masquerade/subscription surface until a termination signal arrives.
 func runServer(dataDir string) {
 	log.Printf("startup: RosPanel %s booting (data dir %s)", version.Version, dataDir)
+	logMemoryLimit(tuning.SetMemoryLimit(panelMemoryShare, xray.MemoryLimit))
 	adminAddr := env("ROSPANEL_ADMIN_ADDR", "127.0.0.1:8080")
 	startupStage("resolving Xray binary")
 	xrayBin := resolveXrayBin(env("XRAY_BIN", "xray"), filepath.Join(dataDir, "bin"))
-	if xrayBin == "" {
-		log.Print("xray: running in standalone control plane mode (Xray data plane unmanaged)")
-	}
 
 	dbPath := filepath.Join(dataDir, "rospanel.db")
 	certPath := filepath.Join(dataDir, "certs", "cert.pem")
@@ -106,7 +105,7 @@ func runServer(dataDir string) {
 	// and the refusal contradicts the page however good it is.
 	//
 	// Started FIRST so that issuance and every later renewal take the same route: this
-	// listener answers the ACME challenge itself (see http80.Start and
+	// listener answers the ACME challenge itself (see server.StartRedirector and
 	// tlsmgr.UseSharedHTTP01). Starting it afterwards would leave the first issuance
 	// going through lego's own server and every renewal through this one — two paths
 	// in production, one of which nothing would exercise until a certificate was
@@ -138,11 +137,6 @@ func runServer(dataDir string) {
 	// wholesale), leaving them gone until an unrelated edit happened to re-apply them.
 	if err := core.EnsureHostHops(st); err != nil {
 		log.Printf("port-hopping setup failed (Hysteria2 hopping disabled): %v", err)
-	}
-
-	// Best-effort host-level firewall (UFW) configuration.
-	if err := core.EnsureHostFirewall(st); err != nil {
-		log.Printf("firewall setup failed: %v", err)
 	}
 
 	// Best-effort host-level per-IP connection guard on the public TCP ports: caps
@@ -197,24 +191,12 @@ func runServer(dataDir string) {
 		filepath.Join(dataDir, "opera"))
 	sup.SetOnAccess(mgr.RecordLocalAccess) // track online status + connection IPs
 	mgr.StartSysstat(dataDir)              // host metrics for the dashboard
-	srvCtx, cancelSrv := context.WithCancel(context.Background())
-	defer cancelSrv()
-
-	var bgWg sync.WaitGroup
-	runBG := func(fn func()) {
-		bgWg.Add(1)
-		go func() {
-			defer bgWg.Done()
-			fn()
-		}()
-	}
-
 	// Blocklists for abuse detection. Cached copies load synchronously (fast, local),
 	// so matching works from the first access-log line; downloads run in background
 	// and a failure leaves the matcher empty rather than holding up the boot.
 	abuseStore := abuse.NewStore(filepath.Join(dataDir, "abuse"))
 	mgr.SetAbuse(abuseStore)
-	runBG(func() { abuseStore.Run(srvCtx) })
+	go abuseStore.Run(context.Background())
 	// The health report needs to tell "off on purpose" from "on, but nft refused it".
 	mgr.SetConnGuard(connGuardWanted, connGuardLimits)
 
@@ -225,6 +207,7 @@ func runServer(dataDir string) {
 	// Put back the addresses the source policy had refused: the kernel forgets its
 	// sets on restart, and the panel's own record is what says who should still be out.
 	mgr.ApplyPolicyBlocksAtBoot()
+	mgr.ApplyIPBansAtBoot()
 
 	startupStage("generating Xray config and starting Xray")
 	if err := mgr.Reconcile(); err != nil {
@@ -235,55 +218,67 @@ func runServer(dataDir string) {
 	// reconcile so a config already referencing a group picks it up now rather than
 	// routing without those rules until the next refresh tick. Backgrounded: Xray is
 	// already serving and does not depend on these.
-	runBG(func() {
+	go func() {
 		missing := false
 		for _, f := range geo.StatusLists(geoDir) {
 			missing = missing || !f.Present
 		}
-		if !missing || srvCtx.Err() != nil {
+		if !missing {
 			return
 		}
 		if err := geo.EnsureLists(geoDir); err != nil {
 			log.Printf("iplist: %v", err)
 			return
 		}
-		if srvCtx.Err() != nil {
-			return
-		}
 		mgr.TriggerReconcile()
-	})
+	}()
 
 	// Fetch the IP→ASN table if missing (panel-only, for the connection map's provider
 	// breakdown). Backgrounded and best-effort — the map degrades to country-only until
 	// it lands, and nothing else depends on it.
-	runBG(func() {
-		if srvCtx.Err() != nil {
-			return
-		}
+	go func() {
 		if err := geo.EnsureASN(geoDir); err != nil {
 			log.Printf("asn: %v", err)
 		}
-	})
+	}()
+
+	// Background work runs under one context and is waited on at shutdown. Before,
+	// each loop was a bare goroutine on context.Background(): on SIGTERM the process
+	// left while a flush was mid-write and a Telegram send mid-flight, which is how a
+	// stop could lose the last batch of access rows. Nothing here blocks for long —
+	// the wait below is bounded either way.
+	bg, stopBG := context.WithCancel(context.Background())
+	var bgWG sync.WaitGroup
+	runBG := func(name string, fn func(context.Context)) {
+		bgWG.Add(1)
+		go func() {
+			defer bgWG.Done()
+			fn(bg)
+			log.Printf("background: %s stopped", name)
+		}()
+	}
 
 	// Daily TLS check: renews ACME certs near expiry and reloads Xray on change.
-	runBG(func() { tlsLoop(srvCtx, mgr) })
+	runBG("tls", tlsLoop(mgr))
 	// Periodic traffic accounting + quota/expiry enforcement.
-	runBG(func() { statsPollLoop(srvCtx, mgr) })
+	runBG("stats poll", statsPollLoop(mgr))
 	// Writes the buffered access-log sightings. RecordAccess only buffers, so this
 	// is what actually persists who connected from where.
-	runBG(func() { accessFlushLoop(srvCtx, mgr) })
+	runBG("access flush", accessFlushLoop(mgr))
 	// Payment polling fallback: reconciles pending provider orders in case a webhook
 	// was missed. Idles cheaply when there are no pending orders.
-	runBG(func() { paymentPollLoop(srvCtx, mgr) })
+	runBG("payment poll", paymentPollLoop(mgr))
+	runBG("external subscriptions", mgr.RunExtSubLoop) // re-read hourly
 	// Audit-log + connection-row retention: drops rows past their windows.
-	runBG(func() { retentionLoop(srvCtx, mgr) })
+	runBG("retention", retentionLoop(mgr))
+	// Re-applies the addresses banned by hand: they never expire, so a ban that did
+	// not land in the firewall (nft failing for a moment) is put right on the timer.
+	runBG("ip bans", func(ctx context.Context) {
+		tick(ctx, 5*time.Minute, func() { safeTick("ip bans", mgr.ResyncIPBans) })
+	})
 	// Scheduled local backups. Independent of Telegram, so an operator with no bot
 	// still gets automatic backups; idles until a cron is set in Settings.
-	runBG(func() { autobackup.New(mgr, st, dataDir).Run(srvCtx) })
-	// Periodic Happ proxy subscriptions sync (auto-refresh every 59 min).
-	runBG(func() { mgr.RunHappScheduler(srvCtx) })
-	// Re-read external subscriptions hourly.
-	runBG(func() { mgr.RunExtSubLoop(srvCtx) })
+	runBG("auto backup", autobackup.New(mgr, st, dataDir).Run)
 	// All three bots reach Telegram through the same egress, and in the WARP / Opera
 	// modes that egress is something this very startup brought up moments ago — Xray
 	// needs a couple of seconds past "process started" before its inbound accepts.
@@ -291,24 +286,23 @@ func runServer(dataDir string) {
 	// backoff, so the bots stay silent for ~40s after every restart. One bounded wait,
 	// shared by all three, off the startup path so the panel still serves meanwhile
 	// (it returns immediately for the direct and custom routes).
-	runBG(func() {
-		mgr.AwaitTelegramEgress(srvCtx)
-		var tgWg sync.WaitGroup
-		tgRun := func(fn func()) {
-			tgWg.Add(1)
-			go func() {
-				defer tgWg.Done()
-				fn()
-			}()
-		}
-		tgRun(func() { telegram.New(mgr, st, dataDir).Run(srvCtx) })
-		tgRun(func() { telegram.NewUser(mgr, st).Run(srvCtx) })
-		tgRun(func() { telegram.NewSupport(mgr, st).Run(srvCtx) })
-		tgWg.Wait()
+	runBG("telegram", func(ctx context.Context) {
+		mgr.AwaitTelegramEgress(ctx)
+		// Telegram admin bot: view/add/remove users + scheduled backups. It idles until
+		// enabled with a token in Settings → Telegram, re-reading config each cycle.
+		go telegram.New(mgr, st, dataDir).Run(ctx)
+		// Telegram user bot: public self-service for VPN clients (registration,
+		// subscription, stats). Idles until enabled with its own token in Settings.
+		go telegram.NewUser(mgr, st).Run(ctx)
+		// Telegram support bot: relays messages between a user's private chat and a
+		// per-user topic in the operator's forum supergroup. Idles until enabled with
+		// its own token and a group in Settings → Telegram.
+		go telegram.NewSupport(mgr, st).Run(ctx)
+		<-ctx.Done() // the three bots stop with it
 	})
 	// Broadcast delivery. Polls the store rather than holding a queue, so a restart
 	// mid-run resumes from the remaining recipients instead of losing or repeating.
-	runBG(func() { telegram.NewBroadcast(st, dataDir).Run(srvCtx) })
+	runBG("broadcasts", telegram.NewBroadcast(st, dataDir).Run)
 
 	handler, err := server.New(mgr, secret, set.DecoyTemplate, dataDir)
 	if err != nil {
@@ -341,7 +335,11 @@ func runServer(dataDir string) {
 	if err != nil {
 		log.Fatalf("listen %s: %v", adminAddr, err)
 	}
-	ln = &proxyproto.Listener{Listener: ln}
+	// …and h2fix keeps the ReadHeaderTimeout above from outliving the headers on an
+	// HTTP/2 connection, which is how a browser arrives through that same fallback:
+	// without it every held response — the dashboard's SSE stream — dies after ten
+	// seconds. See internal/h2fix.
+	ln = h2fix.Listener{Listener: &proxyproto.Listener{Listener: ln}}
 
 	go func() {
 		log.Printf("admin API listening on %s", adminAddr)
@@ -350,45 +348,12 @@ func runServer(dataDir string) {
 		}
 	}()
 
-	var unixSrv *http.Server
-	unixSockPath := env("ROSPANEL_UNIX_SOCKET", "")
-	if unixSockPath != "" {
-		_ = os.Remove(unixSockPath)
-		if err := os.MkdirAll(filepath.Dir(unixSockPath), 0o755); err != nil {
-			log.Printf("[WARN] unix socket dir: %v", err)
-		}
-		uln, err := net.Listen("unix", unixSockPath)
-		if err != nil {
-			log.Printf("[WARN] listen unix %s: %v", unixSockPath, err)
-		} else {
-			_ = os.Chmod(unixSockPath, 0o660)
-			unixProtocols := new(http.Protocols)
-			unixProtocols.SetHTTP1(true)
-			unixProtocols.SetUnencryptedHTTP2(true)
-			unixSrv = &http.Server{
-				Handler:           handler,
-				Protocols:         unixProtocols,
-				ReadHeaderTimeout: 10 * time.Second,
-				IdleTimeout:       120 * time.Second,
-			}
-			go func() {
-				log.Printf("admin API unix socket listening on %s", unixSockPath)
-				if err := unixSrv.Serve(uln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-					log.Printf("unix socket server: %v", err)
-				}
-			}()
-		}
-	}
-
 	startupStage("ready — panel is up (see FIRST-RUN CREDENTIALS above on a fresh install)")
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
 	log.Print("shutting down")
-
-	// Cancel background loops first so they stop ticking and executing new DB queries
-	cancelSrv()
 
 	// Stop Xray FIRST. Draining HTTP can take the full timeout below, and until the
 	// supervisor is marked closed an Xray exit still reads as a crash — which is
@@ -397,46 +362,50 @@ func runServer(dataDir string) {
 	// anything is what keeps an ordinary restart from paging the operator.
 	sup.Stop()
 	mgr.StopAWG()
+	mgr.StopTurn()
+
+	// Let the background loops finish what they are in the middle of — a flush, a
+	// send — and stop. Bounded: a loop that will not return must not hold the panel
+	// open, and everything they own is either idempotent or already durable.
+	stopBG()
+	waitBG(&bgWG, 3*time.Second)
+
+	// And the manager's own loops. Its store outlives this call only long enough for
+	// the synchronous work below, so anything of its own still ticking would be writing
+	// into a database that is about to go — the failure that shows up as a stray
+	// "sql: database is closed" attributed to whichever loop happened to be last.
+	mgr.Close()
 
 	// Drop the per-user speed caps. They live in the kernel's qdisc tree, which
 	// outlives this process until reboot — a panel that was stopped must not keep
 	// throttling anyone, least of all after the operator uninstalled it.
 	mgr.ResetShaping()
 
-	// Shut down HTTP listeners so in-flight requests complete before closing background workers and database.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if redirector != nil {
 		_ = redirector.Shutdown(ctx)
 	}
-	if unixSrv != nil {
-		_ = unixSrv.Shutdown(ctx)
-		if unixSockPath != "" {
-			_ = os.Remove(unixSockPath)
-		}
-	}
 	_ = httpSrv.Shutdown(ctx)
+}
 
-	// Stop and join loops owned by the manager before the store is flushed.
-	mgr.Close()
+// panelMemoryShare is the part of the machine's memory the panel's heap is steered
+// under, of what is left once Xray's own ceiling is set aside. Half: the system needs
+// the rest, and a burst — five node configs built at once — comes out of it.
+const panelMemoryShare = 0.5
 
-	// Wait for background workers to exit cleanly before flushing data and closing the store
-	bgDone := make(chan struct{})
-	go func() {
-		bgWg.Wait()
-		close(bgDone)
-	}()
-	select {
-	case <-bgDone:
-		log.Print("background workers stopped cleanly")
-	case <-time.After(5 * time.Second):
-		log.Print("shutdown timeout waiting for background workers")
+// logMemoryLimit says what SetMemoryLimit decided, so an operator reading the boot log
+// can tell a slow, collecting panel from one that has room.
+func logMemoryLimit(m tuning.Memory) {
+	switch {
+	case m.Basis == "GOMEMLIMIT":
+		log.Printf("memory: GOMEMLIMIT=%s from the environment is in force", os.Getenv("GOMEMLIMIT"))
+	case m.Limit > 0:
+		log.Printf("memory: Go heap soft limit %d MiB (%.0f%% of %d MiB %s, %d MiB set aside for Xray)",
+			m.Limit>>20, float64(m.Limit)*100/float64(m.Of), m.Of>>20, m.Basis, m.Reserved>>20)
+	default:
+		log.Print("memory: size unknown, no Go heap soft limit set")
 	}
-
-	// Flush any buffered access sightings and abuse sightings now that background loops
-	// and HTTP servers are stopped, cleanly before st.Close() runs.
-	mgr.FlushAccess()
-	mgr.FlushAbuse()
 }
 
 // startRedirector brings up the port-80 listener. Reads the host straight from the
@@ -444,9 +413,10 @@ func runServer(dataDir string) {
 // requests that arrive without a usable Host header, so an unreadable settings row
 // costs nothing worth failing a boot over.
 func startRedirector(st *store.Store) *http.Server {
-	// Cached for a minute: port 80 is scanned constantly and the store is the single
-	// connection every panel request queues behind. A read per request would stall the
-	// panel while a bot scanned; a minute of staleness after a domain change does not.
+	// Cached rather than read per request: port 80 is scanned constantly and the store
+	// is a single connection every panel request already queues behind. A minute of
+	// staleness after an operator changes the domain costs nothing; a database read per
+	// scan packet would not.
 	var (
 		mu     sync.Mutex
 		cached string
@@ -527,14 +497,9 @@ func safeTick(name string, fn func()) {
 }
 
 // statsPollLoop accounts per-user traffic and enforces quotas every minute.
-func statsPollLoop(ctx context.Context, mgr *core.Manager) {
-	t := time.NewTicker(60 * time.Second)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
+func statsPollLoop(mgr *core.Manager) func(context.Context) {
+	return func(ctx context.Context) {
+		tick(ctx, 60*time.Second, func() {
 			safeTick("stats poll", func() {
 				if err := mgr.PollStats(); err != nil {
 					// Expected when Xray isn't running (e.g. local dev) — keep quiet-ish.
@@ -546,7 +511,35 @@ func statsPollLoop(ctx context.Context, mgr *core.Manager) {
 					log.Printf("awg poll: %v", err)
 				}
 			})
+		})
+	}
+}
+
+// tick runs fn on every interval until ctx ends — the shape every loop below has.
+// A tick already running is allowed to finish; the loop simply does not start
+// another one.
+func tick(ctx context.Context, every time.Duration, fn func()) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			fn()
 		}
+	}
+}
+
+// waitBG waits for the background loops, giving up after `grace` so a stuck one
+// cannot hold the shutdown open.
+func waitBG(wg *sync.WaitGroup, grace time.Duration) {
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(grace):
+		log.Print("shutdown: background work did not finish in time — leaving it")
 	}
 }
 
@@ -556,42 +549,65 @@ func statsPollLoop(ctx context.Context, mgr *core.Manager) {
 // sightings into each commit.
 const accessFlushInterval = 5 * time.Second
 
+// accessFlushMinGap is the least time between two flushes asked for early. A flood
+// refilling the buffer faster than a flush can write it would otherwise keep the one
+// database connection busy with sightings and nothing else.
+const accessFlushMinGap = time.Second
+
 // accessFlushLoop persists buffered access-log sightings.
-func accessFlushLoop(ctx context.Context, mgr *core.Manager) {
-	t := time.NewTicker(accessFlushInterval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
+func accessFlushLoop(mgr *core.Manager) func(context.Context) {
+	return func(ctx context.Context) {
+		flushLoop(ctx, accessFlushInterval, accessFlushMinGap, mgr.AccessFlushDue(), func() {
 			safeTick("access flush", mgr.FlushAccess)
 			// Same cadence and the same reason: recordAbuse only buffers. Separate call
 			// rather than folded into FlushAccess so a failure in one does not cost the
 			// other its batch — they write different tables for different purposes.
 			safeTick("abuse flush", mgr.FlushAbuse)
-		}
+		})
+		// One last flush on the way out: these buffers are the only copy of who
+		// connected in the last few seconds, and a stop should not lose them.
+		safeTick("access flush", mgr.FlushAccess)
+		safeTick("abuse flush", mgr.FlushAbuse)
 	}
 }
 
-// paymentPollLoop reconciles pending provider orders (webhook fallback) every 25s.
-func paymentPollLoop(ctx context.Context, mgr *core.Manager) {
-	t := time.NewTicker(25 * time.Second)
+// flushLoop runs flush every interval, and sooner when due fires — a full buffer does
+// not wait for the tick (see core.accFlushAt) — but never two early flushes within
+// minGap of the last flush. It returns when ctx ends.
+func flushLoop(ctx context.Context, every, minGap time.Duration, due <-chan struct{}, flush func()) {
+	t := time.NewTicker(every)
 	defer t.Stop()
+	last := time.Now()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			safeTick("payment poll", mgr.PollPendingPayments)
+		case <-due:
+			if wait := minGap - time.Since(last); wait > 0 {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(wait):
+				}
+			}
 		}
+		flush()
+		last = time.Now()
+	}
+}
+
+// paymentPollLoop reconciles pending provider orders (webhook fallback) every 25s.
+func paymentPollLoop(mgr *core.Manager) func(context.Context) {
+	return func(ctx context.Context) {
+		tick(ctx, 25*time.Second, func() { safeTick("payment poll", mgr.PollPendingPayments) })
 	}
 }
 
 // retentionLoop drops audit rows, stale connection rows and old traffic history
 // past their retention windows. Every cutoff moves by the day, so a slow cadence is
 // plenty — this only keeps the tables from growing forever.
-func retentionLoop(ctx context.Context, mgr *core.Manager) {
+func retentionLoop(mgr *core.Manager) func(context.Context) {
 	sweep := func() {
 		mgr.PurgeOldEvents()
 		mgr.PurgeOldAdminAudit()
@@ -607,16 +623,9 @@ func retentionLoop(ctx context.Context, mgr *core.Manager) {
 		mgr.PurgeExpiredUsers()    // no-op unless the operator set a grace period
 		mgr.PurgeDeletedNodes()    // reclaim node tombstones past their grace window
 	}
-	sweep() // sweep once at boot, then on the timer
-	t := time.NewTicker(6 * time.Hour)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			safeTick("retention sweep", sweep)
-		}
+	return func(ctx context.Context) {
+		sweep() // sweep once at boot, then on the timer
+		tick(ctx, 6*time.Hour, func() { safeTick("retention sweep", sweep) })
 	}
 }
 
@@ -624,37 +633,39 @@ func retentionLoop(ctx context.Context, mgr *core.Manager) {
 // Xray whenever the cert changes. It retries quickly while there's no usable
 // cert (e.g. ACME wasn't reachable at boot) and settles into a slow renew
 // cadence once one is in place.
-func tlsLoop(ctx context.Context, mgr *core.Manager) {
-	for {
-		safeTick("tls", func() {
-			changed, err := mgr.RenewTLSIfNeeded()
-			if err != nil {
-				log.Printf("tls: %v", err)
-			}
-			if changed {
-				// Restart, NOT Reconcile: only the cert FILE changed, and the config
-				// merely names its path — so the regenerated config is byte-identical
-				// and Apply short-circuits without restarting anything, leaving Xray
-				// serving the certificate it loaded at start. (Xray re-reads the file
-				// on its own hourly hot-reload, so this used to self-heal within an
-				// hour — long after the "renewed" notification went out.) Restart
-				// reloads config.json from disk, which WriteConfig keeps current, so
-				// the live user set survives. Same thing the node agent does in
-				// certLoop.
-				log.Print("tls: certificate updated — reloading Xray")
-				if err := mgr.RestartXray(); err != nil {
-					log.Printf("tls reload: %v", err)
+func tlsLoop(mgr *core.Manager) func(context.Context) {
+	return func(ctx context.Context) {
+		for {
+			safeTick("tls", func() {
+				changed, err := mgr.RenewTLSIfNeeded()
+				if err != nil {
+					log.Printf("tls: %v", err)
 				}
+				if changed {
+					// Restart, NOT Reconcile: only the cert FILE changed, and the config
+					// merely names its path — so the regenerated config is byte-identical
+					// and Apply short-circuits without restarting anything, leaving Xray
+					// serving the certificate it loaded at start. (Xray re-reads the file
+					// on its own hourly hot-reload, so this used to self-heal within an
+					// hour — long after the "renewed" notification went out.) Restart
+					// reloads config.json from disk, which WriteConfig keeps current, so
+					// the live user set survives. Same thing the node agent does in
+					// certLoop.
+					log.Print("tls: certificate updated — reloading Xray")
+					if err := mgr.RestartXray(); err != nil {
+						log.Printf("tls reload: %v", err)
+					}
+				}
+			})
+			wait := 6 * time.Hour
+			if !mgr.HasValidCert() {
+				wait = 3 * time.Minute // keep trying to get the first cert
 			}
-		})
-		delay := 3 * time.Minute // keep trying to get the first cert
-		if mgr.HasValidCert() {
-			delay = 6 * time.Hour
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(delay):
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(wait):
+			}
 		}
 	}
 }
@@ -756,8 +767,10 @@ func panelDest(adminAddr string) string {
 
 // resolveXrayBin returns a usable Xray binary path. If bin isn't found on PATH or
 // as an existing file, it auto-downloads the pinned release into downloadDir so a
-// bare box works without a separate install step. If no binary can be resolved or fetched,
-// it logs a warning and returns "" so the control plane continues in standalone mode.
+// bare box works without a separate install step. Xray is required, and not only to
+// carry traffic: it owns the public :443 listener and forwards the panel's own
+// requests over loopback, so a panel with no Xray answers nobody. Exiting here says
+// that; carrying on would leave a service that reports healthy and serves no one.
 func resolveXrayBin(bin, downloadDir string) string {
 	if p, err := exec.LookPath(bin); err == nil {
 		return p
@@ -771,10 +784,9 @@ func resolveXrayBin(bin, downloadDir string) string {
 	t0 := time.Now()
 	p, err := xray.EnsureBinary(downloadDir)
 	if err != nil {
-		log.Printf("[WARN] xray: binary not found and auto-install failed after %s: %v "+
-			"— control plane continuing in standalone/unmanaged mode",
+		log.Fatalf("xray: required binary not found and auto-install failed after %s: %v "+
+			"(check outbound access to github.com, install Xray manually, or point XRAY_BIN at an existing binary)",
 			time.Since(t0).Round(time.Second), err)
-		return ""
 	}
 	log.Printf("xray: ready — %s (downloaded in %s)", p, time.Since(t0).Round(time.Second))
 	return p

@@ -171,6 +171,10 @@ func (m *Manager) webhookWorker() {
 	for {
 		select {
 		case <-m.done:
+			// Queued deliveries are dropped rather than drained: a webhook is a
+			// best-effort notification with its own retry schedule, and finishing the
+			// queue would hold shutdown open for as long as the slowest endpoint takes
+			// to time out.
 			return
 		case job, ok := <-m.webhookCh:
 			if !ok {

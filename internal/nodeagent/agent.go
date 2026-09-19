@@ -35,6 +35,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/logbuf"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/nodeapi"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/nodestate"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/opera"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/proxyproto"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/shaper"
@@ -42,6 +43,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/tlsmgr"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/tlsutil"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/tuning"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/turnrelay"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/updater"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/version"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/xray"
@@ -130,6 +132,9 @@ type Agent struct {
 
 	state   *persistState
 	stateMu sync.Mutex
+	// parts is state.Split decoded (see split.go). Used by the sync loop alone, and set
+	// before it starts.
+	parts *nodestate.Parts
 
 	// sys samples this node's own CPU/RAM/disk, reported to the panel so the node's
 	// diagnostics page can show the same host facts the panel shows for itself.
@@ -179,6 +184,9 @@ type Agent struct {
 	// truncated to the busiest few per user when the sync request is built. Shares
 	// connMu with conns: both are written from the same access-log callback.
 	sites map[siteKey]int64
+	// sitesAfter is the last user whose destinations the previous sync got through
+	// when not all of them fitted; the next sync starts after it (see takeSites).
+	sitesAfter int64
 
 	// seen is the address view the speed shaper runs on, and wan/shaper are what
 	// installs it. Kept apart from `conns` above: that buffer is drained on every
@@ -216,14 +224,32 @@ type Agent struct {
 	// awg is this node's AmneziaWG tunnel (see awg.go); awgEmails maps a peer's
 	// public key to the user tag it reports under, awgLast the counters last read.
 	// policyBlock drops the addresses the panel's source policy refused, in this
-	// node's own firewall table.
+	// node's own firewall table; ipBan the addresses an operator banned, in a table
+	// whose entries do not expire.
 	policyBlock *ipblock.Blocker
+	ipBan       *ipblock.Blocker
+	// banWant is the banned addresses as last applied, less the ones this node must
+	// never drop (see bannable); banLoop re-applies it, since a ban has no timeout to
+	// heal one that did not land. banApplied is false until a state has been applied.
+	banMu      sync.Mutex
+	banWant    []string
+	banApplied bool
+	// panelAddrs is what the panel's host resolved to, when (see panelAddresses).
+	// Touched only from the sync goroutine.
+	panelAddrs   []netip.Addr
+	panelAddrsOf string
+	panelAddrsAt time.Time
 
-	awg       awg.Device
+	awg awg.Device
+	// awgErr is the last tunnel-apply failure, reported to the panel so it can raise
+	// the AmneziaWG health alert — the node has no bot to tell anyone itself.
+	awgErr    string
 	awgMu     sync.Mutex
 	awgEmails map[string]string
 	awgLast   map[string]awg.PeerStat
-	awgErr    string
+
+	// turn runs the TURN relays in front of this node's WireGuard inbounds.
+	turn *turnrelay.Relay
 }
 
 // Run loads the node identity and runs the agent until the context is cancelled
@@ -252,7 +278,6 @@ func Run(ctx context.Context, dataDir string) error {
 		a.sup.Suspend()
 		slog.Warn("node: switched off by the panel — staying down until it says otherwise")
 	}
-
 	// Port 80, before anything asks for a certificate. This listener answers the ACME
 	// challenge itself, so issuance and every later renewal take the same route — see
 	// http80.Start and tlsmgr.UseSharedHTTP01. Starting it after the first issuance
@@ -274,18 +299,13 @@ func Run(ctx context.Context, dataDir string) error {
 		if err := a.applyState(a.state.LastConfig); err != nil {
 			slog.Warn("node: re-applying saved config failed", "err", err)
 		}
-	} else {
-		// Fresh boot before first sync: ensure initial firewall state is ready.
-		_ = firewall.Sync(ctx, []firewall.Rule{
-			firewall.TCPRule(80, "http-redirect"),
-			firewall.TCPRule(443, "vless"),
-		})
 	}
 
 	go a.statsLoop(ctx)
 	go a.certLoop(ctx)  // retry ACME + reload Xray when the real cert lands
 	go a.geoLoop(ctx)   // auto-refresh geo databases on the panel-pushed cadence
 	go a.watchXray(ctx) // report an Xray that died (or came back) without waiting
+	go a.banLoop(ctx)   // re-apply the banned addresses, which never expire on their own
 	go a.shapeLoop(ctx) // per-user speed caps, from this node's own address view
 	a.syncLoop(ctx)
 	a.shutdown()
@@ -384,6 +404,7 @@ func (a *Agent) hostStats() *nodeapi.HostStats {
 		return nil // no sampler (tests) → report nothing rather than a row of zeros
 	}
 	st := a.sys.Read()
+	firewall := ipblock.CanEnforce()
 	return &nodeapi.HostStats{
 		CPUPercent: st.CPUPercent,
 		NetUp:      st.NetUp,
@@ -397,6 +418,7 @@ func (a *Agent) hostStats() *nodeapi.HostStats {
 		// root and only logs, so "we asked for it" is not evidence it is in force.
 		ConnGuard: connguard.Active(),
 		BBR:       tuning.Active(),
+		Firewall:  &firewall,
 	}
 }
 
@@ -460,11 +482,14 @@ func newAgent(dataDir string, ident *Identity) (*Agent, error) {
 		seen:         newSeenAddrs(),
 		shaper:       shaper.New(),
 		awg:          awg.New(),
+		turn:         turnrelay.New(),
 		policyBlock:  ipblock.New(ipblock.TablePolicy),
+		ipBan:        ipblock.NewPermanent(ipblock.TableBanned),
 	}
 	// Resume report ids where the last run left off so the panel's forward-only
 	// watermark keeps accepting this node's traffic after a restart.
 	a.reportSeq = a.state.LastReportID
+	a.restoreSplit()
 	// Tap Xray's access log so the panel can count this node's devices (mirrors the
 	// master's sup.SetOnAccess(RecordAccess)).
 	a.sup.SetOnAccess(a.recordConn)
@@ -473,6 +498,27 @@ func newAgent(dataDir string, ident *Identity) (*Agent, error) {
 	// from the changed start time and its own node-health alerts.
 	a.sup.StartWatchdog()
 	return a, nil
+}
+
+// restoreSplit puts a state held in parts back together on load, for the boot re-apply
+// and everything that reads the applied meta. One that no longer decodes is dropped, and
+// the panel sends the state again.
+func (a *Agent) restoreSplit() {
+	held := a.state.Split
+	if held == nil {
+		return
+	}
+	p, err := nodestate.Decode(held)
+	var st *nodeapi.NodeState
+	if err == nil {
+		st, err = nodestate.Assemble(p)
+	}
+	if err != nil {
+		slog.Warn("node: the saved state does not decode, waiting for the panel", "err", err)
+		a.state.Split, a.state.LastConfig = nil, nil
+		return
+	}
+	a.parts, a.state.LastConfig = p, st
 }
 
 // siteKey counts one user's connections to one destination host.
@@ -492,12 +538,12 @@ const (
 	sitesPerUser = 32
 	// sitesBytesMax is the payload budget for the destination rows.
 	//
-	// The panel caps a sync body at 1 MB and answers 400 above it, which the agent
-	// can only read as a generic failure — so an oversized body would stop config
-	// pushes and stall traffic reporting. An advisory view must not be able to break
-	// the channel it borrows, and a per-user row cap alone does not prevent that:
-	// nothing bounded the number of users, and at ~1000 active users the rows alone
-	// cleared 1 MB.
+	// A panel caps a sync body (1 MB on older panels, 8 MB on current ones) and answers
+	// 400 above it, which the agent can only read as a generic failure — so an
+	// oversized body would stop config pushes and stall traffic reporting. An advisory
+	// view must not be able to break the channel it borrows, and a per-user row cap
+	// alone does not prevent that: nothing bounded the number of users, and at ~1000
+	// active users the rows alone cleared 1 MB.
 	//
 	// Budgeted in bytes rather than rows because a client picks its own SNI, so
 	// hostname length is attacker-controlled: ~120 accounts using max-length names
@@ -505,10 +551,29 @@ const (
 	sitesBytesMax = 256 * 1024
 	// sitesRowOverhead approximates the JSON around one host ({"u":…,"h":"…","c":…}).
 	sitesRowOverhead = 32
-	// syncBodyCeiling is the whole-body budget sites yield to. Below the panel's 1 MB
-	// MaxBytesReader, with margin for the JSON framing not counted in the base
+	// syncBodyCeiling is the whole-body budget sites yield to. Below the 1 MB an older
+	// panel accepts, with margin for the JSON framing not counted in the base
 	// measurement.
 	syncBodyCeiling = 900 * 1024
+	// trafficChunkMax is how many users' traffic one report carries. The batch used to
+	// be every user with traffic since the last ack, with nothing bounding it: ~48
+	// bytes a user put a busy node past a panel's body cap at ~11,000 users with
+	// traffic in one poll (fewer after an outage, which piles everyone into one
+	// batch), and past the cap the panel refuses the body, the agent resends the same
+	// batch, and the node stops reporting and stops receiving config for good. The
+	// rest waits for the next report, which a panel answers at once while there is
+	// more (SyncRequest.TrafficMore). ~80 bytes a row at worst keeps a chunk near
+	// 300 KB.
+	trafficChunkMax = 4000
+	// connsMax bounds the connection samples buffered between syncs, and
+	// connsChunkMax how many one sync carries. The buffer used to be the chunk: 8,192
+	// distinct user+address pairs per sync, and every pair past that in a busy window
+	// was dropped — on a node with a few thousand active users, device counts and
+	// online status went missing for whoever came last. What does not fit a sync now
+	// waits for the next, which a panel answers at once (SyncRequest.ConnsMore); the
+	// buffer bound is only against a flood.
+	connsMax      = 65536
+	connsChunkMax = 8192
 )
 
 // recordConn buffers one access-log connection (a "uN" email + source IP, plus the
@@ -521,7 +586,7 @@ func (a *Agent) recordConn(email, ip, dest string) {
 	}
 	a.connMu.Lock()
 	defer a.connMu.Unlock()
-	if len(a.conns) < 8192 {
+	if len(a.conns) < connsMax {
 		a.conns[email+"\x00"+ip] = nodeapi.ConnSample{Email: email, IP: ip}
 	}
 	// The shaper's own view of the same sighting; it outlives the sync that drains
@@ -549,19 +614,31 @@ func (a *Agent) recordConn(email, ip, dest string) {
 	}
 }
 
-// takeConns snapshots and clears the buffered connection samples.
-func (a *Agent) takeConns() []nodeapi.ConnSample {
+// takeConns hands over at most max buffered connection samples, removing them from
+// the buffer, and reports whether any are left behind.
+func (a *Agent) takeConns(max int) ([]nodeapi.ConnSample, bool) {
 	a.connMu.Lock()
 	defer a.connMu.Unlock()
 	if len(a.conns) == 0 {
-		return nil
+		return nil, false
 	}
-	out := make([]nodeapi.ConnSample, 0, len(a.conns))
-	for _, c := range a.conns {
+	if len(a.conns) <= max {
+		out := make([]nodeapi.ConnSample, 0, len(a.conns))
+		for _, c := range a.conns {
+			out = append(out, c)
+		}
+		a.conns = map[string]nodeapi.ConnSample{}
+		return out, false
+	}
+	out := make([]nodeapi.ConnSample, 0, max)
+	for k, c := range a.conns {
+		if len(out) == max {
+			break
+		}
 		out = append(out, c)
+		delete(a.conns, k)
 	}
-	a.conns = map[string]nodeapi.ConnSample{}
-	return out
+	return out, len(a.conns) > 0
 }
 
 // takeSites snapshots and clears the destination counters, keeping only each user's
@@ -593,27 +670,40 @@ func (a *Agent) takeSites(byteBudget int) []nodeapi.SiteSample {
 
 	// Share the budget across users instead of letting the first users seen spend it
 	// all: every user keeps at least their busiest host, and a node with many users
-	// reports fewer hosts each rather than reporting nothing for most of them.
+	// reports fewer hosts each rather than reporting nothing for most of them. The
+	// share is of the bytes and of the rows the panel takes, whichever is tighter.
 	perUser := sitesPerUser
 	if n := len(byUser); n > 0 {
 		if fair := byteBudget / (n * (sitesRowOverhead + 16)); fair < perUser {
+			perUser = max(fair, 1)
+		}
+		if fair := nodeapi.MaxSiteRows / n; fair < perUser {
 			perUser = max(fair, 1)
 		}
 	}
 
 	// Capacity from the true key count, not users×cap: sizing by the latter reserved
 	// 33 MB to hold 1 MB on a node that may be a small box.
-	out := make([]nodeapi.SiteSample, 0, min(total, len(byUser)*perUser))
+	out := make([]nodeapi.SiteSample, 0, min(total, len(byUser)*perUser, nodeapi.MaxSiteRows))
 	budget := byteBudget
 	users := make([]int64, 0, len(byUser))
 	for id := range byUser {
 		users = append(users, id)
 	}
-	// Stable user order so a node that runs out of budget drops the same users each
-	// sync rather than rotating which ones vanish.
 	sort.Slice(users, func(i, j int) bool { return users[i] < users[j] })
 
-	for _, id := range users {
+	// More users than fit take turns: each sync starts after the last user the one
+	// before it got through. The order used to start from the lowest id every time, so
+	// on a node with more users than rows the same users were cut on every sync and
+	// their destinations never reached the blocklists at all. Taking turns, each of
+	// them is checked every few syncs — and matches add up over the day.
+	start := sort.Search(len(users), func(i int) bool { return users[i] > a.sitesAfter })
+	if start == len(users) {
+		start = 0
+	}
+	var lastDone int64
+	for k := range len(users) {
+		id := users[(start+k)%len(users)]
 		rows := byUser[id]
 		// Ties broken by host so a node with more hosts than the cap sends a stable
 		// set rather than an arbitrary one that churns every sync.
@@ -628,12 +718,18 @@ func (a *Agent) takeSites(byteBudget int) []nodeapi.SiteSample {
 		}
 		for _, r := range rows {
 			cost := len(r.Host) + sitesRowOverhead
-			if budget < cost {
-				return out // hard stop: the body limit is not negotiable
+			if budget < cost || len(out) == nodeapi.MaxSiteRows {
+				// Hard stop: the body limit is not negotiable, and the panel takes no
+				// more rows. The next sync starts with this user.
+				if lastDone != 0 {
+					a.sitesAfter = lastDone
+				}
+				return out
 			}
 			budget -= cost
 			out = append(out, r)
 		}
+		lastDone = id
 	}
 	return out
 }
@@ -789,6 +885,24 @@ func (a *Agent) syncLoop(ctx context.Context) {
 				return // binary swapped; exit so systemd restarts the new one
 			}
 		}
+		if resp.Changed && (resp.Split != nil || resp.Delta != nil) {
+			var err error
+			if resp.Split != nil {
+				err = a.applySplit(resp.Split)
+			} else {
+				err = a.applyDelta(resp.Delta)
+			}
+			if err != nil {
+				// As below: the panel keeps sending what this node could not apply.
+				slog.Error("node: applying pushed config failed — backing off", "err", err, "backoff", applyBackoff)
+				if !sleepCtx(ctx, applyBackoff) {
+					return
+				}
+				applyBackoff = min(applyBackoff*2, backoffMax)
+				continue
+			}
+			applyBackoff = backoffMin
+		}
 		if resp.Changed && resp.State != nil {
 			if err := a.applyState(resp.State); err != nil {
 				// Don't persist a config we couldn't apply. The panel keeps returning
@@ -917,16 +1031,9 @@ func (a *Agent) buildSyncRequest() nodeapi.SyncRequest {
 
 	sha, selfSigned, certIssuer, certExpiresAt := a.certStatus()
 
-	const trafficChunkMax = 4000
-
 	a.statsMu.Lock()
-	// Nothing in flight and new traffic waiting → promote it to a fresh batch.
-	// Cap the batch at trafficChunkMax: a fleet sync with tens of thousands of active
-	// users can otherwise build a request so large it hits nodeSyncBodyMax (8 MB) or
-	// makes SQLite transactions in the panel hold its lock long enough to stall the
-	// event loop. When more traffic waits behind the chunk, TrafficMore tells the
-	// panel to answer immediately without entering the long-poll hold, so the node
-	// burns through its backlog in back-to-back fast round-trips.
+	// Nothing in flight and new traffic waiting → promote it to a fresh batch. An
+	// unacked in-flight batch is resent unchanged (same id) instead.
 	promoted := false
 	if len(a.inflight) == 0 && len(a.pending) > 0 {
 		a.reportSeq++
@@ -939,6 +1046,8 @@ func (a *Agent) buildSyncRequest() nodeapi.SyncRequest {
 		traffic = append(traffic, *d)
 	}
 	rid := a.inflightID
+	// A full chunk with traffic still waiting is a backlog; a partial one is not, even
+	// if a sample has landed in pending since — that goes out on the next poll.
 	trafficMore := len(a.inflight) >= trafficChunkMax && len(a.pending) > 0
 	a.statsMu.Unlock()
 
@@ -958,72 +1067,33 @@ func (a *Agent) buildSyncRequest() nodeapi.SyncRequest {
 			Name: f.Name, Present: f.Present, Size: f.Size, ModifiedAt: f.ModifiedAt,
 		})
 	}
-	awgRunning, awgErr := a.awgStatus()
 
-	a.stateMu.Lock()
-	awgConfigured := a.state.LastConfig != nil && a.state.LastConfig.Meta.AWG != nil
-	a.stateMu.Unlock()
-
-	xrayServing := a.sup.Serving()
-	xrayStartedAt := a.sup.StartedAt()
-	xrayVersion := a.sup.Version()
-
-	components := make([]nodeapi.ComponentStatus, 0, 2)
-	xraySt := nodeapi.StatusHealthy
-	if !xrayServing {
-		xraySt = nodeapi.StatusUnhealthy
-	}
-	var xrayDetails map[string]any
-	if xrayStartedAt > 0 {
-		xrayDetails = map[string]any{"started_at": xrayStartedAt}
-	}
-	components = append(components, nodeapi.ComponentStatus{
-		Name:    nodeapi.ComponentXray,
-		Running: xrayServing,
-		Status:  xraySt,
-		Version: xrayVersion,
-		Details: xrayDetails,
-	})
-
-	awgSt := nodeapi.StatusDisabled
-	if awgConfigured || awgRunning || awgErr != "" {
-		if awgErr != "" {
-			awgSt = nodeapi.StatusUnhealthy
-		} else if awgRunning {
-			awgSt = nodeapi.StatusHealthy
-		} else {
-			awgSt = nodeapi.StatusUnhealthy
-		}
-	}
-	components = append(components, nodeapi.ComponentStatus{
-		Name:    nodeapi.ComponentAWG,
-		Running: awgRunning,
-		Status:  awgSt,
-		Error:   awgErr,
-	})
-
+	awgUp, awgErr := a.awgState()
+	conns, connsMore := a.takeConns(connsChunkMax)
 	req := nodeapi.SyncRequest{
 		ConfigHash:  hash,
+		DeltaRev:    nodeapi.DeltaRev,
+		StateTag:    a.splitTag(),
 		NodeVersion: version.Version,
-		XrayVersion: xrayVersion,
+		XrayVersion: a.sup.Version(),
 		// Serving, not Running: a sync that happens to land during a deliberate
 		// restart (cert renewal, config push, operator bounce) must not report the
 		// node as down for a whole poll cycle over a one-second gap.
-		XrayRunning:    xrayServing,
-		XrayStartedAt:  xrayStartedAt,
-		AWGRunning:     awgRunning,
-		AWGError:       awgErr,
-		Components:     components,
+		XrayRunning:    a.sup.Serving(),
+		XrayStartedAt:  a.sup.StartedAt(),
 		Revoked:        a.revoked.Load(),
 		CertSHA256:     sha,
 		CertSelfSigned: selfSigned,
 		CertIssuer:     certIssuer,
 		CertExpiresAt:  certExpiresAt,
 		CertError:      a.certError(),
+		AWGRunning:     awgUp,
+		AWGError:       awgErr,
 		ReportID:       rid,
 		Traffic:        traffic,
 		TrafficMore:    trafficMore,
-		Conns:          a.takeConns(),
+		Conns:          conns,
+		ConnsMore:      connsMore,
 		Logs:           logs,
 		GeoFiles:       geoFiles,
 		Host:           a.hostStats(),
@@ -1037,9 +1107,14 @@ func (a *Agent) buildSyncRequest() nodeapi.SyncRequest {
 	// budget). At fleet scale this drops sites rather than letting them tip an
 	// otherwise-fine body over the cap, which would 400 the whole sync and stall the
 	// node. takeSites still clears its buffer even when the budget is zero.
+	// A body already at the ceiling leaves sites nothing. Checked on len(base) first
+	// so the headroom is only ever computed from a length known to be below it — the
+	// shape CodeQL accepts as bounding the size takeSites later allocates by.
 	sitesBudget := sitesBytesMax
 	if base, err := json.Marshal(req); err == nil {
-		if head := syncBodyCeiling - len(base); head < sitesBudget {
+		if len(base) >= syncBodyCeiling {
+			sitesBudget = 0
+		} else if head := syncBodyCeiling - len(base); head < sitesBudget {
 			sitesBudget = head
 		}
 	}
@@ -1170,6 +1245,24 @@ func (a *Agent) applyState(st *nodeapi.NodeState) error {
 	// Opera VPN egress helper: bring it up/down to match the desired state. The
 	// generated config's "opera" outbound already points at 127.0.0.1:OperaPort.
 	a.syncOpera(m.OperaEnabled, m.OperaCountry, m.OperaPort)
+
+	// The relays in front of the WireGuard inbounds, the whole set: an empty list stops
+	// them all.
+	relays := make([]turnrelay.Spec, 0, len(m.TurnRelays))
+	for _, r := range m.TurnRelays {
+		relays = append(relays, turnrelay.Spec{Port: r.Port, Target: r.Target, MaskKey: r.MaskKey})
+	}
+	if err := a.turn.Sync(relays); err != nil {
+		slog.Warn("node: turn relay", "err", err)
+	}
+	return a.applyUsers(st)
+}
+
+// applyUsers is the part of applyState that a change of users reaches: the tunnel's
+// peers, the blocked addresses, the Xray config and the speed caps. A state whose
+// skeleton is the one already applied needs nothing else (see applyDelta).
+func (a *Agent) applyUsers(st *nodeapi.NodeState) error {
+	m := st.Meta
 	a.syncAWG(m.AWG)
 	// The addresses the panel's source policy refused. Sync, not add: a lifted block
 	// has to come out of the kernel here too.
@@ -1178,6 +1271,13 @@ func (a *Agent) applyState(st *nodeapi.NodeState) error {
 	}
 	if err := a.policyBlock.Sync(m.BlockedIPs); err != nil {
 		slog.Warn("node: could not apply the blocked addresses", "err", err)
+	}
+	want := a.bannable(m.BannedIPs)
+	a.banMu.Lock()
+	a.banWant, a.banApplied = want, true
+	a.banMu.Unlock()
+	if err := a.ipBan.Sync(want); err != nil {
+		slog.Warn("node: could not apply the banned addresses", "err", err)
 	}
 
 	// Substitute the cert-path sentinels with the node's absolute paths and apply.
@@ -1368,6 +1468,7 @@ func (a *Agent) shutdown() {
 	if a.awg != nil {
 		a.awg.Close()
 	}
+	a.turn.Close()
 	a.operaSup.Stop()
 	if a.redirectSrv != nil {
 		_ = a.redirectSrv.Close()
@@ -1454,6 +1555,7 @@ func (a *Agent) selfUpdate(parent context.Context, updateRepo string) bool {
 	if a.awg != nil {
 		a.awg.Close()
 	}
+	a.turn.Close()
 	return true
 }
 
@@ -1504,4 +1606,94 @@ func short(h string) string {
 		return h[:12]
 	}
 	return h
+}
+
+// banResyncEvery is how often the banned addresses are re-applied to the firewall.
+const banResyncEvery = 5 * time.Minute
+
+// banLoop re-applies the banned addresses on a timer: an address that failed to land
+// (nft failing for a moment, a table flushed by hand) has no timeout to heal it, and
+// the panel sends the list again only when it changes.
+func (a *Agent) banLoop(ctx context.Context) {
+	for sleepCtx(ctx, banResyncEvery) {
+		a.banMu.Lock()
+		want, applied := a.banWant, a.banApplied
+		a.banMu.Unlock()
+		if !applied {
+			continue // nothing applied yet: an empty list here would lift the bans a restart restores
+		}
+		if err := a.ipBan.Sync(want); err != nil {
+			slog.Warn("node: could not re-apply the banned addresses", "err", err)
+		}
+	}
+}
+
+// bannable is the banned addresses less the ones this node must never drop: the
+// panel's own — dropped, the node could not hear from the panel again, not even the
+// unban — and the node's own. The panel refuses to ban its servers' addresses, but a
+// master behind NAT has an address it cannot see, and only the node knows which
+// address it reaches the panel on.
+func (a *Agent) bannable(ips []string) []string {
+	if len(ips) == 0 {
+		return nil
+	}
+	keep := map[netip.Addr]bool{}
+	for _, p := range a.panelAddresses() {
+		keep[p] = true
+	}
+	if addrs, err := net.InterfaceAddrs(); err == nil {
+		for _, ia := range addrs {
+			if p, err := netip.ParsePrefix(ia.String()); err == nil {
+				keep[p.Addr().Unmap().WithZone("")] = true
+			}
+		}
+	}
+	return withoutAddresses(ips, keep)
+}
+
+// withoutAddresses drops the addresses in keep (and anything unparseable) from ips.
+func withoutAddresses(ips []string, keep map[netip.Addr]bool) []string {
+	out := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		addr, err := netip.ParseAddr(ip)
+		if err != nil {
+			continue
+		}
+		if keep[addr.Unmap().WithZone("")] {
+			slog.Warn("node: not banning an address this node needs", "ip", ip)
+			continue
+		}
+		out = append(out, ip)
+	}
+	return out
+}
+
+// panelAddresses is what the panel's host is at: the address itself, or what its name
+// resolves to, looked up at most every ten minutes. A failed lookup keeps the last
+// answer rather than forgetting the panel's address.
+func (a *Agent) panelAddresses() []netip.Addr {
+	u, err := url.Parse(a.ident.PanelURL)
+	if err != nil {
+		return a.panelAddrs
+	}
+	host := u.Hostname()
+	if addr, err := netip.ParseAddr(host); err == nil {
+		return []netip.Addr{addr.Unmap().WithZone("")}
+	}
+	if host == a.panelAddrsOf && time.Since(a.panelAddrsAt) < 10*time.Minute {
+		return a.panelAddrs
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	found, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	if err != nil {
+		slog.Warn("node: could not resolve the panel's host", "host", host, "err", err)
+		return a.panelAddrs
+	}
+	addrs := make([]netip.Addr, 0, len(found))
+	for _, f := range found {
+		addrs = append(addrs, f.Unmap().WithZone(""))
+	}
+	a.panelAddrs, a.panelAddrsOf, a.panelAddrsAt = addrs, host, time.Now()
+	return a.panelAddrs
 }

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/nodeapi"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
 )
 
@@ -17,7 +19,7 @@ func accessTestManager(t *testing.T) (*Manager, *store.Store) {
 	t.Cleanup(func() { st.Close() })
 	return &Manager{
 		store:      st,
-		accLast:    make(map[accPendingKey]int64),
+		accLast:    make(map[string]int64),
 		accPending: make(map[accPendingKey]store.ConnectionHit),
 	}, st
 }
@@ -46,7 +48,7 @@ func TestRecordAccessDoesNoIO(t *testing.T) {
 	if len(conns) != 0 {
 		t.Fatalf("RecordAccess wrote %d rows before the flush — the hot path is still doing I/O", len(conns))
 	}
-	// The 10s throttle collapses the burst: two IPs, one buffered sighting each.
+	// The throttle collapses the burst: two IPs, one buffered sighting each.
 	if got := len(m.accPending); got != 2 {
 		t.Fatalf("buffered %d sightings from 100 calls across 2 IPs, want 2", got)
 	}
@@ -140,17 +142,66 @@ func TestRecordAccessWithoutDestination(t *testing.T) {
 	}
 }
 
-func BenchmarkRecordAccess(b *testing.B) {
-	m := &Manager{
-		accLast:    make(map[accPendingKey]int64),
-		accPending: make(map[accPendingKey]store.ConnectionHit),
+// A device that stays connected must stay counted. The throttle decides how old its
+// last_seen can get: up to accThrottle after the last recorded sighting, plus the gap
+// to the next node sync that carries one, plus the flush. All of that has to fit in the
+// online window, or a connected device drops out of the count and the online list
+// between two writes. And the master's tunnel poll, once a minute, must find its pair
+// unthrottled on every poll.
+func TestAccessThrottleKeepsConnectedDevicesOnline(t *testing.T) {
+	const flush, tunnelPoll = 5, 60
+	worstSyncGap := int64(nodeapi.HoldSec + nodeapi.HoldJitter)
+	if age := accThrottle + worstSyncGap + flush; age >= model.DeviceOnlineWindow {
+		t.Fatalf("a connected device's last_seen can reach %ds, past the %ds online window", age, model.DeviceOnlineWindow)
 	}
-	email := "u42"
-	ip := "192.168.1.1"
-	dest := "example.com"
+	if accThrottle > tunnelPoll {
+		t.Fatalf("a %ds throttle skips tunnel polls %ds apart", accThrottle, tunnelPoll)
+	}
+}
 
-	b.ReportAllocs()
-	for b.Loop() {
-		m.RecordAccess(email, ip, dest)
+// The flush re-checks device limits at most every deviceCheckEvery: the first flush
+// checks, one straight after it does not, and one after the interval does again. The
+// sightings themselves are written by every flush.
+func TestFlushChecksDeviceLimitsAtMostEveryInterval(t *testing.T) {
+	m, st := accessTestManager(t)
+	mk := func(name string) *model.User {
+		t.Helper()
+		u, err := st.CreateUser(name, "uuid-"+name, "pw", "tok-"+name, 0, 0, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u
+	}
+	over := func(u *model.User) bool {
+		t.Helper()
+		got, err := st.GetUser(u.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got.DeviceOverSince != 0
+	}
+	a, b := mk("a"), mk("b")
+	m.RecordAccess(model.UserEmail(a.ID), "198.51.100.1", "")
+	m.RecordAccess(model.UserEmail(a.ID), "198.51.100.2", "")
+	m.FlushAccess()
+	if !over(a) {
+		t.Fatal("the first flush did not stamp a user over their limit")
+	}
+
+	m.RecordAccess(model.UserEmail(b.ID), "198.51.100.3", "")
+	m.RecordAccess(model.UserEmail(b.ID), "198.51.100.4", "")
+	m.FlushAccess()
+	if over(b) {
+		t.Fatal("a flush straight after a check checked again")
+	}
+	if conns, _ := st.RecentConnections(b.ID, 10); len(conns) != 2 {
+		t.Fatalf("the flush between checks wrote %d of b's 2 sightings", len(conns))
+	}
+
+	m.deviceCheckedAt.Add(-deviceCheckEvery) // the interval has passed since that check
+	m.RecordAccess(model.UserEmail(b.ID), "198.51.100.5", "")
+	m.FlushAccess()
+	if !over(b) {
+		t.Fatal("a flush after the interval did not check")
 	}
 }

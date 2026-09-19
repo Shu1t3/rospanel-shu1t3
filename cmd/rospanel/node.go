@@ -11,11 +11,10 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
-	"time"
 
-	"github.com/Shu1t3/rospanel-shu1t3/internal/firewall"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/nodeagent"
-	"github.com/Shu1t3/rospanel-shu1t3/internal/updater"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/tuning"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/xray"
 )
 
 const (
@@ -65,6 +64,11 @@ func nodeDataDir() string {
 	return "./data-node"
 }
 
+// nodeMemoryShare is the part of a node's memory the agent's heap is steered under,
+// of what is left once the Xray it runs has its own ceiling set aside. A quarter: on a
+// node the memory belongs first to Xray and to the traffic it carries.
+const nodeMemoryShare = 0.25
+
 // runNodeAgent runs the agent until SIGINT/SIGTERM (the systemd ExecStart entry).
 //
 // It joins first when ROSPANEL_JOIN is set and this data directory has no identity
@@ -76,6 +80,7 @@ func nodeDataDir() string {
 // node.json, so a restart re-reads the identity it already has and a spent join
 // token in a stale compose file changes nothing.
 func runNodeAgent(dataDir string) {
+	logMemoryLimit(tuning.SetMemoryLimit(nodeMemoryShare, xray.MemoryLimit))
 	if joinURL := strings.TrimSpace(os.Getenv("ROSPANEL_JOIN")); joinURL != "" {
 		if _, err := nodeagent.LoadIdentity(dataDir); err != nil {
 			insecure := isTrue(os.Getenv("ROSPANEL_JOIN_INSECURE"))
@@ -179,14 +184,7 @@ func installNodeSystemd(dataDir string) {
 		log.Printf("node install: copied binary → %s", installBinPath)
 	}
 
-	repo := updater.Repo
-	if r := strings.TrimSpace(os.Getenv("ROSPANEL_REPO")); r != "" {
-		repo = r
-	}
-	envLines := []string{
-		"Environment=ROSPANEL_DATA=" + dataDir,
-		"Environment=ROSPANEL_REPO=" + repo,
-	}
+	envLines := []string{"Environment=ROSPANEL_DATA=" + dataDir}
 	if v := strings.TrimSpace(os.Getenv("XRAY_BIN")); v != "" {
 		envLines = append(envLines, "Environment=XRAY_BIN="+v)
 	}
@@ -206,7 +204,6 @@ func installNodeSystemd(dataDir string) {
 		"AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN\n" +
 		"NoNewPrivileges=yes\n" +
 		"ProtectSystem=strict\n" +
-		"DeviceAllow=/dev/net/tun rw\n" +
 		"ReadWritePaths=/usr/local/bin /etc/systemd/system\n" +
 		"ProtectHome=yes\n" +
 		"PrivateTmp=yes\n" +
@@ -229,19 +226,6 @@ func installNodeSystemd(dataDir string) {
 		if err := cmd.Run(); err != nil {
 			log.Fatalf("node install: systemctl %s: %v", strings.Join(a, " "), err)
 		}
-	}
-
-	// Ensure system firewall (UFW) is configured and standard ports (80/tcp, 443/tcp) are open.
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	nodeRules := []firewall.Rule{
-		firewall.TCPRule(80, "http-redirect"),
-		firewall.TCPRule(443, "vless"),
-	}
-	if err := firewall.Sync(ctx, nodeRules); err != nil {
-		log.Printf("node install: firewall setup warning: %v", err)
-	} else {
-		log.Print("node install: firewall (ufw) configured and enabled")
 	}
 }
 

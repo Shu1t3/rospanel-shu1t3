@@ -32,9 +32,9 @@ func (m *Manager) shaperLoop() {
 	for {
 		m.ApplyShaping()
 		select {
+		case <-t.C:
 		case <-m.done:
 			return
-		case <-t.C:
 		}
 	}
 }

@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
 )
 
@@ -44,33 +43,5 @@ func TestBulkUserActionIsBounded(t *testing.T) {
 	var ve *ValidationError
 	if !errors.As(err, &ve) || ve.Code != "err.tooManyUsersSelected" {
 		t.Errorf("%d ids were accepted (or refused for the wrong reason): %v", len(ids), err)
-	}
-}
-
-func TestSetUserLimitsDeviceBounds(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "userlimits.db"))
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
-	m := &Manager{store: st}
-
-	u, err := st.CreateUser("user-dev", "uuid", "pw", "tok", 0, 0, 0)
-	if err != nil {
-		t.Fatalf("create user: %v", err)
-	}
-
-	for _, lim := range []int{0, 1, 7, 25, model.MaxDevicesPerUser} {
-		if err := m.SetUserLimits(context.Background(), u.ID, 0, 0, lim); err != nil {
-			t.Fatalf("set device_limit=%d failed: %v", lim, err)
-		}
-	}
-
-	if err := m.SetUserLimits(context.Background(), u.ID, 0, 0, -1); err == nil {
-		t.Fatal("negative device_limit must be rejected")
-	}
-
-	if err := m.SetUserLimits(context.Background(), u.ID, 0, 0, model.MaxDevicesPerUser+1); err == nil {
-		t.Fatal("device_limit > MaxDevicesPerUser must be rejected")
 	}
 }

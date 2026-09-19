@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import i18n from "./i18n";
 import { currentLang } from "./i18n";
+import { todayYmd } from "./tz";
 
 export function cn(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(" ");
@@ -31,6 +32,24 @@ export const IconChevron = ({ size = 16, className }: IconProps) =>
   svg(size, className, <path d="M6 9l6 6 6-6" />);
 export const IconClose = ({ size = 20, className }: IconProps) =>
   svg(size, className, <path d="M18 6 6 18M6 6l12 12" />);
+export const IconUnlock = ({ size = 16, className }: IconProps) =>
+  svg(
+    size,
+    className,
+    <>
+      <rect x="4" y="11" width="16" height="10" rx="2" />
+      <path d="M8 11V7a4 4 0 0 1 7.75-1.4" />
+    </>,
+  );
+export const IconBan = ({ size = 16, className }: IconProps) =>
+  svg(
+    size,
+    className,
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="m5.7 5.7 12.6 12.6" />
+    </>,
+  );
 export const IconExternal = ({ size = 16, className }: IconProps) =>
   svg(
     size,
@@ -363,7 +382,7 @@ type Size = "xs" | "sm" | "md";
 
 const BTN: Record<Variant, Record<Color, string>> = {
   filled: {
-    brand: "bg-brand-600 text-onaccent hover:bg-brand-700",
+    brand: "bg-brand-600 text-onbrand hover:bg-brand-700",
     red: "bg-brandred-500 text-onaccent hover:bg-brandred-600",
     teal: "bg-emerald-600 text-onaccent hover:bg-emerald-700",
     orange: "bg-orange-500 text-onaccent hover:bg-orange-600",
@@ -495,6 +514,7 @@ export function IconButton({
   disabled,
   className,
   title,
+  compact,
 }: {
   children: ReactNode;
   onClick?: () => void;
@@ -509,9 +529,13 @@ export function IconButton({
   disabled?: boolean;
   className?: string;
   title?: string;
+  // compact is the size for a button inside a dense row of text: its hover fill stays
+  // inside the row instead of covering it top to bottom.
+  compact?: boolean;
 }) {
   const cls = cn(
-    "inline-flex size-8 items-center justify-center rounded-lg transition active:scale-90",
+    "inline-flex items-center justify-center transition active:scale-90",
+    compact ? "size-6 rounded-md" : "size-8 rounded-lg",
     BTN[variant][color],
     "disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100",
     className,
@@ -1283,7 +1307,9 @@ export function DatePicker({
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLButtonElement>(null)
   const selected = parseYmd(value)
-  const [view, setView] = useState<Date>(selected ?? new Date())
+  // With nothing picked the calendar opens on the panel's today (see tz.ts), which
+  // late on the last of a month is not always the browser's.
+  const [view, setView] = useState<Date>(selected ?? parseYmd(todayYmd()) ?? new Date())
   const minDate = min ? parseYmd(min) : null
 
   const display = selected
@@ -1399,7 +1425,7 @@ export function DatePicker({
                       className={cn(
                         'flex h-8 items-center justify-center rounded-md text-sm transition',
                         value === ymd(d)
-                          ? 'bg-brand-600 font-semibold text-onaccent'
+                          ? 'bg-brand-600 font-semibold text-onbrand'
                           : 'text-ink accent-tint-hover',
                         'disabled:cursor-not-allowed disabled:text-gray-300 disabled:hover:bg-transparent',
                       )}
@@ -1534,30 +1560,18 @@ export function Switch({
   checked,
   onChange,
   disabled,
-  id,
-  "aria-label": ariaLabel,
-  "aria-labelledby": ariaLabelledBy,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
   disabled?: boolean;
-  id?: string;
-  "aria-label"?: string;
-  "aria-labelledby"?: string;
 }) {
   return (
     <button
-      id={id}
       type="button"
       role="switch"
       aria-checked={checked}
-      aria-label={ariaLabel}
-      aria-labelledby={ariaLabelledBy}
       disabled={disabled}
-      onClick={(e) => {
-        e.stopPropagation();
-        onChange(!checked);
-      }}
+      onClick={() => onChange(!checked)}
       className={cn(
         // A 20px track: it is read at a glance far more often than it is flipped.
         "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition disabled:opacity-50",
@@ -1566,8 +1580,8 @@ export function Switch({
     >
       <span
         className={cn(
-          "inline-block h-4 w-4 transform rounded-full bg-onaccent shadow transition",
-          checked ? "translate-x-[18px]" : "translate-x-0.5",
+          "inline-block h-4 w-4 transform rounded-full shadow transition",
+          checked ? "translate-x-[18px] bg-onbrand" : "translate-x-0.5 bg-onaccent",
         )}
       />
     </button>
@@ -1634,11 +1648,15 @@ export function SettingRow({
                 ),
           )}
         >
-          {/* A hint is prose: capped at a readable measure so a wide screen does not
-              stretch one sentence across the whole panel. */}
+          {/* A hint beside a control or a field is capped at a readable measure, so the
+              sentence does not run all the way up to the switch or input it explains.
+              A hint with nothing beside it spans the row like everything else in the
+              panel: capped, it stopped two thirds of the way across and left the rest
+              of a wide panel empty. */}
           <div
             className={cn(
-              "min-w-0 max-w-[76ch]",
+              "min-w-0",
+              !!(control || field) && "max-w-[76ch]",
               !field && "flex-1",
               // The floor belongs to prose only: a hint keeps 10rem before the control
               // beside it is allowed to wrap, so a button with a real label drops below
@@ -1707,19 +1725,14 @@ export function Checkbox({
   onChange,
   label,
   hint,
-  id,
-  name,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
   label: ReactNode;
   hint?: ReactNode;
-  id?: string;
-  name?: string;
 }) {
   return (
     <label
-      htmlFor={id}
       className={cn(
         // relative: the sr-only input inside is absolutely positioned, and without an
         // anchor here the browser scrolls the page to wherever it lands when it takes
@@ -1731,8 +1744,6 @@ export function Checkbox({
       )}
     >
       <input
-        id={id}
-        name={name}
         type="checkbox"
         className="sr-only"
         checked={checked}
@@ -1741,7 +1752,7 @@ export function Checkbox({
       <span
         className={cn(
           "flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition",
-          checked ? "border-brand-600 bg-brand-600 text-onaccent" : "border-gray-300 bg-white",
+          checked ? "border-brand-600 bg-brand-600 text-onbrand" : "border-gray-300 bg-white",
         )}
       >
         {checked && <IconCheck size={14} />}
@@ -2115,7 +2126,7 @@ export function SegmentedControl({
               : "rounded-md px-3 py-1 text-[13px]",
             fullWidth && "flex-1",
             value === o.value
-              ? "bg-brand-600 text-onaccent shadow-sm"
+              ? "bg-brand-600 text-onbrand shadow-sm"
               : "text-gray-500 hover:text-gray-700",
           )}
         >
@@ -2210,7 +2221,7 @@ export function Modal({
   if (!open) return null;
   const sz = MODAL_SIZES[size];
   return createPortal(
-    <div role="dialog" aria-modal="true" className="fixed inset-0 z-200 flex items-end justify-center sm:items-center sm:p-4">
+    <div className="fixed inset-0 z-200 flex items-end justify-center sm:items-center sm:p-4">
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: the backdrop is a mouse
           affordance; a keyboard dismisses the dialog with Escape (useEscape above). */}
       <div
@@ -2357,7 +2368,7 @@ export function Drawer({
   useEscape(onClose, open);
   if (!open) return null;
   return createPortal(
-    <div role="dialog" aria-modal="true" className="fixed inset-0 z-200">
+    <div className="fixed inset-0 z-200">
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: the backdrop is a mouse
           affordance; a keyboard dismisses the dialog with Escape (useEscape above). */}
       <div

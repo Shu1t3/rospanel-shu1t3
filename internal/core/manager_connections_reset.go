@@ -46,13 +46,6 @@ func (m *Manager) ResetConnections(ctx context.Context) (*ConnectionsStatus, err
 
 // ResetNodeConnections resets one node the same way.
 func (m *Manager) ResetNodeConnections(ctx context.Context, id int64) (*ConnectionsStatus, error) {
-	n, err := m.store.GetNode(id)
-	if err != nil {
-		return nil, err
-	}
-	if n == nil {
-		return nil, invalidCode("err.nodeNotFound", "нода не найдена")
-	}
 	if err := m.dropServerInbounds(id); err != nil {
 		return nil, err
 	}

@@ -72,44 +72,20 @@ type JoinResponse struct {
 	NodeAPI  string `json:"node_api"` // node-API path segment (in case the URL is bare)
 }
 
-// ComponentName constants for supported node services.
-const (
-	ComponentXray = "xray"
-	ComponentAWG  = "awg"
-)
-
-// ComponentHealth status constants.
-const (
-	StatusHealthy   = "healthy"
-	StatusDegraded  = "degraded"
-	StatusUnhealthy = "unhealthy"
-	StatusDisabled  = "disabled"
-	StatusUnknown   = "unknown"
-)
-
-// ComponentStatus represents the health and runtime state of a single service on a node.
-type ComponentStatus struct {
-	Name    string         `json:"name"`              // "xray", "awg"
-	Running bool           `json:"running"`           // whether the service is actively running
-	Status  string         `json:"status"`            // healthy | degraded | unhealthy | disabled | unknown
-	Error   string         `json:"error,omitempty"`   // last error or crash reason
-	Version string         `json:"version,omitempty"` // component version if applicable
-	Details map[string]any `json:"details,omitempty"` // component-specific extra info
-}
-
 // SyncRequest is the body of every long-poll. The node states what it currently
 // has applied (config_hash) and reports its health + accumulated traffic deltas.
 type SyncRequest struct {
-	ConfigHash  string `json:"config_hash"`
+	// ConfigHash is the hash of the state the node has applied: NodeState.Hash, or for
+	// a split state its SplitState.Hash as the node computes it over what it holds.
+	ConfigHash string `json:"config_hash"`
+	// DeltaRev is the split-state revision this agent speaks (see split.go), and
+	// StateTag the tag of the split state it holds. An older agent sends neither and is
+	// sent whole configs.
+	DeltaRev    int    `json:"delta_rev,omitempty"`
+	StateTag    string `json:"state_tag,omitempty"`
 	NodeVersion string `json:"node_version"`
 	XrayVersion string `json:"xray_version"`
 	XrayRunning bool   `json:"xray_running"`
-	// AWGRunning reports whether the AmneziaWG tunnel interface is active on the node.
-	AWGRunning bool `json:"awg_running,omitempty"`
-	// AWGError is the last error encountered when applying the AmneziaWG configuration on the node.
-	AWGError string `json:"awg_error,omitempty"`
-	// Components contains the unified status of all services on the node.
-	Components []ComponentStatus `json:"components,omitempty"`
 	// Revoked ⇒ this node already knows the panel switched it off and has stopped
 	// serving. It changes how the panel answers: a node that has yet to hear the bad
 	// news is told at once, but one that already knows has its request HELD like any
@@ -137,6 +113,19 @@ type SyncRequest struct {
 	// which simply never triggers that alert.
 	CertError string `json:"cert_error,omitempty"`
 
+	// AWGRunning is whether this node's AmneziaWG tunnel is actually up, and AWGError
+	// the last reason it is not. Reported because the node has no way to say so
+	// otherwise: the agent applies the tunnel and, until now, logged a failure to its
+	// own disk and told nobody. The panel meanwhile kept the server green, kept handing
+	// out AWG keys for it, and found out from the users.
+	//
+	// Absent from an older agent, which reports neither — so the panel treats "no
+	// report at all" as "nothing known", not as "down".
+	AWGRunning bool   `json:"awg_running,omitempty"`
+	AWGError   string `json:"awg_error,omitempty"`
+	// Components contains the unified status of all services on the node.
+	Components []ComponentStatus `json:"components,omitempty"`
+
 	// Traffic deltas accumulated since the last acked report. ReportID is monotonic
 	// per node and persisted by the agent, so a lost response is retried without
 	// double-counting (the panel dedupes against its stored watermark).
@@ -153,6 +142,9 @@ type SyncRequest struct {
 	// counting pipeline as the master (RecordAccess → AddConnection), so a user's
 	// device cap counts unique IPs across the WHOLE fleet, not just the master.
 	Conns []ConnSample `json:"conns,omitempty"`
+	// ConnsMore says more samples are waiting on the node than this request carried:
+	// answer at once, as for TrafficMore. A panel too old to know it holds as before.
+	ConnsMore bool `json:"conns_more,omitempty"`
 
 	// Sites are this node's busiest destination addresses per user since the last
 	// sync, which the panel matches against its IP blocklists.
@@ -162,7 +154,7 @@ type SyncRequest struct {
 	// of distinct hosts a minute), so a raw per-connection feed would put the same
 	// unbounded growth on the wire that keeps it out of the database. Lossy by
 	// construction — the tail below the truncation never leaves the node, which is
-	// the right trade for a view that only ever shows a top-N.
+	// the right trade for a view that only ever shows a top-N. At most MaxSiteRows.
 	Sites []SiteSample `json:"sites,omitempty"`
 
 	// Logs is the node's recent log tail (agent + Xray), sent only when the panel
@@ -201,6 +193,25 @@ type SyncRequest struct {
 	// flag a node that is limping (transport degraded) before it decays into a hard
 	// "not responding" outage. An older agent omits it (reads as 0 = healthy).
 	SyncFails int `json:"sync_fails,omitempty"`
+}
+
+const (
+	ComponentXray = "xray"
+	ComponentAWG  = "awg"
+
+	StatusHealthy   = "healthy"
+	StatusDegraded  = "degraded"
+	StatusUnhealthy = "unhealthy"
+	StatusDisabled  = "disabled"
+)
+
+type ComponentStatus struct {
+	Name    string         `json:"name"`
+	Running bool           `json:"running"`
+	Status  string         `json:"status"`
+	Error   string         `json:"error,omitempty"`
+	Version string         `json:"version,omitempty"`
+	Details map[string]any `json:"details,omitempty"`
 }
 
 // NormalizedComponents returns the unified slice of component statuses.
@@ -260,6 +271,14 @@ type ConfigCheckResult struct {
 	Err string `json:"err,omitempty"`
 }
 
+// TurnRelay is one DTLS relay a node runs in front of a WireGuard inbound: Port is the
+// public UDP port, Target the inbound's loopback listener (see internal/turnrelay).
+type TurnRelay struct {
+	Port    int    `json:"port"`
+	Target  string `json:"target"`
+	MaskKey string `json:"mask_key,omitempty"` // Free Turn Proxy masking key, hex
+}
+
 // HopRange is one UDP port-hopping funnel: Start..End redirected onto Target.
 type HopRange struct {
 	Start  int `json:"start"`
@@ -310,6 +329,11 @@ type HostStats struct {
 	// force on the node (it degrades to a no-op without nft/root, silently).
 	ConnGuard bool `json:"connguard"`
 	BBR       bool `json:"bbr"`
+	// Firewall is whether the node can drop addresses at its own firewall: nftables is
+	// installed and the agent is allowed to change it. Bans, the source policy's blocks
+	// and the flood guard all go through it, and without it they do nothing on this
+	// node. nil from an agent too old to report it.
+	Firewall *bool `json:"firewall,omitempty"`
 }
 
 // GeoFile mirrors geo.FileInfo for reporting a node's geo database status.
@@ -339,6 +363,11 @@ type ConnSample struct {
 	IP    string `json:"ip"`
 }
 
+// MaxSiteRows is the most destination rows one sync carries. The panel applies them
+// under the lock its own access-log tap needs and takes no more than this; the agent
+// chooses which rows fit, so the cut is made where it knows the busiest hosts.
+const MaxSiteRows = 4096
+
 // SiteSample is one (user, destination address) pair with how many connections the
 // node saw to it since the last sync. UserID is already resolved from the Xray
 // "uN" tag node-side, matching TrafficDelta.
@@ -359,6 +388,11 @@ type SyncResponse struct {
 	Changed   bool       `json:"changed"`
 	AckReport int64      `json:"ack_report"` // highest ReportID the panel has ingested
 	State     *NodeState `json:"state,omitempty"`
+	// Split and Delta are the state for an agent that speaks DeltaRev: all of it, or
+	// what changed since the state it holds. At most one of State, Split and Delta is
+	// set, and Changed is true with any of them.
+	Split *SplitState `json:"split,omitempty"`
+	Delta *StateDelta `json:"delta,omitempty"`
 
 	// Revoked ⇒ the node was deleted or disabled: stop serving, keep polling slowly
 	// so it recovers if re-enabled. Distinct from an unreachable panel (which the
@@ -436,6 +470,11 @@ type NodeMeta struct {
 	// protect (VLESS, and REALITY when enabled).
 	ConnGuardPorts []int `json:"connguard_ports,omitempty"`
 
+	// TurnRelays are the relays the node's WireGuard inbounds need, the complete set:
+	// the agent stops any it runs that is not listed. An older agent ignores it, and
+	// its WireGuard inbounds are unreachable until it updates.
+	TurnRelays []TurnRelay `json:"turn_relays,omitempty"`
+
 	// LoopbackDest is where the node's Xray fallback forwards non-VPN traffic — the
 	// agent runs its decoy server there (matches the panel's own layout).
 	LoopbackDest string `json:"loopback_dest"`
@@ -475,6 +514,10 @@ type NodeMeta struct {
 	// BlockTTLHours is how long those blocks last, so a node cut off from the panel
 	// expires them on the operator's schedule rather than the blocker's default.
 	BlockTTLHours int `json:"block_ttl_hours,omitempty"`
+	// BannedIPs are the addresses an operator banned by hand, fleet-wide. They do not
+	// expire: the node holds them in a table without timeouts until the panel's list
+	// no longer has them. An older agent ignores the field.
+	BannedIPs []string `json:"banned_ips,omitempty"`
 
 	// AWG is the node's AmneziaWG tunnel as the panel wants it — its identity, the
 	// obfuscation parameters and every peer allowed on it. nil ⇒ the lane is off

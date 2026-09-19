@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -15,6 +16,25 @@ const userCols = `id, name, uuid, password, sub_token, enabled,
 	plan_id, trial_used, tg_link_code, tg_link_code_at, notified_status,
 	notified_expire_at, notified_quota_at, device_over_since, note, tags, wg_private_key,
 	abuse_action, abuse_until, abuse_prev_speed, abuse_warned_day, hold_seconds, awg_slot`
+
+// Lookups by a column whose index is partial. SQLite uses a partial index only when
+// the query's own WHERE implies the index's, and to the planner "sub_token = ?" does
+// not imply that sub_token is non-empty: the bound value could be the excluded one.
+// So each of these repeats the index condition. Without it every subscription fetch
+// and every message to the bot read the whole users table: with 50,000 users and 14
+// subscription fetches a second the panel took 74% of a 1-vCPU core, and 54% with
+// the index. TestUserLookupsUseTheirIndexes holds them to it.
+const (
+	userBySubTokenSQL       = `SELECT ` + userCols + ` FROM users WHERE sub_token = ? AND sub_token <> '' LIMIT 1`
+	userByTelegramChatSQL   = `SELECT ` + userCols + ` FROM users WHERE tg_chat_id = ? AND tg_chat_id <> 0 LIMIT 1`
+	detachTelegramChatSQL   = `UPDATE users SET tg_chat_id = 0 WHERE tg_chat_id = ? AND tg_chat_id <> 0`
+	dropPrevTelegramChatSQL = `UPDATE users SET tg_prev_chat_id = 0 WHERE tg_prev_chat_id = ? AND tg_prev_chat_id <> 0`
+	// The id order comes from the index as well: its entries carry the rowid, so equal
+	// keys are already in id order and no sort is needed.
+	detachedUserByPrevChatSQL = `SELECT ` + userCols + ` FROM users
+		 WHERE tg_prev_chat_id = ? AND tg_prev_chat_id <> 0 AND tg_chat_id = 0
+		 ORDER BY id DESC LIMIT 1`
+)
 
 // errTagsInvalid is returned by SetUserTags for a list model.NormalizeTags refuses.
 // Callers validate before writing, so reaching this means a bug, not user input.
@@ -175,6 +195,314 @@ func (s *Store) ListUsersPaged(limit, offset int) ([]model.User, int, error) {
 	return users, total, nil
 }
 
+// UserStatesByID returns the given users, newest first, carrying what the traffic
+// accounting and the enforcement pass read — and nothing else:
+//
+//	ID, Name, Enabled, PlanID, DataLimit, ExpireAt, HoldSeconds,
+//	UsedUp, UsedDown, LastUp, LastDown, ResetPeriod, LastResetAt,
+//	DeviceLimit, DeviceOverSince, TgChatID,
+//	NotifiedStatus, NotifiedExpireAt, NotifiedQuotaAt,
+//	ActiveDevices and Status (derived as ListUsers derives them).
+//
+// Credentials, keys, notes, tags and bot codes are left zero.
+// TestUserStatesServeEnforcementAsWholeUsers holds the consumers to these fields.
+func (s *Store) UserStatesByID(ids []int64) ([]model.User, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	b, err := json.Marshal(ids)
+	if err != nil {
+		return nil, err
+	}
+	return s.userStates(`SELECT `+userStateCols+` FROM users
+		WHERE id IN (SELECT value FROM json_each(?)) ORDER BY id DESC`, len(ids) <= userStatesByKeyMax, string(b))
+}
+
+// userStatesByKeyMax is how many users' devices are counted from their own rows; for
+// more, one grouped pass over the window of everyone online is cheaper.
+const userStatesByKeyMax = 1000
+
+const userStateCols = `id, name, enabled, plan_id, data_limit, expire_at, hold_seconds,
+	used_up, used_down, last_up, last_down, reset_period, last_reset_at,
+	device_limit, device_over_since, tg_chat_id,
+	notified_status, notified_expire_at, notified_quota_at`
+
+// userStates reads user states. byKey counts the devices of the users read from their
+// own rows rather than from the window of everyone online.
+func (s *Store) userStates(query string, byKey bool, args ...any) ([]model.User, error) {
+	countIP := s.ipCountsAsDevice() // before the rows hold the one connection
+	now := time.Now().Unix()
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.User
+	for rows.Next() {
+		var u model.User
+		var enabled int
+		if err := rows.Scan(&u.ID, &u.Name, &enabled, &u.PlanID, &u.DataLimit, &u.ExpireAt, &u.HoldSeconds,
+			&u.UsedUp, &u.UsedDown, &u.LastUp, &u.LastDown, &u.ResetPeriod, &u.LastResetAt,
+			&u.DeviceLimit, &u.DeviceOverSince, &u.TgChatID,
+			&u.NotifiedStatus, &u.NotifiedExpireAt, &u.NotifiedQuotaAt); err != nil {
+			return nil, err
+		}
+		u.Enabled = enabled != 0
+		out = append(out, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	since := now - model.DeviceOnlineWindow
+	var counts map[int64]int
+	if byKey {
+		ids := make([]int64, len(out))
+		for i := range out {
+			ids[i] = out[i].ID
+		}
+		counts, _ = s.ActiveDeviceCountsOf(ids, since)
+	} else {
+		counts, _ = s.ActiveDeviceCounts(since)
+	}
+	for i := range out {
+		u := &out[i]
+		u.ActiveDevices = counts[u.ID]
+		u.Status = userStatus(u.Enabled, u.ExpireAt, u.UsedUp+u.UsedDown, u.DataLimit, now,
+			u.ActiveDevices, u.DeviceLimit, u.DeviceOverSince, countIP)
+	}
+	return out, nil
+}
+
+// candidateMargin widens the time-based candidate conditions by a few seconds: they are
+// evaluated a moment before the pass derives the statuses again, and a user whose
+// expiry falls into that moment must still be a candidate.
+const candidateMargin = 5
+
+// EnforcementCandidates returns the ids of the users the enforcement pass may have
+// something to tell about — a superset, never fewer:
+//
+//   - a status other than the one last notified. Statuses are derived here as Go
+//     derives them, except "over the device limit", which needs a count of addresses:
+//     every user who can be in that state — stamped past (or nearly past) the grace —
+//     is a candidate instead;
+//   - an expiry moments away, whose status the pass may see change;
+//   - an expiry inside the warning horizon that has not been warned about;
+//   - a quota warning due, or one to re-arm.
+//
+// Everyone else the pass would read and skip: their status is the one already
+// notified, and neither warning applies. At 50,000 users reading them all was ~200 ms
+// on a fast core, every stats poll and every batch of node reports, to find usually
+// nobody. Anything that changes after this query and before the pass is seen by the
+// next pass, because an unnotified status stays unnotified.
+// TestEnforcementCandidatesMissNobody runs the pass both ways over random users.
+func (s *Store) EnforcementCandidates(now, expiringHorizon int64) ([]int64, error) {
+	return s.ids(`SELECT id FROM users
+		WHERE notified_status <> CASE
+		        WHEN enabled = 0 THEN 'disabled'
+		        WHEN expire_at > 0 AND expire_at <= ? THEN 'expired'
+		        WHEN data_limit > 0 AND used_up + used_down >= data_limit THEN 'limited'
+		        ELSE 'active' END
+		   OR (device_limit > 0 AND device_over_since <> 0 AND device_over_since <= ?)
+		   OR (expire_at > ? AND expire_at <= ?)
+		   OR (tg_chat_id <> 0 AND expire_at > ? AND expire_at <= ? AND notified_expire_at <> expire_at)
+		   OR ((data_limit > 0 AND (used_up + used_down) * 100 >= data_limit * ?) <> (notified_quota_at <> 0))`,
+		now,
+		now-model.DeviceLimitGrace+candidateMargin,
+		now-candidateMargin, now+candidateMargin,
+		now-candidateMargin, now+expiringHorizon+candidateMargin,
+		model.TrafficWarnPercent)
+}
+
+// ResetCandidates returns the ids of users whose quota may be due a reset: those with
+// a period and an anchor, the only ones resetDue can ever answer yes for.
+func (s *Store) ResetCandidates() ([]int64, error) {
+	return s.ids(`SELECT id FROM users WHERE reset_period NOT IN ('', 'none') AND last_reset_at <> 0`)
+}
+
+// TrafficBaselines returns every user's last raw Xray counters, by user id — what the
+// stats poll subtracts from.
+func (s *Store) TrafficBaselines() (map[int64][2]int64, error) {
+	rows, err := s.db.Query(`SELECT id, last_up, last_down FROM users`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64][2]int64{}
+	for rows.Next() {
+		var id, up, down int64
+		if err := rows.Scan(&id, &up, &down); err != nil {
+			return nil, err
+		}
+		out[id] = [2]int64{up, down}
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ids(query string, args ...any) ([]int64, error) {
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// UserTunnelKeys returns every user's AmneziaWG private key, by user id, for users
+// that have one — what the master's tunnel poll needs to tell its peers apart.
+func (s *Store) UserTunnelKeys() (map[int64]string, error) {
+	rows, err := s.db.Query(`SELECT id, wg_private_key FROM users WHERE wg_private_key <> ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]string{}
+	for rows.Next() {
+		var id int64
+		var key string
+		if err := rows.Scan(&id, &key); err != nil {
+			return nil, err
+		}
+		if key = decField(key); key != "" {
+			out[id] = key
+		}
+	}
+	return out, rows.Err()
+}
+
+// UserSummary is a user as a list of them shows, filters and sorts by: no credentials,
+// keys or bot state. The device count is not in it — see ListUserSummaries.
+type UserSummary struct {
+	ID          int64
+	Name        string
+	Note        string
+	Tags        []string
+	Enabled     bool
+	DataLimit   int64
+	ExpireAt    int64
+	HoldSeconds int64
+	UsedUp      int64
+	UsedDown    int64
+	LastSeen    int64
+	DeviceLimit int
+	Status      string
+}
+
+// ListUserSummaries returns every user as a summary, newest first.
+//
+// The users page reads the whole table on every request — its filters and chip counts
+// are over everyone. Read as whole users that is three dozen columns and two decrypted
+// fields per user, copied around as a struct three times this size, plus a count of
+// everyone's devices: at 20,000 users on a 1-vCPU box, ~370 ms of CPU a request.
+//
+// Devices are counted only for the users whose count decides their status — those
+// over their limit past the grace — which is usually nobody. A list that shows the
+// count asks ActiveDeviceCountsOf for the rows it shows.
+func (s *Store) ListUserSummaries() ([]UserSummary, error) {
+	return s.userSummaries(`SELECT ` + userSummaryCols + ` FROM users ORDER BY id DESC`)
+}
+
+// ListUserSummariesOf is ListUserSummaries for the users given, newest first: what the
+// users page reads to bring a few rows of its shared list up to date after an edit,
+// rather than all of them. An id with no user is absent from the result.
+func (s *Store) ListUserSummariesOf(ids []int64) ([]UserSummary, error) {
+	if len(ids) == 0 {
+		return []UserSummary{}, nil
+	}
+	b, err := json.Marshal(ids)
+	if err != nil {
+		return nil, err
+	}
+	return s.userSummaries(`SELECT `+userSummaryCols+` FROM users
+		WHERE id IN (SELECT value FROM json_each(?)) ORDER BY id DESC`, string(b))
+}
+
+const userSummaryCols = `id, name, note, tags, enabled, data_limit, expire_at, hold_seconds,
+		used_up, used_down, last_seen, device_limit, device_over_since`
+
+func (s *Store) userSummaries(query string, args ...any) ([]UserSummary, error) {
+	// Read before the rows are open: the store has one connection, and the rows hold it.
+	countIP := s.ipCountsAsDevice()
+	now := time.Now().Unix()
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []UserSummary
+	var over []int64 // device_over_since, per row
+	var decides []int64
+	for rows.Next() {
+		var u UserSummary
+		var enabled int
+		var tags string
+		var overSince int64
+		if err := rows.Scan(&u.ID, &u.Name, &u.Note, &tags, &enabled, &u.DataLimit, &u.ExpireAt, &u.HoldSeconds,
+			&u.UsedUp, &u.UsedDown, &u.LastSeen, &u.DeviceLimit, &overSince); err != nil {
+			return nil, err
+		}
+		u.Enabled = enabled != 0
+		u.Tags = model.DecodeTags(tags)
+		out = append(out, u)
+		over = append(over, overSince)
+		if deviceCountDecides(u.DeviceLimit, overSince, now, countIP) {
+			decides = append(decides, u.ID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var counts map[int64]int
+	if len(decides) > 0 {
+		counts, _ = s.ActiveDeviceCountsOf(decides, now-model.DeviceOnlineWindow)
+	}
+	for i := range out {
+		u := &out[i]
+		u.Status = userStatus(u.Enabled, u.ExpireAt, u.UsedUp+u.UsedDown, u.DataLimit, now,
+			counts[u.ID], u.DeviceLimit, over[i], countIP)
+	}
+	return out, nil
+}
+
+// ActiveDeviceCountsOf is ActiveDeviceCounts for the given users only: each read from
+// the user's own rows, so a handful of users costs a handful of lookups whatever the
+// number online.
+func (s *Store) ActiveDeviceCountsOf(ids []int64, since int64) (map[int64]int, error) {
+	out := make(map[int64]int, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	b, err := json.Marshal(ids)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(activeDeviceCountsOfSQL, string(b), since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
+}
+
+const activeDeviceCountsOfSQL = `SELECT user_id, COUNT(DISTINCT ip) FROM connections
+	WHERE user_id IN (SELECT value FROM json_each(?)) AND last_seen > ?
+	GROUP BY user_id`
+
 // UserIDs returns the set of existing user ids.
 //
 // For callers that only need to know whether an id is real — validating what a node
@@ -299,8 +627,8 @@ const deviceCountCTE = `SELECT CASE
 // never change it, they just exclude the user from the config here.
 func (s *Store) WorkingUsers(now int64) ([]model.User, error) {
 	return s.queryUsers(`WITH device_count AS (`+deviceCountCTE+`)
-		SELECT `+userCols+` FROM users `+workingUsersWhere+`
-		ORDER BY id ASC`, workingUsersArgs(now)...)
+		SELECT `+userCols+` FROM users u `+workingUsersWhere+`
+		ORDER BY u.id ASC`, workingUsersArgs(now)...)
 }
 
 // WorkingUserIDs is WorkingUsers for a caller that only needs to know WHO: the ids,
@@ -311,8 +639,8 @@ func (s *Store) WorkingUsers(now int64) ([]model.User, error) {
 // allocated ~250x more for an answer it threw away.
 func (s *Store) WorkingUserIDs(now int64) ([]int64, error) {
 	rows, err := s.db.Query(`WITH device_count AS (`+deviceCountCTE+`)
-		SELECT id FROM users `+workingUsersWhere+`
-		ORDER BY id ASC`, workingUsersArgs(now)...)
+		SELECT u.id FROM users u `+workingUsersWhere+`
+		ORDER BY u.id ASC`, workingUsersArgs(now)...)
 	if err != nil {
 		return nil, err
 	}
@@ -328,6 +656,53 @@ func (s *Store) WorkingUserIDs(now int64) ([]int64, error) {
 	return out, rows.Err()
 }
 
+// WorkingSet answers, in one scan, the two questions asked of the user table whenever
+// anything about the fleet might have moved: who belongs in the proxy config
+// (WorkingUserIDs), and what speed cap each capped user has (CappedUsers).
+//
+// They were read separately — two scans of every user — on every node's shared read,
+// and the pair is what says whether what the fleet is served has changed at all, which
+// is asked far more often than the answer changes. Together they are one scan and no
+// decryption: with 50,000 users, ~20ms against the ~85ms reading everything the nodes
+// are given costs.
+//
+// caps is CappedUsers exactly, device limits included: a user over their devices is
+// left out of ids but keeps their cap, because the node shapes by address and they go
+// on connecting until the config that drops them lands.
+func (s *Store) WorkingSet(now int64) (ids []int64, caps map[int64]int, err error) {
+	// The device clause is a column here, so its arguments come before the condition's.
+	args := append(deviceLimitArgs(now), liveUsersArgs(now)...)
+	rows, err := s.db.Query(`WITH device_count AS (`+deviceCountCTE+`)
+		SELECT u.id, `+effectiveSpeedExpr+`, `+withinDeviceLimitExpr+`
+		FROM users u
+		`+groupSpeedJoin+`
+		`+liveUsersWhere+`
+		ORDER BY u.id ASC`, args...)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	ids, caps = []int64{}, map[int64]int{}
+	for rows.Next() {
+		var id int64
+		var kbps int
+		var working bool
+		if err := rows.Scan(&id, &kbps, &working); err != nil {
+			return nil, nil, err
+		}
+		if working {
+			ids = append(ids, id)
+		}
+		if kbps > 0 {
+			caps[id] = kbps
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	return ids, caps, nil
+}
+
 // WorkingCredentials is WorkingUsers for building a proxy config: the same users in
 // the same order, each carrying only what a config is made of — ID, UUID, Password,
 // WGPrivateKey and AWGSlot. Every other field is zero, and no status is derived.
@@ -338,8 +713,8 @@ func (s *Store) WorkingUserIDs(now int64) ([]int64, error) {
 // these few columns take ~4ms.
 func (s *Store) WorkingCredentials(now int64) ([]model.User, error) {
 	rows, err := s.db.Query(`WITH device_count AS (`+deviceCountCTE+`)
-		SELECT id, uuid, password, wg_private_key, awg_slot FROM users `+workingUsersWhere+`
-		ORDER BY id ASC`, workingUsersArgs(now)...)
+		SELECT u.id, u.uuid, u.password, u.wg_private_key, u.awg_slot FROM users u `+workingUsersWhere+`
+		ORDER BY u.id ASC`, workingUsersArgs(now)...)
 	if err != nil {
 		return nil, err
 	}
@@ -378,24 +753,41 @@ func (s *Store) WorkingCredentials(now int64) ([]model.User, error) {
 // same rule model.Settings.CountsIPAsDevice states, kept in SQL so every caller of
 // this query and the status derivation agree without threading a flag through six of
 // them. See migration 0055 and issue #66.
-const workingUsersWhere = `WHERE enabled = 1
-		  AND (expire_at = 0 OR expire_at > ?)
-		  AND (data_limit = 0 OR used_up + used_down < data_limit)
-		  AND (device_limit = 0 OR NOT (SELECT ip_counts FROM device_count)
+const workingUsersWhere = liveUsersWhere + `
+		  AND ` + withinDeviceLimitExpr
+
+// liveUsersWhere is the part of it a device never touches: manually enabled, not
+// expired, inside the data limit. WorkingSet reads it with the device clause as a
+// column rather than a condition, which is how one scan answers both who is in the
+// config and who has a speed cap (a user over their devices still has one).
+//
+// Every query using these names the users table `u`.
+const liveUsersWhere = `WHERE u.enabled = 1
+		  AND (u.expire_at = 0 OR u.expire_at > ?)
+		  AND (u.data_limit = 0 OR u.used_up + u.used_down < u.data_limit)`
+
+// withinDeviceLimitExpr is true for a user their device limit does not exclude.
+const withinDeviceLimitExpr = `(u.device_limit = 0 OR NOT (SELECT ip_counts FROM device_count)
 		       -- Not over the limit right now. Checked as well as the stamp, not instead
 		       -- of it, so a user who has fallen back under is admitted even if nothing
 		       -- has run to clear their stamp yet: an out-of-date stamp must never be
 		       -- able to hold someone out.
 		       OR (SELECT COUNT(DISTINCT c.ip) FROM connections c
-		           WHERE c.user_id = users.id AND c.last_seen > ?) <= device_limit
+		           WHERE c.user_id = u.id AND c.last_seen > ?) <= u.device_limit
 		       -- Over, but not for long enough yet. See DeviceLimitGrace: an address
 		       -- left behind by a network change or a carrier's address rotation leaves
 		       -- the window before this expires, so it never costs anyone a cut.
-		       OR device_over_since = 0
-		       OR device_over_since > ?)`
+		       OR u.device_over_since = 0
+		       OR u.device_over_since > ?)`
 
 func workingUsersArgs(now int64) []any {
-	return []any{now, now - model.DeviceOnlineWindow, now - model.DeviceLimitGrace}
+	return append(liveUsersArgs(now), deviceLimitArgs(now)...)
+}
+
+func liveUsersArgs(now int64) []any { return []any{now} }
+
+func deviceLimitArgs(now int64) []any {
+	return []any{now - model.DeviceOnlineWindow, now - model.DeviceLimitGrace}
 }
 
 // GetUser returns one user by id.
@@ -456,7 +848,7 @@ func (s *Store) GetUserBySubToken(token string) (*model.User, error) {
 	if token == "" {
 		return nil, sql.ErrNoRows
 	}
-	users, err := s.queryUsers(`SELECT `+userCols+` FROM users WHERE sub_token = ? LIMIT 1`, token)
+	users, err := s.queryUsers(userBySubTokenSQL, token)
 	if err != nil {
 		return nil, err
 	}
@@ -809,7 +1201,7 @@ func (s *Store) GetUserByTelegramChatID(chatID int64) (*model.User, error) {
 	if chatID == 0 {
 		return nil, sql.ErrNoRows
 	}
-	users, err := s.queryUsers(`SELECT `+userCols+` FROM users WHERE tg_chat_id = ? LIMIT 1`, chatID)
+	users, err := s.queryUsers(userByTelegramChatSQL, chatID)
 	if err != nil {
 		return nil, err
 	}
@@ -830,13 +1222,13 @@ func (s *Store) SetUserTelegramChat(userID, chatID int64) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(`UPDATE users SET tg_chat_id = 0 WHERE tg_chat_id = ?`, chatID); err != nil {
+	if _, err := tx.Exec(detachTelegramChatSQL, chatID); err != nil {
 		return err
 	}
 	// This chat is now actively owned, so the self-reattach slot it may have left on
 	// a previously-unlinked account is consumed — drop any stale prev pointers to it
 	// (including on this user) so a later unlink resolves to exactly one account.
-	if _, err := tx.Exec(`UPDATE users SET tg_prev_chat_id = 0 WHERE tg_prev_chat_id = ?`, chatID); err != nil {
+	if _, err := tx.Exec(dropPrevTelegramChatSQL, chatID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`UPDATE users SET tg_chat_id = ? WHERE id = ?`, chatID, userID); err != nil {
@@ -866,10 +1258,7 @@ func (s *Store) GetDetachedUserByPrevChat(chatID int64) (*model.User, error) {
 	if chatID == 0 {
 		return nil, sql.ErrNoRows
 	}
-	users, err := s.queryUsers(
-		`SELECT `+userCols+` FROM users
-		 WHERE tg_prev_chat_id = ? AND tg_chat_id = 0
-		 ORDER BY id DESC LIMIT 1`, chatID)
+	users, err := s.queryUsers(detachedUserByPrevChatSQL, chatID)
 	if err != nil {
 		return nil, err
 	}
@@ -1189,51 +1578,40 @@ func (s *Store) applyUserStatus(users []model.User, now int64) {
 	if len(users) == 0 {
 		return
 	}
-	countIP := s.ipCountsAsDevice()
-	if len(users) == 1 {
-		u := &users[0]
-		active, _ := s.ActiveDeviceCountForUser(u.ID, now-model.DeviceOnlineWindow)
-		u.ActiveDevices = active
-		limit := u.DeviceLimit
-		switch {
-		case !countIP:
-			limit = 0
-		case u.DeviceOverSince == 0 || u.DeviceOverSince > now-model.DeviceLimitGrace:
-			limit = 0
-		}
-		u.Status = deriveStatus(
-			u.Enabled, u.ExpireAt, u.UsedUp+u.UsedDown, u.DataLimit, now,
-			active, limit,
-		)
-		return
-	}
 	counts, _ := s.activeDeviceCounts(users, now-model.DeviceOnlineWindow)
-	// The displayed count stays honest — it is how many addresses were seen — but it only
-	// DRIVES the status while addresses are what enforces the limit. In "hwid" mode they
-	// do not, and a phone changing network still read as "device limit exceeded" (issue
-	// #66), the bot said so, and the HWID roster it is actually capped by showed one
-	// device. Showing the number and enforcing it are separate decisions.
+	countIP := s.ipCountsAsDevice()
 	for i := range users {
 		u := &users[i]
-		active := counts[u.ID]
-		u.ActiveDevices = active
-		limit := u.DeviceLimit
-		switch {
-		case !countIP:
-			limit = 0 // this counter does not enforce in "hwid" mode
-		case u.DeviceOverSince == 0 || u.DeviceOverSince > now-model.DeviceLimitGrace:
-			// Over the limit, but the grace has not run out, so nothing has happened to
-			// them yet — and it usually never will, because this is what a network
-			// change looks like. Saying "device limit exceeded" here would put the
-			// panel, the API and the bot in the position of announcing a cut that the
-			// enforcement query is not making.
-			limit = 0
-		}
-		u.Status = deriveStatus(
-			u.Enabled, u.ExpireAt, u.UsedUp+u.UsedDown, u.DataLimit, now,
-			active, limit,
-		)
+		u.ActiveDevices = counts[u.ID]
+		u.Status = userStatus(u.Enabled, u.ExpireAt, u.UsedUp+u.UsedDown, u.DataLimit, now,
+			u.ActiveDevices, u.DeviceLimit, u.DeviceOverSince, countIP)
 	}
+}
+
+// userStatus is a user's display status. The device count drives it only where
+// deviceCountDecides says so.
+func userStatus(enabled bool, expireAt, used, dataLimit, now int64, active, deviceLimit int, overSince int64, countIP bool) string {
+	if !deviceCountDecides(deviceLimit, overSince, now, countIP) {
+		deviceLimit = 0
+	}
+	return deriveStatus(enabled, expireAt, used, dataLimit, now, active, deviceLimit)
+}
+
+// deviceCountDecides reports whether a user's count of addresses can make them
+// "device limited".
+//
+// The displayed count stays honest — it is how many addresses were seen — but it only
+// DRIVES the status while addresses are what enforces the limit. In "hwid" mode they
+// do not, and a phone changing network still read as "device limit exceeded" (issue
+// #66), the bot said so, and the HWID roster it is actually capped by showed one
+// device. Showing the number and enforcing it are separate decisions.
+//
+// Nor while the grace runs: over the limit, but nothing has happened to them yet — and
+// it usually never will, because this is what a network change looks like. Saying
+// "device limit exceeded" here would put the panel, the API and the bot in the
+// position of announcing a cut that the enforcement query is not making.
+func deviceCountDecides(deviceLimit int, overSince, now int64, countIP bool) bool {
+	return countIP && deviceLimit > 0 && overSince != 0 && overSince <= now-model.DeviceLimitGrace
 }
 
 // activeDeviceCounts is ActiveDeviceCounts for the users being read. A read of one

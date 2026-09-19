@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
-	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -139,37 +137,14 @@ func (m *Manager) SetDecoyTemplate(name string) error {
 // by the API and then reconciled against — Xray would take a config the operator could
 // not have produced through the UI.
 func (m *Manager) SetXrayDNS(dns string) error {
-	for _, e := range strings.FieldsFunc(dns, func(r rune) bool {
-		return r == '\n' || r == '\r' || r == ',' || r == ' '
-	}) {
-		if !validDNSServer(e) {
-			return invalidCode("err.badDNS", "неверный DNS-адрес: {{detail}}", map[string]any{"detail": e})
-		}
+	if err := validateDNSList(&dns); err != nil {
+		return err
 	}
 	if err := m.store.SetXrayDNS(strings.TrimSpace(dns)); err != nil {
 		return err
 	}
 	m.TriggerReconcile()
 	return nil
-}
-
-// validDNSServer accepts a plain IP, an ip:port, a DoH/DoT URL, or "localhost".
-func validDNSServer(s string) bool {
-	s = strings.TrimSpace(s)
-	switch {
-	case s == "":
-		return false
-	case s == "localhost":
-		return true
-	case strings.Contains(s, "://"):
-		u, err := url.Parse(s)
-		return err == nil && u.Host != ""
-	case net.ParseIP(s) != nil:
-		return true
-	default:
-		host, _, err := net.SplitHostPort(s)
-		return err == nil && net.ParseIP(host) != nil
-	}
 }
 
 // Settings returns the current settings row (read-only handlers).
@@ -216,6 +191,9 @@ func (m *Manager) GeoGroups() (geo.GroupSet, error) {
 		return nil, err
 	}
 	m.geoGroups = g
+	// Counted like a drop: groups that failed to parse before (the lists not downloaded
+	// yet) and parse now change what a config is built from.
+	m.geoGen++
 	return g, nil
 }
 
@@ -259,11 +237,6 @@ func (m *Manager) genOptsFor(serverID int64) (xray.Options, error) {
 		return opts, nil
 	}
 	opts.Custom = list
-	if serverID == model.LocalNodeID {
-		if happObs, err := m.HappOutbounds(); err == nil && len(happObs) > 0 {
-			opts.HappOutbounds = happObs
-		}
-	}
 	return opts, nil
 }
 
@@ -283,7 +256,15 @@ func (m *Manager) IPListStatus() []geo.FileInfo { return geo.StatusLists(m.asset
 func (m *Manager) dropGeoCache() {
 	m.geoMu.Lock()
 	m.geoSite, m.geoIP, m.geoGroups = nil, nil, nil
+	m.geoGen++
 	m.geoMu.Unlock()
+}
+
+// geoGeneration counts every change of the cached groups: each drop and each parse.
+func (m *Manager) geoGeneration() uint64 {
+	m.geoMu.Lock()
+	defer m.geoMu.Unlock()
+	return m.geoGen
 }
 
 // RefreshGeo re-downloads the Xray geo databases to their latest version, drops
@@ -391,6 +372,8 @@ func (m *Manager) ipListLoop() {
 }
 
 // refreshLoop is the shared hourly staleness poll behind geoLoop/ipListLoop.
+// wait is the manager's, so a refresh loop stops with everything else instead of on
+// its own hourly clock — an hour is indistinguishable from a hang at shutdown.
 func refreshLoop(what string, wait func(time.Duration) bool, cadence func() time.Duration, isStale func(time.Duration) bool, refresh func() error) {
 	for {
 		if !wait(time.Hour) {
@@ -521,13 +504,13 @@ func (m *Manager) checkProxyPorts(p model.SystemProxy, set *model.Settings, cust
 	reserved := otherListenerPorts(set, custom)
 	m.holdPanelPort(reserved)
 	if p.SocksEnabled {
-		if who, taken := reserved.TCP[p.SocksPort]; taken {
+		if who, taken := reserved.OnTCP(p.SocksPort); taken {
 			return invalidCode("err.portTaken", "порт {{port}} уже занят: {{who}}",
 				map[string]any{"port": p.SocksPort, "who": who})
 		}
 	}
 	if p.HTTPEnabled {
-		if who, taken := reserved.TCP[p.HTTPPort]; taken {
+		if who, taken := reserved.OnTCP(p.HTTPPort); taken {
 			return invalidCode("err.portTaken", "порт {{port}} уже занят: {{who}}",
 				map[string]any{"port": p.HTTPPort, "who": who})
 		}
@@ -544,7 +527,7 @@ func otherListenerPorts(set *model.Settings, custom []model.Inbound) model.Reser
 	r := reservedPorts(&stripped)
 	for _, in := range custom {
 		if in.Port > 0 {
-			if in.Protocol == model.InbHysteria {
+			if model.ProtoOf(in.Protocol) == "udp" {
 				r.HoldUDP(in.Port, in.Name)
 			} else {
 				r.HoldTCP(in.Port, in.Name)
@@ -680,16 +663,13 @@ func (m *Manager) SaveSubSettings(st *model.Settings) error {
 		return invalidCode("err.subPathSameAsPanel", "путь подписки не может совпадать с секретным путём панели")
 	}
 	if cur.APIPath != "" && strings.EqualFold(st.SubPath, cur.APIPath) {
-		return invalidCode("err.subPathReserved", "путь подписки «{{path}}» уже занят API панели — выберите другой", map[string]any{"path": st.SubPath})
+		return invalidCode("err.subPathSameAsAPI", "путь подписки не может совпадать с путём API")
 	}
 	if cur.NodeAPIPath != "" && strings.EqualFold(st.SubPath, cur.NodeAPIPath) {
-		return invalidCode("err.subPathReserved", "путь подписки «{{path}}» уже занят синхронизацией нод — выберите другой", map[string]any{"path": st.SubPath})
+		return invalidCode("err.subPathSameAsNodeAPI", "путь подписки не может совпадать с путём Node API")
 	}
-	if statusPath := cur.StatusPathOr(); statusPath != "" && strings.EqualFold(st.SubPath, statusPath) {
-		return invalidCode("err.subPathReserved", "путь подписки «{{path}}» уже занят страницей статуса — выберите другой", map[string]any{"path": st.SubPath})
-	}
-	if cur.PaymentWebhookSecret != "" && strings.EqualFold(st.SubPath, cur.PaymentWebhookSecret) {
-		return invalidCode("err.subPathReserved", "путь подписки «{{path}}» уже занят вебхуками платежей — выберите другой", map[string]any{"path": st.SubPath})
+	if strings.EqualFold(st.SubPath, "status") || (cur.StatusPath != "" && strings.EqualFold(st.SubPath, cur.StatusPath)) {
+		return invalidCode("err.subPathSameAsStatus", "путь подписки не может совпадать со страницей статуса")
 	}
 	return m.store.SetSubSettings(st)
 }
@@ -902,7 +882,7 @@ func (m *Manager) SaveSubRules(rules []model.SubRule) error {
 
 // SubTemplates returns the operator's stored profile templates.
 func (m *Manager) SubTemplates() (clash, singbox, xray string, err error) {
-	set, err := m.store.GetSettings()
+	set, err := m.Settings()
 	if err != nil {
 		return "", "", "", err
 	}
@@ -944,9 +924,16 @@ const maxSubTemplateBytes = 256 * 1024
 // subTemplateErr turns a validator's error into one the panel can show, naming the
 // format so an operator editing three documents knows which one is refused.
 func subTemplateErr(format string, err error) error {
+	var legacy *sub.SingBoxLegacyError
 	switch {
 	case err == nil:
 		return nil
+	case errors.As(err, &legacy):
+		return invalidCode("err.subTemplateLegacy", "шаблон {{format}}: {{field}} — поле удалено из sing-box, профиль с ним не загрузится",
+			map[string]any{"format": format, "field": legacy.Path})
+	case errors.Is(err, sub.ErrTemplateTooBig):
+		return invalidCode("err.subTemplateTooDeep", "шаблон {{format}}: слишком много вставок или слишком глубокая вложенность",
+			map[string]any{"format": format})
 	case errors.Is(err, sub.ErrTemplateEmpty):
 		return invalidCode("err.subTemplateNoSlot", "шаблон {{format}}: нет места для серверов — вставьте {{slot}}",
 			map[string]any{"format": format, "slot": subTemplateSlot(format)})

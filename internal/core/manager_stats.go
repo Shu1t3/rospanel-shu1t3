@@ -20,7 +20,9 @@ func (m *Manager) PollStats() error {
 	if err != nil {
 		return err
 	}
-	users, err := m.store.ListUsers()
+	// Only the counters: what the poll subtracts from. Whole users were read here, every
+	// minute, to use three columns of them.
+	bases, err := m.store.TrafficBaselines()
 	if err != nil {
 		return err
 	}
@@ -29,23 +31,24 @@ func (m *Manager) PollStats() error {
 	// Collect the whole cycle first, then commit it in one transaction. Written
 	// per-user this was three fsyncs per active user on a single connection, which is
 	// what put a hard ceiling on how many users the panel could account for at all.
-	deltas := make([]store.TrafficDelta, 0, len(users))
-	for _, u := range users {
-		t, ok := stats[fmt.Sprintf("u%d", u.ID)]
+	deltas := make([]store.TrafficDelta, 0, len(stats))
+	for id, base := range bases {
+		t, ok := stats[fmt.Sprintf("u%d", id)]
 		if !ok {
 			continue
 		}
-		addUp, addDown := t.Up-u.LastUp, t.Down-u.LastDown
-		if t.Up < u.LastUp { // Xray restarted → counter reset to 0
+		lastUp, lastDown := base[0], base[1]
+		addUp, addDown := t.Up-lastUp, t.Down-lastDown
+		if t.Up < lastUp { // Xray restarted → counter reset to 0
 			addUp = t.Up
 		}
-		if t.Down < u.LastDown {
+		if t.Down < lastDown {
 			addDown = t.Down
 		}
-		if addUp != 0 || addDown != 0 || t.Up != u.LastUp || t.Down != u.LastDown {
+		if addUp != 0 || addDown != 0 || t.Up != lastUp || t.Down != lastDown {
 			au, ad := nonNeg(addUp), nonNeg(addDown)
 			d := store.TrafficDelta{
-				UserID: u.ID, NodeID: model.LocalNodeID, Day: today,
+				UserID: id, NodeID: model.LocalNodeID, Day: today,
 				AddUp: au, AddDown: ad,
 				// The local poller reads cumulative counters, so it records where it
 				// read them for the next cycle to subtract from.
@@ -60,13 +63,19 @@ func (m *Manager) PollStats() error {
 	if err := m.store.ApplyTrafficDeltas(deltas); err != nil {
 		logErr("stats: traffic batch failed", "users", len(deltas), "err", err)
 	}
-
 	// Re-baseline a reset user's counters to the live Xray value (reusing the stats
-	// already fetched above) so the next poll measures the delta from the reset.
-	m.applyResets(users, time.Now().Unix(), func(id int64) (int64, int64) {
-		t := stats[fmt.Sprintf("u%d", id)]
-		return t.Up, t.Down
-	})
+	// already fetched above) so the next poll measures the delta from the reset. Only
+	// users with a reset period can be due one.
+	if ids, err := m.store.ResetCandidates(); err != nil {
+		logErr("stats: reading reset candidates failed", "err", err)
+	} else if due, err := m.store.UserStatesByID(ids); err != nil {
+		logErr("stats: reading reset candidates failed", "err", err)
+	} else {
+		m.applyResets(due, time.Now().Unix(), func(id int64) (int64, int64) {
+			t := stats[fmt.Sprintf("u%d", id)]
+			return t.Up, t.Down
+		})
+	}
 	return m.enforceTraffic()
 }
 
@@ -81,11 +90,27 @@ var trafficEnforceDelay = 10 * time.Second
 func (m *Manager) enforceTraffic() error {
 	m.enforceMu.Lock()
 	defer m.enforceMu.Unlock()
-	users, err := m.store.ListUsers()
+	users, err := m.enforcementUsers()
 	if err != nil {
 		return err
 	}
 	return m.enforceAfterTraffic(users)
+}
+
+// enforcementUsers reads the users the enforcement pass may act on (see
+// store.EnforcementCandidates) — usually a handful of the whole list.
+func (m *Manager) enforcementUsers() ([]model.User, error) {
+	// The widest horizon a setting allows when the settings cannot be read: a superset
+	// is harmless, and the expiry warnings are skipped without settings anyway.
+	horizon := int64(30 * 86400)
+	if set, err := m.store.GetSettings(); err == nil {
+		horizon = int64(set.ExpiringDays()) * 86400
+	}
+	ids, err := m.store.EnforcementCandidates(time.Now().Unix(), horizon)
+	if err != nil {
+		return nil, err
+	}
+	return m.store.UserStatesByID(ids)
 }
 
 // enforceTrafficSoon schedules an enforcement pass for node traffic, unless one is
@@ -182,6 +207,32 @@ func (m *Manager) Summary() (*Summary, error) {
 	return s, nil
 }
 
+// summaryTTL is how long SystemStatus reuses the user counts.
+//
+// The dashboard feed asks for the system status every two seconds while anyone has
+// it open, and the counts behind it are a pass over every user joined with every
+// address seen in the last two minutes: with 50,000 users that was a tenth of a
+// 1-vCPU panel, spent to repaint numbers that move by the minute — "online" is itself
+// a two-minute window. The host metrics and the Xray state on the same payload stay
+// fresh; only the counts wait.
+const summaryTTL = 15 * time.Second
+
+// recentSummary is Summary, reused for summaryTTL: shared, so callers must not change
+// it. Callers asking at once share one computation. Summary itself — the API's
+// summary endpoint — always counts afresh.
+func (m *Manager) recentSummary() (*Summary, error) {
+	m.summaryMu.Lock()
+	defer m.summaryMu.Unlock()
+	if m.summaryCache == nil || time.Since(m.summaryAt) >= summaryTTL {
+		s, err := m.Summary()
+		if err != nil {
+			return nil, err
+		}
+		m.summaryCache, m.summaryAt = s, time.Now()
+	}
+	return m.summaryCache, nil
+}
+
 // StartSysstat begins sampling host metrics (CPU/RAM/disk/network) and the live
 // VPN throughput for the dashboard. diskPath selects the filesystem reported
 // under "disk".
@@ -192,7 +243,7 @@ func (m *Manager) StartSysstat(diskPath string) {
 
 // TrackVPNViewer marks one active dashboard-stream subscriber for the life of the
 // returned release func — call `defer mgr.TrackVPNViewer()()`. vpnSpeedLoop only
-// samples Xray (via in-process gRPC StatsService every 3s) while at least one viewer is
+// samples Xray (forking `api statsquery` every 3s) while at least one viewer is
 // connected, so an unattended panel costs nothing extra.
 func (m *Manager) TrackVPNViewer() func() {
 	m.vpnViewers.Add(1)
@@ -270,12 +321,12 @@ type SystemStatus struct {
 // SystemStatus assembles the dashboard payload from the host sampler, the Xray
 // supervisor and the user summary.
 func (m *Manager) SystemStatus() (*SystemStatus, error) {
-	sum, err := m.Summary()
+	sum, err := m.recentSummary()
 	if err != nil {
 		return nil, err
 	}
 	s := &SystemStatus{
-		XrayRunning:  sum.XrayRunning,
+		XrayRunning:  m.sup.Running(), // live: a crash shows on the next tick, not in 15s
 		XrayUptime:   m.sup.UptimeSeconds(),
 		XrayVersion:  m.sup.Version(),
 		Goroutines:   runtime.NumGoroutine(),

@@ -228,10 +228,20 @@ func (s *Store) reencryptInbounds() error {
 			log.Printf("[ERROR] reencrypt: inbound %d opts unreadable — leaving as is", r.id)
 			continue
 		}
-		if opts.RealityPrivateKey == "" || strings.HasPrefix(opts.RealityPrivateKey, "enc:v1:") {
+		// Only the keys still in the clear: one already encrypted is kept as stored, since
+		// running it through the marshaller again would encrypt the ciphertext.
+		clear := func(k string) bool { return k != "" && !strings.HasPrefix(k, "enc:v1:") }
+		if !clear(opts.RealityPrivateKey) && !clear(opts.WGPrivateKey) {
 			continue
 		}
-		blob, err := marshalInboundOpts(opts)
+		if clear(opts.RealityPrivateKey) {
+			opts.RealityPrivateKey = encField(opts.RealityPrivateKey)
+		}
+		if clear(opts.WGPrivateKey) {
+			opts.WGPrivateKey = encField(opts.WGPrivateKey)
+		}
+		raw, err := json.Marshal(opts)
+		blob := string(raw)
 		if err != nil {
 			log.Printf("[ERROR] reencrypt: inbound %d opts re-encode failed — leaving as is", r.id)
 			continue

@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -144,6 +146,7 @@ func TestUsersPageFiltersCountsAndWindows(t *testing.T) {
 		{"filter=online", []string{"crowd", "Анна"}},
 		{"filter=bogus", []string{"Zed", "crowd", "1a", "_x", "Ёж", "alice", "bob", "Анна"}},
 		{"q=vip", []string{"Анна"}},
+		{"q=АННА", []string{"Анна"}},
 		{"q=sal", []string{"Zed", "Анна"}},
 		{fmt.Sprintf("q=u%d", f.ids["bob"]), []string{"bob"}},
 		{fmt.Sprintf("q=%d", f.ids["alice"]), []string{"alice"}},
@@ -156,6 +159,11 @@ func TestUsersPageFiltersCountsAndWindows(t *testing.T) {
 		{"sort=online", []string{"crowd", "Анна", "Zed", "1a", "_x", "Ёж", "alice", "bob"}},
 		{"offset=2&limit=3", []string{"1a", "_x", "Ёж"}},
 		{"offset=50", []string{}},
+		{"sort=new", []string{"Zed", "crowd", "1a", "_x", "Ёж", "alice", "bob", "Анна"}},
+		// A filter and an order together: the page orders what matched, not everyone.
+		{"filter=active&sort=name&lang=en", []string{"1a", "alice", "Zed", "Анна"}},
+		{"filter=active&sort=name&lang=en&offset=2", []string{"Zed", "Анна"}},
+		{"filter=active&sort=name&lang=en&offset=9", []string{}},
 	} {
 		p, _ := getPage(t, h, op, c.query)
 		if got := pageNames(p); !reflect.DeepEqual(got, c.want) {
@@ -179,6 +187,21 @@ func TestUsersPageFiltersCountsAndWindows(t *testing.T) {
 	}
 	if p, _ := getPage(t, h, op, "limit=2"); p.IDs != nil {
 		t.Error("ids were sent without being asked for")
+	}
+	// "Select all" over a filtered, ordered list selects them in the order shown.
+	p, _ = getPage(t, h, op, "limit=0&filter=active&ids=1&sort=name&lang=en")
+	wantIDs = []int64{f.ids["1a"], f.ids["alice"], f.ids["Zed"], f.ids["Анна"]}
+	if !reflect.DeepEqual(p.IDs, wantIDs) {
+		t.Fatalf("ordered ids %v, want %v", p.IDs, wantIDs)
+	}
+}
+
+// Each chip is a bit of the index's per-user word, so there cannot be more of them
+// than the word has bits: a 33rd would be counted and then never match.
+func TestEveryChipFitsTheIndexWord(t *testing.T) {
+	const bits = 32 // usersIndex.chips is a []uint32
+	if len(userChips) > bits {
+		t.Fatalf("%d chips in a %d-bit word", len(userChips), bits)
 	}
 }
 
@@ -219,5 +242,249 @@ func TestUserCardAndBriefList(t *testing.T) {
 	}
 	if call(h, "GET", "/api/users/page", nil) != http.StatusUnauthorized || call(h, "GET", "/api/users/brief", nil) != http.StatusUnauthorized {
 		t.Error("the list answered without a session")
+	}
+}
+
+// A summary says about a user exactly what the whole user says: the same status, the
+// same device count, the same usage and tags. The page is built from summaries, so a
+// summary that drifted from the user would be a page that lies.
+func TestUserSummariesMatchWholeUsers(t *testing.T) {
+	st, err := store.Open(t.TempDir() + "/page.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	f := newPageFixture(t, st)
+	check := func(when string) {
+		t.Helper()
+		whole, err := st.ListUsers()
+		if err != nil {
+			t.Fatal(err)
+		}
+		summaries, err := st.ListUserSummaries()
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := make([]store.UserSummary, len(whole))
+		ids := make([]int64, len(whole))
+		for i, u := range whole {
+			want[i] = store.UserSummary{
+				ID: u.ID, Name: u.Name, Note: u.Note, Tags: u.Tags, Enabled: u.Enabled,
+				DataLimit: u.DataLimit, ExpireAt: u.ExpireAt, HoldSeconds: u.HoldSeconds,
+				UsedUp: u.UsedUp, UsedDown: u.UsedDown, LastSeen: u.LastSeen,
+				DeviceLimit: u.DeviceLimit, Status: u.Status,
+			}
+			ids[i] = u.ID
+		}
+		if !reflect.DeepEqual(summaries, want) {
+			t.Fatalf("%s: summaries differ from whole users:\n got  %+v\n want %+v", when, summaries, want)
+		}
+		// The rows' device counts, asked for separately, are the whole users' counts.
+		counts, err := st.ActiveDeviceCountsOf(ids, time.Now().Unix()-model.DeviceOnlineWindow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, u := range whole {
+			if counts[u.ID] != u.ActiveDevices {
+				t.Fatalf("%s: user %d has %d devices as a whole user, %d counted for the row", when, u.ID, u.ActiveDevices, counts[u.ID])
+			}
+		}
+		if counts[f.ids["crowd"]] != 2 {
+			t.Fatalf("%s: the fixture's crowded user counts %d devices, want 2", when, counts[f.ids["crowd"]])
+		}
+	}
+	check("addresses count as devices")
+	// In "hwid" mode the address count is shown but decides no status.
+	if err := st.SetDeviceCountMode(model.DeviceCountHWID); err != nil {
+		t.Fatal(err)
+	}
+	check("hwid mode")
+}
+
+// A page with no rows reads neither groups nor devices; a page with rows asks for the
+// devices of exactly those rows.
+func TestUsersPageReadsLookupsOnlyForItsRows(t *testing.T) {
+	st, err := store.Open(t.TempDir() + "/page.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	newPageFixture(t, st)
+	summaries, err := st.ListUserSummaries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var groupReads int
+	var deviceIDs [][]int64
+	look := pageLookups{
+		groups: func() map[int64][]model.GroupRef { groupReads++; return nil },
+		devices: func(ids []int64) map[int64]int {
+			deviceIDs = append(deviceIDs, ids)
+			return map[int64]int{ids[0]: 7}
+		},
+	}
+	for _, window := range []string{"limit=0", "offset=100&limit=5"} {
+		groupReads, deviceIDs = 0, nil
+		q, _ := url.ParseQuery(window)
+		p := buildUsersPage(summaries, newUsersIndex(summaries, time.Now().Unix()), q, look)
+		if len(p.Users) != 0 || p.Total != len(summaries) || p.IDs != nil || groupReads != 0 || deviceIDs != nil {
+			t.Fatalf("%s: rows=%d total=%d ids=%v, groups read %d times, devices for %v", window, len(p.Users), p.Total, p.IDs, groupReads, deviceIDs)
+		}
+	}
+	groupReads, deviceIDs = 0, nil
+	q, _ := url.ParseQuery("offset=1&limit=2")
+	p := buildUsersPage(summaries, newUsersIndex(summaries, time.Now().Unix()), q, look)
+	want := []int64{summaries[1].ID, summaries[2].ID}
+	if groupReads != 1 || !reflect.DeepEqual(deviceIDs, [][]int64{want}) {
+		t.Fatalf("groups read %d times, devices asked for %v, want once and %v", groupReads, deviceIDs, want)
+	}
+	if p.Users[0].ActiveDevices != 7 || p.Users[1].ActiveDevices != 0 {
+		t.Fatalf("rows carry devices %d and %d, want 7 and 0", p.Users[0].ActiveDevices, p.Users[1].ActiveDevices)
+	}
+}
+
+// Requests share one read of the users for a few seconds, until something is changed
+// through the panel or the API: then the next read is fresh, so an operator who edits
+// a user and reloads the list sees the edit. What changes by other means (traffic, a
+// bot) shows once the snapshot ages out.
+func TestUsersListIsSharedUntilAChange(t *testing.T) {
+	rt, st := rolesTestRouter(t)
+	h := rt.panelMux()
+	op := signIn(t, st, "support", model.RoleOperator, false)
+	mk := func(name string) {
+		t.Helper()
+		if _, err := st.CreateUser(name, "uuid-"+name, "pw", "tok-"+name, 0, 0, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all := func() int {
+		t.Helper()
+		p, _ := getPage(t, h, op, "limit=0")
+		return p.All
+	}
+	brief := func() int {
+		t.Helper()
+		req := httptest.NewRequest("GET", "/api/users/brief", nil)
+		req.AddCookie(op)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		var out []userBrief
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("brief: %v (%s)", err, rec.Body.String())
+		}
+		return len(out)
+	}
+
+	mk("a")
+	if got := all(); got != 1 {
+		t.Fatalf("first read: %d users", got)
+	}
+	mk("b") // straight into the store, as a bot or the traffic pass would
+	if got, gotBrief := all(), brief(); got != 1 || gotBrief != 1 {
+		t.Fatalf("within the TTL the list was read again: page %d, picker %d", got, gotBrief)
+	}
+
+	// A change through the panel — even one that fails — makes the next read fresh.
+	req := httptest.NewRequest("POST", "/api/users", strings.NewReader(`{"name":"c"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(op)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code >= 300 {
+		t.Fatalf("create through the panel: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := all(); got != 3 {
+		t.Fatalf("after a change through the panel the list shows %d users, want 3", got)
+	}
+
+	// A plain read changes nothing, and what changed elsewhere shows once the snapshot
+	// ages out.
+	mk("d")
+	if got := all(); got != 3 {
+		t.Fatalf("a read counted as a change: %d users", got)
+	}
+	rt.usersSnap.mu.Lock()
+	rt.usersSnap.at = time.Now().Add(-usersSnapshotTTL)
+	rt.usersSnap.mu.Unlock()
+	if got := all(); got != 4 {
+		t.Fatalf("past the TTL the list shows %d users, want 4", got)
+	}
+}
+
+// Every surface that changes users counts its requests: the panel, the external API
+// and the payment callbacks. Reads do not count.
+func TestWritingRequestsAreCounted(t *testing.T) {
+	rt, st := rolesTestRouter(t)
+	rt.apiKeys = newAPIKeyGuard()
+	rt.apiLimiter = newIPRateLimiter(600, time.Minute)
+	rt.subLimiter = newIPRateLimiter(120, time.Minute)
+	rt.decoy = http.NotFoundHandler()
+	op := signIn(t, st, "support", model.RoleOperator, false)
+	counted := func(name string, want bool, serve func()) {
+		t.Helper()
+		before := rt.writes.Load()
+		serve()
+		if got := rt.writes.Load() != before; got != want {
+			t.Errorf("%s: counted=%v, want %v", name, got, want)
+		}
+	}
+	panel := rt.panelMux()
+	api := rt.apiHandler()
+	send := func(h http.Handler, method, path string) func() {
+		return func() {
+			req := httptest.NewRequest(method, path, strings.NewReader(`{}`))
+			req.AddCookie(op)
+			h.ServeHTTP(httptest.NewRecorder(), req)
+		}
+	}
+	counted("panel read", false, send(panel, "GET", "/api/users/page"))
+	counted("panel write", true, send(panel, "POST", "/api/users"))
+	counted("API read", false, send(api, "GET", "/v1/users"))
+	counted("API write", true, send(api, "PATCH", "/v1/users/1"))
+
+	rt.mu.Lock()
+	rt.paySecret = "pay-segment"
+	rt.mu.Unlock()
+	counted("payment callback", true, send(rt, "POST", "/pay-segment/nope"))
+}
+
+// Concurrent readers and writers of the shared list: run under -race.
+func TestUsersListSnapshotUnderConcurrency(t *testing.T) {
+	rt, st := rolesTestRouter(t)
+	h := rt.panelMux()
+	op := signIn(t, st, "support", model.RoleOperator, false)
+	newPageFixture(t, st)
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range 20 {
+				if i%4 == 0 && j%5 == 0 {
+					req := httptest.NewRequest("POST", "/api/users", strings.NewReader(fmt.Sprintf(`{"name":"w%d-%d"}`, i, j)))
+					req.Header.Set("Content-Type", "application/json")
+					req.AddCookie(op)
+					rec := httptest.NewRecorder()
+					h.ServeHTTP(rec, req)
+					if rec.Code >= 300 {
+						t.Errorf("create: %d %s", rec.Code, rec.Body.String())
+					}
+					continue
+				}
+				req := httptest.NewRequest("GET", "/api/users/page?sort=name&lang=ru&limit=5", nil)
+				req.AddCookie(op)
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, req)
+				if rec.Code != http.StatusOK {
+					t.Errorf("page: %d", rec.Code)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	// Two writers (i = 0, 4) creating at j = 0, 5, 10, 15: eight users on top of the
+	// fixture's eight.
+	if p, _ := getPage(t, h, op, "limit=0"); p.All != 8+8 {
+		t.Fatalf("after the writes the list shows %d users, want %d", p.All, 8+8)
 	}
 }

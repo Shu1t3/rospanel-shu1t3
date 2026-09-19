@@ -267,7 +267,12 @@ func TestXrayJSONSkipsWhatItCannotCarry(t *testing.T) {
 	}
 }
 
-func TestXrayConfigReturnsLaneNameSeparatelyFromCredentials(t *testing.T) {
+// The lane name is handed back on its own so a caller never has to reach into the
+// config map for it — that map holds the outbound's password one key away, and a
+// log line built from an untyped index there is a credential leak waiting for a
+// refactor to introduce it. Pins that the separate value is the real remark and
+// that nothing else from the link rides along with it.
+func TestXrayConfigHandsBackTheLaneNameWithoutTheCredentials(t *testing.T) {
 	const secret = "s3cr3t-pa55word"
 	cfg, remarks, ok := xrayConfigFromLink(
 		"hysteria2://"+secret+"@h.example:443?sni=h.example#DE%20%E2%80%94%20Berlin",
@@ -284,6 +289,8 @@ func TestXrayConfigReturnsLaneNameSeparatelyFromCredentials(t *testing.T) {
 	if strings.Contains(remarks, secret) {
 		t.Error("the password rode along in the lane name")
 	}
+	// The password really is in the config next door: without that the test would
+	// pass on a link that never carried a credential at all.
 	if b, _ := json.Marshal(cfg["outbounds"]); !strings.Contains(string(b), secret) {
 		t.Fatal("no credential in the outbounds — the test proves nothing")
 	}

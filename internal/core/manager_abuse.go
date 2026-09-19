@@ -9,7 +9,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/abuse"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/i18n"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
-	"github.com/Shu1t3/rospanel-shu1t3/internal/nodeapi"
+
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
 )
 
@@ -69,77 +69,6 @@ func (m *Manager) recordAbuse(userID int64, dest string) {
 // shipping the feed to every node; the master's own traffic is matched in full.
 func (m *Manager) RecordNodeAbuse(nodeID, userID int64, dest string, count int64) bool {
 	return m.addAbuseMatch(nodeID, userID, dest, count)
-}
-
-// RecordNodeAbuseBatch matches a batch of node site samples and buffers matches
-// under a single abuseMu lock acquisition. Returns the count of matched entries.
-func (m *Manager) RecordNodeAbuseBatch(nodeID int64, samples []nodeapi.SiteSample, known map[int64]struct{}, budget int) int {
-	if len(samples) == 0 || m.abuse == nil || budget <= 0 {
-		return 0
-	}
-	matcher := m.abuse.Matcher()
-	type matchItem struct {
-		key   abusePendingKey
-		dest  string
-		cat   abuse.Category
-		count int64
-	}
-	now := time.Now()
-	day := now.In(m.loc()).Format("2006-01-02")
-	matched := make([]matchItem, 0, min(len(samples), budget))
-
-	for _, s := range samples {
-		if budget <= 0 {
-			break
-		}
-		if _, ok := known[s.UserID]; !ok {
-			continue
-		}
-		if s.Host == "" || s.Count <= 0 {
-			continue
-		}
-		cat, ok := matcher.Match(s.Host)
-		if !ok {
-			continue
-		}
-		count := s.Count
-		if count > maxAbuseCount {
-			count = maxAbuseCount
-		}
-		matched = append(matched, matchItem{
-			key: abusePendingKey{
-				userID: s.UserID, nodeID: nodeID, domain: s.Host, day: day,
-			},
-			dest:  s.Host,
-			cat:   cat,
-			count: count,
-		})
-		budget--
-	}
-
-	if len(matched) == 0 {
-		return 0
-	}
-
-	ts := now.Unix()
-	m.abuseMu.Lock()
-	defer m.abuseMu.Unlock()
-
-	for _, item := range matched {
-		h, buffered := m.abusePending[item.key]
-		if !buffered && len(m.abusePending) >= abusePendingMax {
-			m.abuseDropLog()
-			continue
-		}
-		h.UserID, h.NodeID = item.key.userID, item.key.nodeID
-		h.Domain, h.Category, h.Day = item.dest, string(item.cat), item.key.day
-		h.Count += item.count
-		if ts > h.SeenAt {
-			h.SeenAt = ts
-		}
-		m.abusePending[item.key] = h
-	}
-	return len(matched)
 }
 
 // addAbuseMatch matches a destination against the blocklists and buffers a hit,

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -65,8 +66,11 @@ func (m *Manager) NodeHealth(id int64) (*HealthReport, error) {
 				diskHealth(h.DiskUsed, h.DiskTotal),
 				memHealth(h.MemUsed, h.MemTotal),
 				nodeConnGuardHealth(h),
-				nodeBBRHealth(h),
 			)
+			if fw, ok := nodeFirewallHealth(h); ok {
+				checks = append(checks, fw)
+			}
+			checks = append(checks, nodeBBRHealth(h))
 		}
 		checks = append(checks,
 			m.nodeGeoHealth(n),
@@ -164,13 +168,13 @@ func nodeXrayHealth(n *model.Node) HealthCheck {
 // one it is simply the pending change it will pick up when it returns.
 func (m *Manager) nodeConfigHealth(n *model.Node, online bool) HealthCheck {
 	const label = "health.config"
-	state, err := m.NodeDesiredState(n)
+	current, err := m.nodeConfigCurrent(n)
 	if err != nil {
 		return HealthCheck{Key: "config", LabelKey: label, Status: healthError,
 			DetailKey: "health.nodeConfigBuildFailed", HintKey: "health.nodeConfigHint",
 			Args: map[string]any{"err": err.Error()}}
 	}
-	if state.Hash == n.ConfigHash {
+	if current {
 		return HealthCheck{Key: "config", LabelKey: label, Status: healthOK,
 			DetailKey: "health.nodeConfigCurrent"}
 	}
@@ -180,6 +184,48 @@ func (m *Manager) nodeConfigHealth(n *model.Node, online bool) HealthCheck {
 	}
 	return HealthCheck{Key: "config", LabelKey: label, Status: healthWarn,
 		DetailKey: "health.nodeConfigPending", HintKey: "health.nodeConfigPendingHint"}
+}
+
+// nodeConfigCurrent reports whether the state a node last reported holding is the state
+// the panel would send it now: by the whole config's hash, or — for a node that holds it
+// in parts — the way its sync would be answered (see manager_node_split.go).
+//
+// The health tab asks every fifteen seconds while it is open. A node in parts is asked
+// what its sync asks, so a current one costs no build at all; asked by the whole config's
+// hash, which such a node never reports, it cost two whole builds every time.
+func (m *Manager) nodeConfigCurrent(n *model.Node) (bool, error) {
+	m.nodeGeoMu.Lock()
+	has, reported := m.nodeHas[n.ID]
+	m.nodeGeoMu.Unlock()
+	if reported && has.DeltaRev == nodeapi.DeltaRev {
+		has.ConfigHash = n.ConfigHash
+		push, done, err := m.NodeSyncPush(context.Background(), n, has)
+		done()
+		if err != nil {
+			return false, err
+		}
+		// A change that only renames the state says the node holds the right content.
+		renameOnly := push.Delta != nil && len(push.Delta.Upsert) == 0 && len(push.Delta.Remove) == 0 && push.Delta.Blocked == nil
+		return push.State == nil && push.Split == nil && (push.Delta == nil || renameOnly), nil
+	}
+	// A node that has not reported since the panel started: either way it may hold it.
+	state, err := m.NodeStateChange(n, n.ConfigHash)
+	if err != nil || state == nil {
+		return err == nil, err
+	}
+	x, err := m.readNodeStateInputs(n)
+	if err != nil {
+		return false, err
+	}
+	if err := m.stateGate.acquire(context.Background()); err != nil {
+		return false, err
+	}
+	defer m.stateGate.release()
+	split, _, _, splittable, err := m.buildNodeSplit(n, x)
+	if err != nil {
+		return false, err
+	}
+	return splittable && split.Hash == n.ConfigHash, nil
 }
 
 // nodeCertWarnDays is how close to expiry a node's cert must be before it reads as
@@ -262,6 +308,24 @@ func nodeConnGuardHealth(h nodeapi.HostStats) HealthCheck {
 	}
 	return HealthCheck{Key: "connguard", LabelKey: label, Status: healthWarn,
 		DetailKey: "health.nodeConnguardMissing", HintKey: "health.nodeConnguardHint"}
+}
+
+// nodeFirewallHealth says whether the node can drop addresses at its firewall. Without
+// it the bans and the source policy's blocks the panel hands the node do nothing there,
+// silently — the operator sees the ban in the list and the address still gets through
+// this server. ok is false for an agent too old to report it: no row rather than a
+// false alarm.
+func nodeFirewallHealth(h nodeapi.HostStats) (HealthCheck, bool) {
+	const label = "health.firewall"
+	if h.Firewall == nil {
+		return HealthCheck{}, false
+	}
+	if *h.Firewall {
+		return HealthCheck{Key: "firewall", LabelKey: label, Status: healthOK,
+			DetailKey: "health.firewallOK"}, true
+	}
+	return HealthCheck{Key: "firewall", LabelKey: label, Status: healthWarn,
+		DetailKey: "health.nodeFirewallMissing", HintKey: "health.nodeFirewallHint"}, true
 }
 
 // nodeBBRHealth mirrors bbrHealth: informational, since BBR is a throughput

@@ -1,11 +1,10 @@
 package core
 
 import (
+	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"net"
 	"net/mail"
 	"strings"
-
-	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 )
 
 // User-input bounds. These guard the DB and the config/subscription/link
@@ -28,8 +27,11 @@ func validateUserLimits(dataLimit, expireAt int64, deviceLimit int) error {
 		return invalidCode("err.badTrafficLimit", "некорректный лимит трафика")
 	case expireAt < 0 || expireAt > maxExpireAt:
 		return invalidCode("err.badExpiryDate", "некорректная дата истечения")
-	case deviceLimit < 0 || deviceLimit > model.MaxDevicesPerUser:
+	case deviceLimit < 0:
 		return invalidCode("err.deviceLimitNegative", "лимит устройств не может быть отрицательным")
+	case deviceLimit > model.MaxDeviceLimit:
+		return invalidCode("err.deviceLimitTooHigh", "лимит устройств не может быть больше {{max}}",
+			map[string]any{"max": model.MaxDeviceLimit})
 	}
 	return nil
 }

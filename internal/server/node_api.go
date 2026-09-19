@@ -1,14 +1,20 @@
 package server
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/Shu1t3/rospanel-shu1t3/internal/core"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/nodeapi"
 )
 
@@ -18,6 +24,14 @@ const (
 	nodeSyncHoldSec    = nodeapi.HoldSec
 	nodeSyncHoldJitter = nodeapi.HoldJitter
 )
+
+// nodeSyncBodyMax caps a sync request body. It was 1 MB, and an agent's traffic batch
+// had no bound of its own: a busy node went past the cap, the body was refused, the
+// agent resent the same batch forever, and the node stopped reporting and stopped
+// receiving config — including the update that would have fixed it. Current agents
+// send traffic in chunks well under 1 MB; the room above that is for an older agent
+// already holding an oversized batch, so it can get it through and be updated.
+const nodeSyncBodyMax = 8 << 20
 
 // nodeSyncHold returns one jittered hold duration. Independent per request, so
 // even a single node's own successive polls don't line up into a period.
@@ -92,14 +106,6 @@ func (rt *Router) handleNodeSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-// nodeSyncBodyMax caps a sync request body. It was 1 MB, and an agent's traffic batch
-// had no bound of its own: a busy node went past the cap, the body was refused, the
-// agent resent the same batch forever, and the node stopped reporting and stopped
-// receiving config — including the update that would have fixed it. Current agents
-// send traffic in chunks well under 1 MB; the room above that is for an older agent
-// already holding an oversized batch, so it can get it through and be updated.
-const nodeSyncBodyMax = 8 << 20
-
 	// Bound the body read with a deadline, then clear it before the long-poll hold
 	// (the hold does no reads, and a leftover deadline would disturb connection reuse).
 	rc := http.NewResponseController(w)
@@ -120,6 +126,21 @@ const nodeSyncBodyMax = 8 << 20
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal"})
 		return
+	}
+	// The state the node should have. One to push is held from its build until the
+	// response is encoded (see writeSyncResponse); released here too, whatever path
+	// this request takes. A node being told it is revoked is given no state.
+	encoded := func() {}
+	has := core.NodeHas{ConfigHash: req.ConfigHash, DeltaRev: req.DeltaRev, StateTag: req.StateTag}
+	if !resp.Revoked {
+		push, done, err := rt.mgr.NodeSyncPush(r.Context(), node, has)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal"})
+			return
+		}
+		encoded = done
+		defer done()
+		setPush(resp, push)
 	}
 	// A config change — or any disagreement about whether this node is switched on —
 	// is answered on the spot. Only a node whose belief already matches ours has its
@@ -143,10 +164,14 @@ const nodeSyncBodyMax = 8 << 20
 	//
 	// A chunk of a traffic backlog is answered at once too, so the next chunk follows
 	// straight away — but only one that was counted: a report the panel failed to
-	// ingest is held, or a persistent database error would become a tight loop.
-	trafficBacklog := req.TrafficMore && len(req.Traffic) > 0 && resp.AckReport > 0
-	if resp.Changed || resp.Revoked != req.Revoked || rt.mgr.NodeHasFreshWork(node.ID) || trafficBacklog {
-		rt.writeNodeSync(w, r, node.ID, req.XrayStartedAt, resp)
+	// ingest is held, or a persistent database error would become a tight loop. So is
+	// a chunk of connection samples; those are recorded in memory, so nothing to count.
+	// Either flag with nothing in the request is held: the flag alone must not buy a
+	// node a loop.
+	backlog := (req.TrafficMore && len(req.Traffic) > 0 && resp.AckReport > 0) ||
+		(req.ConnsMore && len(req.Conns) > 0)
+	if resp.Changed || resp.Revoked != req.Revoked || rt.mgr.NodeHasFreshWork(node.ID) || backlog {
+		rt.writeNodeSync(w, r, node.ID, req.XrayStartedAt, resp, encoded)
 		return
 	}
 	// Otherwise hold the request until the node is woken or the hold elapses, then
@@ -164,7 +189,7 @@ const nodeSyncBodyMax = 8 << 20
 	// Recompute after waking: the desired state may now differ.
 	fresh, err := rt.mgr.GetNode(node.ID)
 	if err != nil {
-		rt.writeNodeSync(w, r, node.ID, req.XrayStartedAt, resp) // transient store error; let it re-sync
+		rt.writeNodeSync(w, r, node.ID, req.XrayStartedAt, resp, encoded) // transient store error; let it re-sync
 		return
 	}
 	if fresh == nil {
@@ -179,19 +204,34 @@ const nodeSyncBodyMax = 8 << 20
 		writeJSON(w, http.StatusOK, out)
 		return
 	}
-	state, err := rt.mgr.NodeDesiredState(fresh)
+	push, pushed, err := rt.mgr.NodeSyncPush(r.Context(), fresh, has)
+	defer pushed()
 	if err != nil {
 		// Not silent: a desired state that cannot be built means this node stops
 		// receiving config for as long as the failure lasts, and nothing else in the
 		// panel would say so.
 		slog.Error("node: cannot build desired state", "node", fresh.ID, "err", err)
-	} else if state.Hash != req.ConfigHash {
-		out.Changed = true
-		out.State = state
-		slog.Info("node: pushing new state", "node", fresh.ID,
-			"hash", state.Hash[:12], "speed_limits", len(state.Meta.SpeedLimits))
+	} else {
+		setPush(out, push)
+		switch {
+		case push.State != nil:
+			slog.Info("node: pushing new state", "node", fresh.ID,
+				"hash", push.State.Hash[:12], "speed_limits", len(push.State.Meta.SpeedLimits))
+		case push.Split != nil:
+			slog.Info("node: pushing new state in parts", "node", fresh.ID,
+				"hash", push.Split.Hash[:12], "users", len(push.Split.Rows))
+		case push.Delta != nil && (len(push.Delta.Upsert) > 0 || len(push.Delta.Remove) > 0):
+			slog.Debug("node: pushing a change of users", "node", fresh.ID,
+				"changed", len(push.Delta.Upsert), "removed", len(push.Delta.Remove))
+		}
 	}
-	rt.writeNodeSync(w, r, node.ID, req.XrayStartedAt, out)
+	rt.writeNodeSync(w, r, node.ID, req.XrayStartedAt, out, pushed)
+}
+
+// setPush puts a node's push on its sync response.
+func setPush(resp *nodeapi.SyncResponse, push core.NodePush) {
+	resp.State, resp.Split, resp.Delta = push.State, push.Split, push.Delta
+	resp.Changed = push.State != nil || push.Split != nil || push.Delta != nil
 }
 
 // writeNodeSync stamps the per-request extras (a pending self-update flag, and a
@@ -201,7 +241,9 @@ const nodeSyncBodyMax = 8 << 20
 // reportedXrayStart is the Xray start time from the request being answered: handing
 // over a restart command records it, so the next sync can tell "it bounced" from
 // "nothing happened" by that value changing.
-func (rt *Router) writeNodeSync(w http.ResponseWriter, r *http.Request, nodeID, reportedXrayStart int64, resp *nodeapi.SyncResponse) {
+//
+// encoded is called once the response is encoded (see writeSyncResponse).
+func (rt *Router) writeNodeSync(w http.ResponseWriter, r *http.Request, nodeID, reportedXrayStart int64, resp *nodeapi.SyncResponse, encoded func()) {
 	if !resp.Revoked {
 		if rt.mgr.TakeNodeUpdate(nodeID) {
 			resp.Update = true
@@ -229,7 +271,82 @@ func (rt *Router) writeNodeSync(w http.ResponseWriter, r *http.Request, nodeID, 
 			resp.PanelURL = canonical
 		}
 	}
-	writeJSON(w, http.StatusOK, resp)
+	writeSyncResponse(w, r, resp, encoded)
+}
+
+// gzipWriters are reused across config pushes: a writer carries its compressor's
+// tables, and a push at every working-set change would otherwise allocate them anew.
+var gzipWriters = sync.Pool{New: func() any {
+	zw, _ := gzip.NewWriterLevel(io.Discard, gzip.BestSpeed)
+	return zw
+}}
+
+// writeSyncResponse writes a sync response, gzip'd when the node's client asks for it
+// — every agent's Go client does, and a config push is text that shrinks several times.
+// A response with no state goes out as it always has.
+//
+// One with a state is encoded — and compressed — in full before anything is written,
+// and encoded is called then, with the response no longer holding the state: from here
+// on only the compressed bytes are alive, and writing them out to a node on a slow or
+// stalled link holds up nobody else's push (see core.stateGate). Encoding into a
+// buffer also means a response that cannot be encoded is answered with an error
+// rather than a status already sent and a body cut short.
+func writeSyncResponse(w http.ResponseWriter, r *http.Request, resp *nodeapi.SyncResponse, encoded func()) {
+	if resp.State == nil && resp.Split == nil && resp.Delta == nil {
+		encoded()
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	gz := acceptsGzip(r.Header.Get("Accept-Encoding"))
+	var body bytes.Buffer
+	var err error
+	if gz {
+		zw := gzipWriters.Get().(*gzip.Writer)
+		zw.Reset(&body)
+		if err = json.NewEncoder(zw).Encode(resp); err == nil {
+			err = zw.Close()
+		}
+		zw.Reset(io.Discard) // drop the reference to this response
+		gzipWriters.Put(zw)
+	} else {
+		err = json.NewEncoder(&body).Encode(resp)
+	}
+	resp.State, resp.Split, resp.Delta = nil, nil, nil
+	encoded()
+	if err != nil {
+		slog.Error("node: cannot encode the sync response", "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal"})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if gz {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Add("Vary", "Accept-Encoding")
+	}
+	w.Header().Set("Content-Length", strconv.Itoa(body.Len()))
+	w.WriteHeader(http.StatusOK)
+	// Errors go the way writeJSON's do: the status is out, and a node that hung up or
+	// got a truncated stream fails its decode and asks again.
+	_, _ = w.Write(body.Bytes())
+}
+
+// acceptsGzip reports whether an Accept-Encoding header allows gzip.
+func acceptsGzip(header string) bool {
+	for _, part := range strings.Split(header, ",") {
+		name, params, _ := strings.Cut(part, ";")
+		if !strings.EqualFold(strings.TrimSpace(name), "gzip") {
+			continue
+		}
+		for _, p := range strings.Split(params, ";") {
+			if q, ok := strings.CutPrefix(strings.TrimSpace(p), "q="); ok {
+				if v, err := strconv.ParseFloat(q, 64); err == nil && v == 0 {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // canonicalPanelURL returns the panel's configured public URL when the node

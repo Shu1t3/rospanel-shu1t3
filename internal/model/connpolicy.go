@@ -51,15 +51,6 @@ func (p ConnPolicy) Active() bool {
 	return (p.Mode == ConnPolicyAllow || p.Mode == ConnPolicyBlock) && len(p.Countries) > 0
 }
 
-// Clone returns a deep copy of ConnPolicy.
-func (p ConnPolicy) Clone() ConnPolicy {
-	out := p
-	if len(p.Countries) > 0 {
-		out.Countries = append([]string(nil), p.Countries...)
-	}
-	return out
-}
-
 // Normalized returns the policy in canonical form: countries upper-cased, deduped
 // and sorted, an unknown mode read as off.
 func (p ConnPolicy) Normalized() ConnPolicy {
@@ -181,4 +172,32 @@ type BlockedIP struct {
 	UserID  int64  `json:"user_id"` // who was connecting, 0 when unknown
 	At      int64  `json:"at"`
 	Until   int64  `json:"until"`
+}
+
+// IPBan is an address an operator banned by hand. It lasts until it is lifted.
+type IPBan struct {
+	IP     string `json:"ip"`
+	UserID int64  `json:"user_id"` // whose addresses it was banned from, 0 when none
+	At     int64  `json:"at"`
+}
+
+// What put an address on the firewall, beside the source policy's PolicyReason*.
+const (
+	BanManual = "manual" // an operator, by hand
+	BanBrute  = "brute"  // the system proxy's brute-force guard
+	BanProbe  = "probe"  // the scanner block: it probed for the panel's hidden path
+)
+
+// Ban is one address the panel drops at the firewall, whatever put it there: the list
+// an operator reads and lifts bans from.
+type Ban struct {
+	IP       string `json:"ip"`
+	Source   string `json:"source"` // Ban* or PolicyReason*
+	UserID   int64  `json:"user_id,omitempty"`
+	UserName string `json:"user_name,omitempty"`
+	Country  string `json:"country,omitempty"`
+	ASN      uint32 `json:"asn,omitempty"`
+	Org      string `json:"org,omitempty"`
+	At       int64  `json:"at,omitempty"` // unix; 0 when not known
+	Until    int64  `json:"until"`        // unix; 0 = until lifted
 }

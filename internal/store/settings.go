@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
@@ -11,9 +12,41 @@ import (
 
 // GetSettings returns the singleton settings row.
 func (s *Store) GetSettings() (*model.Settings, error) {
-	if cached := s.settingsCache.Load(); cached != nil {
-		return cached.Clone(), nil
+	// The revision is read before the settings, never after: a write landing between
+	// the two leaves the copy kept looking older than it is, so the next call reads
+	// again — the other order could keep a stale copy under a current revision.
+	var rev int64
+	if err := s.db.QueryRow(`SELECT v FROM settings_rev WHERE id = 1`).Scan(&rev); err != nil {
+		return nil, err
 	}
+	c := &s.settings
+	c.mu.Lock()
+	if c.val != nil && c.rev == rev {
+		v := c.val.Clone()
+		c.mu.Unlock()
+		return v, nil
+	}
+	c.mu.Unlock()
+	st, err := s.readSettings()
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	c.rev, c.val = rev, st
+	c.mu.Unlock()
+	return st.Clone(), nil
+}
+
+// settingsCache is the one decoded copy of the settings row and the revision it was
+// read under (see migration 0087).
+type settingsCache struct {
+	mu  sync.Mutex
+	rev int64
+	val *model.Settings // nil until the first read
+}
+
+// readSettings reads and decodes the settings row.
+func (s *Store) readSettings() (*model.Settings, error) {
 	var st model.Settings
 	var updated int64
 	var vlessEn, hysteriaEn, setupDone int
@@ -213,7 +246,6 @@ func (s *Store) GetSettings() (*model.Settings, error) {
 	st.RealityPrivateKey = decField(st.RealityPrivateKey)
 	st.ProxyAccounts = decodeProxyAccounts(proxyAccounts)
 	st.ZeroSSLEABHMAC = decField(st.ZeroSSLEABHMAC)
-	s.settingsCache.Store(st.Clone())
 	return &st, nil
 }
 

@@ -85,9 +85,9 @@ func TestSubServersExternalAttachedWhenMasterFull(t *testing.T) {
 	// Simulate online connection on master so online count = 1 >= capacity 1
 	mgr.RecordAccessOn(model.LocalNodeID, model.UserEmail(u.ID), "198.51.100.1", "")
 
-	servers, access, err := rt.subPhysicalServers(set, u.ID, "198.51.100.1")
+	servers, err := rt.subServers(set, u.ID, "198.51.100.1")
 	if err != nil {
-		t.Fatalf("subPhysicalServers: %v", err)
+		t.Fatalf("subServers: %v", err)
 	}
 
 	// Master should be hidden due to full capacity
@@ -101,18 +101,7 @@ func TestSubServersExternalAttachedWhenMasterFull(t *testing.T) {
 		t.Errorf("master server should be hidden when full, but was found in servers")
 	}
 
-	// External servers are independently retrieved and preserved in subscription
-	extServers := rt.subExternalServers()
-	if len(extServers) == 0 {
-		t.Fatalf("external servers must be present independently of master")
-	}
-
-	links := sub.GenerateShareLinks(sub.Request{
-		User:     *u,
-		Servers:  servers,
-		External: extServers,
-		Access:   access,
-	})
+	links := sub.ShareLinksAll(*u, servers)
 	hasExtLink := false
 	for _, l := range links {
 		if strings.Contains(l, "ext.example.com") {
@@ -125,13 +114,18 @@ func TestSubServersExternalAttachedWhenMasterFull(t *testing.T) {
 	}
 
 	// Even if all physical servers are hidden/removed, external servers must still produce valid subscription
-	emptyPhysical := []sub.Server{}
-	linksAllHidden := sub.GenerateShareLinks(sub.Request{
-		User:     *u,
-		Servers:  emptyPhysical,
+	extServers := rt.subExternalServers()
+	access, _ := st.UserAccess(u.ID)
+	noProtoSet := *set
+	noProtoSet.VLESSEnabled = false
+	noProtoSet.HysteriaEnabled = false
+	noProtoSet.RealityEnabled = false
+	emptyPhysical := []sub.Server{{
+		Set:      &noProtoSet,
 		External: extServers,
 		Access:   access,
-	})
+	}}
+	linksAllHidden := sub.ShareLinksAll(*u, emptyPhysical)
 	if len(linksAllHidden) != 1 || !strings.Contains(linksAllHidden[0], "ext.example.com") {
 		t.Fatalf("external servers failed when all physical servers are hidden: %v", linksAllHidden)
 	}

@@ -878,16 +878,20 @@ func toASNStatDTOs(stats []model.ASNStat) []asnStatDTO {
 }
 
 type connectionDTO struct {
-	IP       string `json:"ip"`
-	LastSeen int64  `json:"last_seen"`
-	Count    int64  `json:"count"`
+	IP            string `json:"ip"`
+	LastSeen      int64  `json:"last_seen"`
+	Count         int64  `json:"count"`
+	ApproxSeconds int64  `json:"approx_seconds"`
+	Banned        bool   `json:"banned"`
 }
 
 func toConnectionDTO(c model.Connection) connectionDTO {
 	return connectionDTO{
-		IP:       c.IP,
-		LastSeen: c.LastSeen,
-		Count:    c.Count,
+		IP:            c.IP,
+		LastSeen:      c.LastSeen,
+		Count:         c.Count,
+		ApproxSeconds: c.ApproxSeconds,
+		Banned:        c.Banned,
 	}
 }
 

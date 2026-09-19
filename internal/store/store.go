@@ -12,9 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 
-	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	_ "modernc.org/sqlite"
 )
 
@@ -62,15 +60,17 @@ var ErrCorrupt = errors.New("database is corrupt")
 
 // Store wraps the SQLite connection pool.
 type Store struct {
-	db            *sql.DB
-	writeMu       sync.Mutex
-	settingsCache atomic.Pointer[model.Settings]
+	db       *sql.DB
+	writeMu  sync.Mutex
+	settings settingsCache
 }
 
 // invalidateSettingsCache clears the cached settings singleton so the next read
 // re-queries the database.
 func (s *Store) invalidateSettingsCache() {
-	s.settingsCache.Store(nil)
+	s.settings.mu.Lock()
+	s.settings.val = nil
+	s.settings.mu.Unlock()
 }
 
 // Open opens (creating if needed) the SQLite database at path, applies pragmas,

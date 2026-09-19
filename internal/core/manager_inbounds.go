@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/auth"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/awg"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/connguard"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/firewall"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/hop"
@@ -59,6 +62,10 @@ func inboundView(in model.Inbound) InboundView {
 	// its share link, and the editor has no field for it, so keep it off the view the
 	// same way the REALITY private key is kept off.
 	v.Opts.ShadowKey = ""
+	// The WireGuard server key likewise: clients need only the public half. The masking
+	// key reaches clients inside their import links, as the Shadowsocks key does.
+	v.Opts.WGPrivateKey = ""
+	v.Opts.TurnMaskKey = ""
 	// One representation of the advanced settings, not two: the forms above are the
 	// view's; the raw blobs would only be a second copy the client would have to
 	// reconcile.
@@ -130,24 +137,17 @@ func (m *Manager) effectiveSettings(serverID int64) (*model.Settings, error) {
 // exists to prevent.
 func reservedPorts(set *model.Settings) model.ReservedPorts {
 	r := model.NewReservedPorts()
-	if set.VLESSEnabled || set.ServerID == model.LocalNodeID {
-		r.HoldTCP(set.VLESSPort, "VLESS-Vision")
-	}
-	if set.RealityEnabled {
-		r.HoldTCP(set.RealityPort, "VLESS-XHTTP-REALITY")
-	}
-	if set.HysteriaEnabled {
-		r.HoldUDP(set.HysteriaPort, "HYSTERIA-UDP")
-		if set.HopEnd > set.HysteriaPort {
-			// The built-in hop range is a funnel onto the Hysteria port: anything inside
-			// it would have its traffic silently stolen by the nftables redirect.
-			for p := set.HysteriaPort + 1; p <= set.HopEnd; p++ {
-				r.HoldUDP(p, "HYSTERIA-UDP hop range")
-			}
+	r.HoldTCP(set.VLESSPort, "VLESS-Vision")
+	r.HoldTCP(set.RealityPort, "VLESS-XHTTP-REALITY")
+	r.HoldUDP(set.HysteriaPort, "HYSTERIA-UDP")
+	r.Hold(xray.APIPort, "Xray internal API")
+	if set.HopEnd > set.HysteriaPort {
+		// The built-in hop range is a UDP funnel onto the Hysteria port: anything
+		// inside it would have its traffic silently stolen by the nftables redirect.
+		for p := set.HysteriaPort + 1; p <= set.HopEnd; p++ {
+			r.HoldUDP(p, "HYSTERIA-UDP hop range")
 		}
 	}
-	r.HoldTCP(xray.APIPort, "Xray internal API")
-
 	// The system proxies' listeners, held whether or not they are currently on — for
 	// the same reason the built-in lanes are: the port comes back the moment the
 	// operator flips the switch, and discovering the collision then, as an Xray that
@@ -161,6 +161,9 @@ func reservedPorts(set *model.Settings) model.ReservedPorts {
 	// box, so a custom inbound must not be allowed to claim it.
 	if set.WarpEnabled && set.WarpRegistered() {
 		r.HoldTCP(model.PanelEgressPort, "WARP local entrance")
+	}
+	if set.AWGEnabled && set.AWGPort > 0 {
+		r.HoldUDP(set.AWGPort, "AmneziaWG")
 	}
 	return r
 }
@@ -183,7 +186,10 @@ func (m *Manager) holdPanelPort(reserved model.ReservedPorts) {
 	if err != nil {
 		return
 	}
-	reserved.HoldTCP(p, "panel internal port")
+	// Both transports: the panel's own listener is TCP, but nothing else should
+	// claim that number on this box either, and the operator gets a name instead of
+	// Xray's anonymous "port busy".
+	reserved.Hold(p, "panel internal port")
 }
 
 // CreateInbound validates and stores a new custom inbound, generating REALITY key
@@ -194,6 +200,9 @@ func (m *Manager) CreateInbound(ctx context.Context, in model.Inbound) (*Inbound
 	}
 	in.Normalize()
 	if err := m.prepareInbound(&in); err != nil {
+		return nil, err
+	}
+	if err := m.assignWGLocalPort(&in, 0); err != nil {
 		return nil, err
 	}
 	if err := m.validateAgainstSet(ctx, in, 0); err != nil {
@@ -239,7 +248,18 @@ func (m *Manager) UpdateInbound(ctx context.Context, in model.Inbound) (*Inbound
 	if in.Protocol == model.InbShadowsocks {
 		in.Opts.ShadowKey = cur.Opts.ShadowKey
 	}
+	// And the WireGuard identity and loopback port: a new key would strand every
+	// imported config, and a new port would move the relay's target for nothing.
+	if in.Protocol == model.InbWireGuard && cur.Protocol == model.InbWireGuard {
+		in.Opts.WGPrivateKey = cur.Opts.WGPrivateKey
+		in.Opts.WGPublicKey = cur.Opts.WGPublicKey
+		in.Opts.WGLocalPort = cur.Opts.WGLocalPort
+		in.Opts.TurnMaskKey = cur.Opts.TurnMaskKey
+	}
 	if err := m.prepareInbound(&in); err != nil {
+		return nil, err
+	}
+	if err := m.assignWGLocalPort(&in, in.ID); err != nil {
 		return nil, err
 	}
 	if err := m.validateAgainstSet(ctx, in, in.ID); err != nil {
@@ -317,6 +337,20 @@ func (m *Manager) prepareInbound(in *model.Inbound) error {
 		}
 		in.Opts.ShadowKey = key
 	}
+	if in.NeedsWireGuardKey() {
+		priv, pub, err := awg.GenerateKey()
+		if err != nil {
+			return err
+		}
+		in.Opts.WGPrivateKey, in.Opts.WGPublicKey = priv, pub
+	}
+	if in.NeedsTurnMaskKey() {
+		key := make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
+			return err
+		}
+		in.Opts.TurnMaskKey = hex.EncodeToString(key)
+	}
 	if !in.NeedsRealityKeys() {
 		return nil
 	}
@@ -389,6 +423,13 @@ func (m *Manager) validateAgainstSet(ctx context.Context, in model.Inbound, excl
 			return err
 		}
 	}
+	// A WireGuard inbound's loopback listener is a second port on the same box.
+	if in.Enabled && in.Protocol == model.InbWireGuard &&
+		(prev == nil || !prev.Enabled || prev.Opts.WGLocalPort != in.Opts.WGLocalPort) {
+		if err := m.probePort(ctx, in.ServerID, "udp", in.Opts.WGLocalPort); err != nil {
+			return err
+		}
+	}
 
 	// Finally, the only check that can judge the ADVANCED settings: hand the whole
 	// candidate config to Xray and see whether it parses. The key whitelists catch a
@@ -425,14 +466,11 @@ func (m *Manager) validateCandidate(ctx context.Context, serverID int64, set []m
 	}
 
 	if serverID == model.LocalNodeID {
-		if m.sup != nil {
-			if err := m.sup.ValidateConfig(cfg); err != nil {
-				return invalidCode("err.xrayRejectedConfig", "Xray отклонил конфигурацию: {{err}}", map[string]any{"err": err.Error()})
-			}
+		if err := m.sup.ValidateConfig(cfg); err != nil {
+			return invalidCode("err.xrayRejectedConfig", "Xray отклонил конфигурацию: {{err}}", map[string]any{"err": err.Error()})
 		}
 		return nil
 	}
-
 	raw, err := json.Marshal(cfg)
 	if err != nil {
 		return nil
@@ -448,8 +486,7 @@ func (m *Manager) validateCandidate(ctx context.Context, serverID int64, set []m
 	}
 }
 
-// candidateConfig builds what config.json would look like with `custom` as the
-// server's inbounds: the settings of `serverID` + custom inbounds + working user
+// candidateConfig builds the Xray config a server would run with the given inbound
 // set — the same generator the real apply uses, so what is validated is what would
 // be applied.
 func (m *Manager) candidateConfig(serverID int64, custom []model.Inbound) (*xray.Config, error) {
@@ -492,15 +529,10 @@ func inboundConflict(err error) error {
 	return err
 }
 
-// portNetwork is the transport-layer network an inbound listens on. Hysteria2 is
-// QUIC, so it binds UDP; everything else binds TCP. Testing the wrong one would pass
-// while the real bind fails.
-func portNetwork(in model.Inbound) string {
-	if in.Protocol == model.InbHysteria {
-		return "udp"
-	}
-	return "tcp"
-}
+// portNetwork is the transport-layer network an inbound listens on (model.ProtoOf):
+// Hysteria2 and the WireGuard relay bind UDP, everything else TCP. Testing the wrong
+// one would pass while the real bind fails.
+func portNetwork(in model.Inbound) string { return model.ProtoOf(in.Protocol) }
 
 // isSelfXrayPort reports whether port is one of the local master server's configured
 // ports that our own running Xray holds (and which will be reconfigured/released on apply).
@@ -642,7 +674,8 @@ func EnsureHostHops(st *store.Store) error {
 // Custom inbounds belong here for the same reason they belong in the node's list —
 // they are public listeners on the same box, and leaving them out would quietly make
 // "add a custom inbound" the way to bypass the guard. Hysteria2 is excluded: the
-// guard counts connections, which QUIC has none of.
+// guard counts connections, which QUIC has none of — and nor does the WireGuard relay's
+// DTLS, both being UDP.
 func HostConnGuardPorts(st *store.Store) ([]int, error) {
 	set, err := st.GetSettings()
 	if err != nil {
@@ -657,7 +690,7 @@ func HostConnGuardPorts(st *store.Store) ([]int, error) {
 		return nil, err
 	}
 	for _, in := range list {
-		if in.Protocol != model.InbHysteria {
+		if model.ProtoOf(in.Protocol) == "tcp" {
 			ports = append(ports, in.Port)
 		}
 	}
@@ -760,6 +793,7 @@ func EnsureHostFirewall(st *store.Store) error {
 	}
 	return firewall.Sync(context.Background(), rules)
 }
+
 
 // inboundNames is the display names already taken by a server's custom inbounds, so
 // renaming a built-in lane can't land on one of them.

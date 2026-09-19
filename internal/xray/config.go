@@ -113,6 +113,9 @@ type RouteRule struct {
 	Protocol    []string `json:"protocol,omitempty"`
 	OutboundTag string   `json:"outboundTag,omitempty"`
 	BalancerTag string   `json:"balancerTag,omitempty"`
+	// RuleTag names the rule to Xray's routing API, so the running rules can be
+	// replaced one by one (see hysteria_live.go). Unique within a config.
+	RuleTag string `json:"ruleTag,omitempty"`
 }
 
 // Log configures Xray logging.
@@ -144,14 +147,56 @@ type Outbound struct {
 	Tag      string `json:"tag,omitempty"`
 	Protocol string `json:"protocol"`
 	Settings any    `json:"settings,omitempty"`
-	// StreamSettings is set for an outbound built from a share link (a lane whose
-	// upstream is another VPN server); the panel's own outbounds need none.
+	// Tag-based routing looks at outbounds in order; "direct" should generally be last.
 	StreamSettings any `json:"streamSettings,omitempty"`
 }
 
 // FreedomSettings is the "settings" object for a freedom outbound.
 type FreedomSettings struct {
 	DomainStrategy string `json:"domainStrategy,omitempty"`
+}
+
+// BlackholeSettings configures the blackhole (drop) outbound.
+type BlackholeSettings struct {
+	Response struct {
+		Type string `json:"type"` // "none" (drop) or "http" (403 forbidden)
+	} `json:"response"`
+}
+
+// SocksOutboundSettings configures a SOCKS5 proxy egress.
+type SocksOutboundSettings struct {
+	Servers []SocksServer `json:"servers"`
+}
+
+// SocksServer describes a single SOCKS5 upstream.
+type SocksServer struct {
+	Address string      `json:"address"`
+	Port    int         `json:"port"`
+	Users   []SocksUser `json:"users,omitempty"`
+}
+
+// SocksUser holds SOCKS5 credentials (optional).
+type SocksUser struct {
+	User string `json:"user"`
+	Pass string `json:"pass"`
+}
+
+// HTTPOutboundSettings configures an HTTP proxy egress.
+type HTTPOutboundSettings struct {
+	Servers []HTTPServer `json:"servers"`
+}
+
+// HTTPServer describes a single HTTP proxy upstream.
+type HTTPServer struct {
+	Address string     `json:"address"`
+	Port    int        `json:"port"`
+	Users   []HTTPUser `json:"users,omitempty"`
+}
+
+// HTTPUser holds HTTP proxy Basic Auth credentials (optional).
+type HTTPUser struct {
+	User string `json:"user"`
+	Pass string `json:"pass"`
 }
 
 // ProxyOutboundSettings is the "settings" object for a socks/http proxy outbound.
@@ -172,21 +217,20 @@ type ProxyUser struct {
 	Pass string `json:"pass"`
 }
 
-// SocksInboundSettings is the "settings" object for a socks forward-proxy inbound
-// (proxy mode). Auth is "password" when accounts are present, else "noauth".
+// SocksInboundSettings is the "settings" object for a socks inbound (e.g. system proxy).
 type SocksInboundSettings struct {
 	Auth     string      `json:"auth"`
 	Accounts []ProxyUser `json:"accounts,omitempty"`
 	UDP      bool        `json:"udp"`
 }
 
-// HTTPInboundSettings is the "settings" object for an http forward-proxy inbound.
+// HTTPInboundSettings is the "settings" object for an http inbound (e.g. system proxy).
 type HTTPInboundSettings struct {
 	Accounts []ProxyUser `json:"accounts,omitempty"`
 }
 
-// WireGuardSettings is the "settings" object for a wireguard outbound (used for
-// the Cloudflare WARP egress).
+
+// WireGuardSettings is the "settings" object for a WireGuard outbound (WARP).
 type WireGuardSettings struct {
 	SecretKey string          `json:"secretKey"`
 	Address   []string        `json:"address"`
@@ -196,6 +240,29 @@ type WireGuardSettings struct {
 	// NoKernelTun forces the userspace (netstack) WireGuard implementation instead
 	// of a real kernel TUN device. See warpOutbound for why this is not optional.
 	NoKernelTun bool `json:"noKernelTun,omitempty"`
+}
+
+// WireGuardInboundSettings is the "settings" object for a wireguard inbound, the lane
+// behind the TURN relay. Xray makes every peer of an inbound a user, with the email
+// given here, so its users are attributed, routed and counted like any other lane's.
+type WireGuardInboundSettings struct {
+	SecretKey string `json:"secretKey"`
+	// Address is the inbound's own address inside its userspace network stack. Left
+	// out, Xray takes 10.0.0.1, which is somebody's home router: a client could not
+	// reach an address behind the tunnel that happens to be it.
+	Address []string               `json:"address,omitempty"`
+	MTU     int                    `json:"mtu,omitempty"`
+	Peers   []WireGuardInboundPeer `json:"peers"`
+}
+
+// WireGuardInboundPeer is one user of a wireguard inbound. AllowedIPs is what tells
+// users apart: Xray finds the user of a connection by its source address inside the
+// tunnel, so each peer holds its own /32 and nothing else. Left out, Xray allows every
+// address — and then the first peer it looks at owns every connection.
+type WireGuardInboundPeer struct {
+	PublicKey  string   `json:"publicKey"`
+	AllowedIPs []string `json:"allowedIPs"`
+	Email      string   `json:"email"`
 }
 
 // WireGuardPeer is one WireGuard peer (Cloudflare's WARP endpoint).

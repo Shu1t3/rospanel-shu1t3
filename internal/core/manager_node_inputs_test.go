@@ -171,15 +171,12 @@ func TestNodeTrafficSharesOneEnforcementPass(t *testing.T) {
 	m.reconcileCh = make(chan struct{}, 1)
 	// Cleanups run last-registered first: the scheduled pass finishes before the store
 	// closes and before the delay is put back.
-	t.Cleanup(m.Wait)
+	t.Cleanup(m.wg.Wait)
 	u, err := m.store.CreateUser("capped", "uuid-c", "pw", "tok-c", 1000, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	n, err := m.store.CreateNode("n1", "nl1.example.com", "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	n := servingNode(t, m, "n1", "nl1.example.com")
 	working, _ := m.store.WorkingCredentials(time.Now().Unix())
 	m.setApplied(working)
 

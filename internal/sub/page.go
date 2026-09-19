@@ -5,6 +5,7 @@ import (
 	"embed"
 	"fmt"
 	"html/template"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -112,6 +113,14 @@ type pageText struct {
 	AWGTitle       string
 	AWGHint        string
 	AWGDownload    string
+	AWGSite        string // where the Amnezia apps are downloaded, in the page's language
+	TurnTitle      string
+	TurnHint       string
+	TurnPeer       string
+	TurnLink       string
+	TurnNoLink     string
+	TurnManual     string
+	AppLink        string
 	Copy           string
 	Copied         string
 	PickApp        string
@@ -159,6 +168,14 @@ func text(lang i18n.Lang) pageText {
 		AWGTitle:       t("sub.awgTitle"),
 		AWGHint:        t("sub.awgHint"),
 		AWGDownload:    t("sub.awgDownload"),
+		AWGSite:        amneziaSite(lang),
+		TurnTitle:      t("sub.turnTitle"),
+		TurnHint:       t("sub.turnHint"),
+		TurnPeer:       t("sub.turnPeer"),
+		TurnLink:       t("sub.turnLink"),
+		TurnNoLink:     t("sub.turnNoLink"),
+		TurnManual:     t("sub.turnManual"),
+		AppLink:        t("sub.appLink"),
 		Copy:           t("sub.copy"),
 		Copied:         t("sub.copied"),
 		PickApp:        t("sub.pickApp"),
@@ -182,6 +199,37 @@ func text(lang i18n.Lang) pageText {
 	}
 }
 
+// amneziaSite is where the Amnezia apps themselves are downloaded. The site keeps a
+// Russian page of its own; every other language lands on the default one.
+func amneziaSite(lang i18n.Lang) string {
+	if lang == i18n.RU {
+		return "https://amnezia.org/ru/downloads"
+	}
+	return "https://amnezia.org/downloads"
+}
+
+// turnCard is one WireGuard inbound behind a TURN relay: what the user's TURN client
+// needs (the relay's address and the call link), and the WireGuard config it carries.
+type turnCard struct {
+	Label   string
+	Peer    string // host:port of the relay
+	Link    string // call invite link, "" when the operator set none
+	ConfURL string
+	// Apps are the client apps that import this lane from one link.
+	Apps []turnApp
+}
+
+// turnApp is one app's import link. Href is the same link as a template.URL, so its
+// scheme survives html/template's URL filter; AppLink is where the app itself comes
+// from, so a user handed a link can see what they are installing.
+type turnApp struct {
+	Name string // the app's own name and platform; a brand, not translated
+	Link string
+	Href template.URL
+	// AppLink is the app's own page — its repository, where every one of these lives.
+	AppLink string
+}
+
 // awgCard is one server's AmneziaWG config on the page.
 type awgCard struct {
 	Label   string
@@ -196,6 +244,7 @@ type pageData struct {
 	Brand     string // accent colour #rrggbb
 	BrandDark string // darker accent for hover/active states
 	AccentFg  string // accent text colour adjusted for the surface
+	OnBrand   string // label colour on an accent fill: white, or dark ink on a light accent
 	SuccessFg string // status text colours adjusted for the surface
 	WarningFg string
 	DangerFg  string
@@ -210,6 +259,8 @@ type pageData struct {
 	// AWG lists one card per server whose AmneziaWG lane the user may use: the
 	// config file to import and its QR.
 	AWG []awgCard
+	// Turn lists one card per WireGuard inbound behind a TURN relay the user may use.
+	Turn []turnCard
 
 	StatusLabel string
 	StatusClass string
@@ -309,33 +360,41 @@ func subStatus(s string, lang i18n.Lang) (label, class string) {
 	}
 }
 
-// PageWithSources renders the human-facing subscription page (usage stats, QR of the sub
+// Page renders the human-facing subscription page (usage stats, QR of the sub
 // URL, copy button, per-client import buttons, and the raw links).
-// servers spans physical servers, while ext spans external servers.
-// set is the panel's active settings (used for sub URL, branding, and billing).
-func PageWithSources(u model.User, set *model.Settings, servers []Server, ext []model.ExtServer, access model.Access, billing Billing, devices Devices, showDownload bool, lang i18n.Lang) ([]byte, error) {
-	if set == nil {
-		if len(servers) > 0 && servers[0].Set != nil {
-			set = servers[0].Set
-		} else {
-			return nil, fmt.Errorf("no settings for subscription page")
-		}
+//
+// servers spans every server the user is on — the local one plus each enabled node
+// — so the "individual configs" list shows one labelled entry per protocol × server
+// (with a single server it's unchanged). local is the panel's own settings, and
+// everything about the panel rather than about a server reads from it: the sub URL
+// behind the QR and the copy button, the AmneziaWG download links, the branding.
+// It is passed rather than taken from servers[0] because the ordering decides what
+// lands there — a node comes first by weight, by distance or by load, and the master
+// leaves the list entirely once it is full with hide-when-full set. Every one of
+// those would have addressed the panel's own links at a node, which serves none of
+// them.
+func Page(u model.User, local *model.Settings, servers []Server, billing Billing, devices Devices, showDownload bool, lang i18n.Lang) ([]byte, error) {
+	if len(servers) == 0 {
+		return nil, fmt.Errorf("no settings for subscription page")
 	}
-	subURL := URL(set, u.SubToken)
+	subURL := URL(local, u.SubToken)
 	used := u.UsedUp + u.UsedDown
 
 	// Only lanes enabled in the Connections panel appear on the page, across every
 	// server: the built-in ones first, then that server's custom inbounds. The label
 	// carries the node name (Settings.ProtoLabel / link.CustomLabel), so a multi-node
 	// user can tell the entries apart.
-	var protoLinks []protoLink
+	var protoLinks, extLinks []protoLink
 	var awgCards []awgCard
+	var turnCards []turnCard
 	for _, srv := range servers {
 		s := srv.Set
 		if s.AWGEnabled && s.AWGPort != 0 && srv.allowsBuiltin(model.LaneAWG) {
 			awgCards = append(awgCards, awgCard{
-				Label:   s.ProtoLabelFor(model.ProtoAWG, &u),
-				ConfURL: AWGConfURL(s, u.SubToken, s.ServerID),
+				Label: s.ProtoLabelFor(model.ProtoAWG, &u),
+				// The label names the server whose tunnel this is, but the config
+				// itself is downloaded from the panel — the node hosts no /sub path.
+				ConfURL: AWGConfURL(local, u.SubToken, s.ServerID),
 				QRURL:   fmt.Sprintf("%s/awg/%d.png", subURL, s.ServerID),
 			})
 		}
@@ -352,38 +411,59 @@ func PageWithSources(u model.User, set *model.Settings, servers []Server, ext []
 			if !srv.allowsInbound(in.ID) {
 				continue
 			}
+			if in.Protocol == model.InbWireGuard {
+				peer := net.JoinHostPort(s.Host, strconv.Itoa(in.Port))
+				turnCards = append(turnCards, turnCard{
+					Label:   link.CustomLabelFor(in, u, s),
+					Peer:    peer,
+					Link:    in.Opts.TurnLink,
+					ConfURL: TurnConfURL(local, u.SubToken, in.ID),
+				})
+				c := &turnCards[len(turnCards)-1]
+				// Free Turn Proxy's masked wire first: the apps that speak it are the ones
+				// the call service does not shape. WINGS V reaches the relay unmasked.
+				for _, app := range []struct {
+					name, link, appLink string
+				}{
+					{"VK Turn Proxy (iOS)", TurnImportLink(u, s, in),
+						"https://github.com/anton48/vk-turn-proxy-ios"},
+					{"Free Turn Proxy (Android)", FreeTurnImportLink(u, s, in, TurnClientConf(u, s, in)),
+						"https://github.com/samosvalishe/turn-proxy-android"},
+					{"WINGS V (Android, Windows, Linux)", WingsVImportLink(u, s, in),
+						"https://github.com/WINGS-N/WINGSV"},
+				} {
+					if app.link != "" {
+						c.Apps = append(c.Apps, turnApp{
+							Name: app.name, Link: app.link, Href: template.URL(app.link), AppLink: app.appLink,
+						})
+					}
+				}
+				continue
+			}
 			if l := link.Custom(u, in, s); l != "" {
 				protoLinks = append(protoLinks, protoLink{link.CustomLabelFor(in, u, s), l})
 			}
 		}
-	}
-	if len(ext) == 0 {
-		for _, srv := range servers {
-			if len(srv.External) > 0 {
-				ext = append(ext, srv.External...)
-				access = srv.Access
-			}
+		// External servers are not ours: the link is theirs and so is the label. They
+		// hang off whichever entry carries them for the whole subscription, so they are
+		// gathered here and appended once the servers are done — last, and in the order
+		// the link list has them.
+		for _, e := range srv.externalEndpoints() {
+			extLinks = append(extLinks, protoLink{e.Name, e.Link})
 		}
 	}
-	// External servers allowed by user access are displayed beside physical links
-	for _, e := range ExternalEndpoints(ext, access) {
-		label := e.Name
-		if label == "" {
-			label = strings.ToUpper(e.Protocol)
-		}
-		protoLinks = append(protoLinks, protoLink{label, e.Link})
-	}
+	protoLinks = append(protoLinks, extLinks...)
 
 	statusLabel, statusClass := subStatus(u.Status, lang)
 	// A custom panel name is the operator's own text and passes through verbatim;
 	// only the stock name is localised, so an English page does not announce itself
 	// in Russian in the <title> and the header.
-	brandName := branding.Name(set.PanelName)
+	brandName := branding.Name(local.PanelName)
 	isDefault := brandName == branding.DefaultName
 	if isDefault {
 		brandName = i18n.T(lang, "sub.defaultBrand")
 	}
-	theme := branding.ParseTheme(set.PanelTheme)
+	theme := branding.ParseTheme(local.PanelTheme)
 	data := pageData{
 		L:           text(lang),
 		Name:        u.Name,
@@ -391,6 +471,7 @@ func PageWithSources(u model.User, set *model.Settings, servers []Server, ext []
 		Brand:       theme.Accent,
 		BrandDark:   branding.Darken(theme.Accent, 0.16),
 		AccentFg:    branding.Fg(theme.Accent, theme.Surface),
+		OnBrand:     branding.OnFill(theme.Accent),
 		SuccessFg:   branding.Fg("#059669", theme.Surface),
 		WarningFg:   branding.Fg("#ea580c", theme.Surface),
 		DangerFg:    branding.Fg("#dc2626", theme.Surface),
@@ -402,7 +483,8 @@ func PageWithSources(u model.User, set *model.Settings, servers []Server, ext []
 		SubURL:      subURL,
 		Links:       protoLinks,
 		AWG:         awgCards,
-		DeepLinks:   DeepLinks(subURL, lang, set.SubHappCrypt),
+		Turn:        turnCards,
+		DeepLinks:   DeepLinks(subURL, lang, local.SubHappCrypt),
 		StatusLabel: statusLabel,
 		StatusClass: statusClass,
 		Used:        fmtBytes(used),
@@ -418,7 +500,7 @@ func PageWithSources(u model.User, set *model.Settings, servers []Server, ext []
 		// identified itself. Anyone holding the subscription URL could fetch the page
 		// with a browser Accept header, copy the links and use them from any number of
 		// devices, with no slot consumed and the HWID roster none the wiser.
-		ShowConfigs:  set.SubShowConfigs && showDownload,
+		ShowConfigs:  local.SubShowConfigs && showDownload,
 		ShowDownload: showDownload,
 	}
 	if u.DataLimit > 0 {
@@ -433,6 +515,11 @@ func PageWithSources(u model.User, set *model.Settings, servers []Server, ext []
 	if u.ExpireAt > 0 {
 		data.HasExpire = true
 		data.Expire = i18n.T(lang, "sub.until", time.Unix(u.ExpireAt, 0).Format("02.01.2006"))
+	} else if u.HoldSeconds > 0 {
+		// No date to show yet: the term is waiting for the first connection, and the
+		// person looking at this page is the one who starts it.
+		data.HasExpire = true
+		data.Expire = i18n.T(lang, "sub.holdTerm", i18n.TN(lang, "notify.days", int(u.HoldSeconds/86400)))
 	}
 	if !data.Online && u.LastSeen > 0 {
 		data.LastSeen = relTime(time.Now().Unix()-u.LastSeen, lang)
@@ -443,15 +530,6 @@ func PageWithSources(u model.User, set *model.Settings, servers []Server, ext []
 		return nil, err
 	}
 	return buf.Bytes(), nil
-}
-
-// Page renders the subscription page across physical servers (legacy helper).
-func Page(u model.User, servers []Server, billing Billing, devices Devices, showDownload bool, lang i18n.Lang) ([]byte, error) {
-	var set *model.Settings
-	if len(servers) > 0 {
-		set = servers[0].Set
-	}
-	return PageWithSources(u, set, servers, nil, model.UnrestrictedAccess(), billing, devices, showDownload, lang)
 }
 
 // nextResetTime returns when the automatic traffic-quota reset next fires, given

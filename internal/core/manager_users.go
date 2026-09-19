@@ -16,7 +16,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/auth"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
-	"uuid"
+	"github.com/google/uuid"
 )
 
 // mutateUser runs a single-user store write, logging the outcome and triggering
@@ -90,15 +90,15 @@ func (m *Manager) createUserTerm(name string, dataLimit, expireAt, holdSeconds i
 	}
 	var u *model.User
 	if holdSeconds > 0 {
-		u, err = m.store.CreateUserOnHold(name, uuid.New().String(), password, subToken, dataLimit, holdSeconds)
+		u, err = m.store.CreateUserOnHold(name, uuid.NewString(), password, subToken, dataLimit, holdSeconds)
 	} else {
-		u, err = m.store.CreateUser(name, uuid.New().String(), password, subToken, dataLimit, expireAt, 0)
+		u, err = m.store.CreateUser(name, uuid.NewString(), password, subToken, dataLimit, expireAt, 0)
 	}
 	if err != nil {
 		logErr("user create failed", "name", name, "err", err)
 		return nil, err
 	}
-	logInfo("user created", "id", u.ID, "name", name, "limit", dataLimit, "expire", expireAt, "hold", holdSeconds)
+	logInfo("user created", "id", u.ID, "name", name, "limit", dataLimit, "expire", expireAt)
 	m.TriggerUserSync()
 	m.EmitWebhook(model.WebhookUserCreated, userEventData(*u))
 	return u, nil
@@ -293,6 +293,12 @@ func (m *Manager) SetUserLimits(ctx context.Context, id, dataLimit, expireAt int
 	return err
 }
 
+// errTermChanged is the answer to a limits save whose picture of the user's term is
+// out of date.
+func errTermChanged() error {
+	return invalidCode("err.userTermChanged", "срок пользователя изменился, пока карточка была открыта — обновите её и сохраните снова")
+}
+
 // SetUserQuota changes a user's traffic limit and device cap and leaves their term
 // exactly as it is in the store — for every save that did not set out to change the
 // term. Reading the term and posting it back is what this replaces: a first connection
@@ -359,12 +365,6 @@ func (m *Manager) SetUserLimitsSeen(ctx context.Context, id, dataLimit, expireAt
 	}
 	m.audit(ctx, id, model.EventUserLimits, details)
 	return nil
-}
-
-// errTermChanged is the answer to a limits save whose picture of the user's term is
-// out of date.
-func errTermChanged() error {
-	return invalidCode("err.userTermChanged", "срок пользователя изменился, пока карточка была открыта — обновите её и сохраните снова")
 }
 
 // SetUserHold gives a user a term that starts on their first connection, seconds
@@ -441,7 +441,7 @@ func (m *Manager) BulkUserAction(ctx context.Context, ids []int64, action string
 	case "delete":
 		affected, err = m.store.DeleteUsers(ids)
 		if err == nil {
-			m.auditBulk(ctx, namesOf(before), model.EventUserDeleted, nil)
+			m.auditBulk(ctx, names(before), model.EventUserDeleted, nil)
 			// One event per user, exactly as DeleteUser and the retention sweep emit —
 			// an integration mirroring the roster otherwise drifts silently, and only
 			// after a BULK delete: the same users removed one at a time are reported.
@@ -456,7 +456,7 @@ func (m *Manager) BulkUserAction(ctx context.Context, ids []int64, action string
 	case "reset":
 		reset := m.bulkResetTraffic(ids)
 		affected = int64(len(reset))
-		m.auditBulk(ctx, pick(namesOf(before), reset), model.EventTrafficReset, nil)
+		m.auditBulk(ctx, pick(names(before), reset), model.EventTrafficReset, nil)
 	case "extend":
 		if days <= 0 {
 			return 0, invalidCode("err.extendDaysRequired", "укажите число дней для продления")
@@ -485,11 +485,12 @@ func (m *Manager) BulkUserAction(ctx context.Context, ids []int64, action string
 	default:
 		return 0, invalidCode("err.unknownAction", "неизвестное действие {{value}}", map[string]any{"value": action})
 	}
-	logInfo("bulk user action", "action", action, "selected", len(ids), "affected", affected)
-	if affected > 0 {
-		m.TriggerReconcile()
-		m.notifyNodes()
+	if err != nil {
+		logErr("bulk user action failed", "action", action, "count", len(ids), "err", err)
+		return 0, err
 	}
+	logInfo("bulk user action", "action", action, "selected", len(ids), "affected", affected)
+	m.TriggerUserSync()
 	return int(affected), nil
 }
 
@@ -507,6 +508,15 @@ func (m *Manager) snapshotUsers(ids []int64) map[int64]model.User {
 	return out
 }
 
+// names reduces a user snapshot to id→name, the shape the audit rows need.
+func names(users map[int64]model.User) map[int64]string {
+	out := make(map[int64]string, len(users))
+	for id, u := range users {
+		out[id] = u.Name
+	}
+	return out
+}
+
 // changedEnabled narrows a snapshot to the users whose enabled flag the action
 // actually flips — the ones already in the target state changed nothing.
 func changedEnabled(users map[int64]model.User, enable bool) map[int64]string {
@@ -519,21 +529,12 @@ func changedEnabled(users map[int64]model.User, enable bool) map[int64]string {
 	return out
 }
 
-// namesOf maps each user to its name. Missing users are left out.
-func namesOf(m map[int64]model.User) map[int64]string {
-	out := make(map[int64]string, len(m))
-	for id, u := range m {
-		out[id] = u.Name
-	}
-	return out
-}
-
-// pick subsets names to only the ids that actually changed.
+// pick narrows a name snapshot to the given ids.
 func pick(names map[int64]string, ids []int64) map[int64]string {
 	out := make(map[int64]string, len(ids))
 	for _, id := range ids {
-		if name, ok := names[id]; ok {
-			out[id] = name
+		if n, ok := names[id]; ok {
+			out[id] = n
 		}
 	}
 	return out
@@ -611,9 +612,9 @@ func (m *Manager) bulkExtendExpiry(ids []int64, days int) (map[int64]int64, map[
 		if u.ExpireAt == 0 {
 			continue // never expires; there is nothing to push out
 		}
-		base := u.ExpireAt
-		if base < now {
-			base = now
+		base := now
+		if u.ExpireAt > now {
+			base = u.ExpireAt
 		}
 		out[u.ID] = base + add
 	}
@@ -694,7 +695,16 @@ func (m *Manager) GenerateUserTgLinkCode(userID int64) (string, error) {
 
 // Connections returns a user's recent source IPs.
 func (m *Manager) Connections(id int64) ([]model.Connection, error) {
-	return m.store.RecentConnections(id, 20)
+	conns, err := m.store.RecentConnections(id, 20)
+	if err != nil || len(conns) == 0 {
+		return conns, err
+	}
+	banned := m.bannedAddresses()
+	for i := range conns {
+		conns[i].ApproxSeconds = conns[i].Count * accThrottle
+		conns[i].Banned = banned[conns[i].IP]
+	}
+	return conns, nil
 }
 
 // SetResetPeriod sets a user's automatic quota-reset period (none|daily|weekly|

@@ -14,7 +14,7 @@ func TestAccessThrottleMapSweep(t *testing.T) {
 	now := time.Now().Unix()
 	fill := func(age int64) {
 		for i := range accLastMax + 100 {
-			m.accLast[accPendingKey{userID: int64(i), ip: fmt.Sprintf("10.0.%d.%d", i/250, i%250)}] = now - age
+			m.accLast[fmt.Sprintf("u%d|10.0.%d.%d", i, i/250, i%250)] = now - age
 		}
 	}
 

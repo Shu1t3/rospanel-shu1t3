@@ -12,7 +12,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/i18n"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
-	"uuid"
+	"github.com/google/uuid"
 )
 
 // maxPlanPeriodDays bounds a plan's duration. Generous (100 years) — it exists to keep
@@ -75,8 +75,9 @@ func (m *Manager) SaveTariffPlan(p *model.TariffPlan) error {
 	if p.DataLimit < 0 || p.DeviceLimit < 0 || p.SpeedLimit < 0 {
 		return invalidCode("err.planLimitsNegative", "лимиты тарифа не могут быть отрицательными")
 	}
-	if p.DeviceLimit > model.MaxDevicesPerUser {
-		return invalidCode("err.planDeviceLimitRange", "лимит устройств: от 0 до {{max}}", map[string]any{"max": model.MaxDevicesPerUser})
+	if p.DeviceLimit > model.MaxDeviceLimit {
+		return invalidCode("err.deviceLimitTooHigh", "лимит устройств не может быть больше {{max}}",
+			map[string]any{"max": model.MaxDeviceLimit})
 	}
 	// "none" and "" both mean the derived default; storing one spelling keeps the
 	// "did it change" comparison below honest.
@@ -506,7 +507,7 @@ func (m *Manager) createBareUser(name string) (*model.User, error) {
 	if err != nil {
 		return nil, err
 	}
-	return m.store.CreateUser(name, uuid.New().String(), password, subToken, 0, 0, 0)
+	return m.store.CreateUser(name, uuid.NewString(), password, subToken, 0, 0, 0)
 }
 
 // planLimits computes the quota/expiry/reset columns a plan implies, without
@@ -710,13 +711,15 @@ func (m *Manager) planWriteFor(u model.User, planID int64, extendFromCurrent, pa
 	// a free refill (see TestSamePlanKeepsUsage). Manual mode (planID 0) grants no
 	// quota at all and is handled above.
 	//
-	// A purchase is different, and paidPeriod marks it: a paid plan carries no rolling
-	// refill (planLimits gives it ResetPeriod "none"), so its quota is tied to the
+	// A purchase is different, and paidPeriod marks it: by default a paid plan carries
+	// no rolling refill (planResetPeriod gives it "none"), so its quota is tied to the
 	// period the money buys. Without this the one path that never refills is the one
 	// the user pays for — burn the quota mid-period, press "продлить", and the payment
 	// buys fresh time on a spent counter, leaving WorkingUsers to filter the user out
-	// (used >= data_limit) with the money taken. A free plan is excluded: its days:N
-	// cycle already refills it.
+	// (used >= data_limit) with the money taken. A paid plan WITH its own cycle
+	// (monthly, say) still gets the fresh counter on purchase: money taken must mean
+	// access now, not on the 1st. A free plan is excluded: its days:N cycle already
+	// refills it, and nothing is bought.
 	if u.PlanID != plan.ID || (paidPeriod && !freePlan && plan.DataLimit > 0) {
 		w.ResetUsage = true
 		w.LastUp, w.LastDown = m.liveCounter(u.ID)

@@ -75,22 +75,27 @@ func makeUserView(u model.User, set *model.Settings, userBotUsername string, cus
 	// actually gets, not just what exists.
 	if set.VLESSEnabled && access.AllowsBuiltin(model.LocalNodeID, model.LaneVLESS) {
 		v.VLESS = link.VLESS(u, set)
-		v.Links = append(v.Links, namedLink{set.ProtoLabel(model.ProtoVLESS), v.VLESS})
+		v.Links = append(v.Links, namedLink{set.ProtoLabelFor(model.ProtoVLESS, &u), v.VLESS})
 	}
 	if set.RealityEnabled && access.AllowsBuiltin(model.LocalNodeID, model.LaneReality) {
 		v.Reality = link.Reality(u, set)
-		v.Links = append(v.Links, namedLink{set.ProtoLabel(model.ProtoReality), v.Reality})
+		v.Links = append(v.Links, namedLink{set.ProtoLabelFor(model.ProtoReality, &u), v.Reality})
 	}
 	if set.HysteriaEnabled && access.AllowsBuiltin(model.LocalNodeID, model.LaneHysteria) {
 		v.Hysteria2 = link.Hysteria2(u, set)
-		v.Links = append(v.Links, namedLink{set.ProtoLabel(model.ProtoHysteria), v.Hysteria2})
+		v.Links = append(v.Links, namedLink{set.ProtoLabelFor(model.ProtoHysteria, &u), v.Hysteria2})
 	}
 	for _, in := range custom {
 		if !access.AllowsInbound(in.ID) {
 			continue
 		}
+		if in.Protocol == model.InbWireGuard {
+			// No share-link form either: the config file, as for AmneziaWG below.
+			v.Links = append(v.Links, namedLink{link.CustomLabelFor(in, u, set), sub.TurnConfURL(set, u.SubToken, in.ID)})
+			continue
+		}
 		if l := link.Custom(u, in, set); l != "" {
-			v.Links = append(v.Links, namedLink{link.CustomLabel(in, set), l})
+			v.Links = append(v.Links, namedLink{link.CustomLabelFor(in, u, set), l})
 		}
 	}
 	// AmneziaWG has no share-link form; what the card carries is the address of the
@@ -135,17 +140,13 @@ func (rt *Router) applyTLSHints(set *model.Settings) {
 // (with its TLS hints already applied by the caller) first, then each enabled,
 // connected node. With no nodes it returns just the local set, so single-server
 // output is unchanged. `local` must already have applyTLSHints called on it.
-func (rt *Router) subSettings(local *model.Settings) []*model.Settings {
+func (rt *Router) subSettings(local *model.Settings, nodes []*model.Settings) []*model.Settings {
 	// The master server's config labels get its display name too (multi-node), so a
 	// client can tell the master's entries from the nodes'.
 	local.NodeLabel = local.MasterLabel
 	local.ServerID = model.LocalNodeID
 	local.ServerPlacement = local.MasterPlacement
-	sets := []*model.Settings{local}
-	if nodes, err := rt.mgr.NodeLinkSettings(); err == nil {
-		sets = append(sets, nodes...)
-	}
-	return sets
+	return append([]*model.Settings{local}, nodes...)
 }
 
 // subServers is subSettings paired with each server's custom inbounds and the
@@ -163,11 +164,9 @@ func (rt *Router) subSettings(local *model.Settings) []*model.Settings {
 // config it already has and tries again later.
 // subPhysicalServers returns the ordered physical nodes and the user's access grants.
 func (rt *Router) subPhysicalServers(local *model.Settings, userID int64, clientIP string) ([]sub.Server, model.Access, error) {
-	sets := rt.subSettings(local)
-	custom, err := rt.mgr.Store().AllInbounds()
-	if err != nil {
-		custom = nil
-	}
+	shared := rt.sharedSubInputs()
+	sets := rt.subSettings(local, shared.nodes)
+	custom := shared.inbounds
 	access, err := rt.mgr.Store().UserAccess(userID)
 	if err != nil {
 		return nil, model.Access{}, err
@@ -180,16 +179,14 @@ func (rt *Router) subPhysicalServers(local *model.Settings, userID int64, client
 
 // subExternalServers returns all enabled external subscription servers.
 func (rt *Router) subExternalServers() []model.ExtServer {
-	return rt.mgr.EnabledExtServers()
+	return rt.sharedSubInputs().ext
 }
 
 // subServers returns ordered servers including external servers carried on a node.
 func (rt *Router) subServers(local *model.Settings, userID int64, clientIP string) ([]sub.Server, error) {
-	sets := rt.subSettings(local)
-	custom, err := rt.mgr.Store().AllInbounds()
-	if err != nil {
-		return nil, err
-	}
+	shared := rt.sharedSubInputs()
+	sets := rt.subSettings(local, shared.nodes)
+	custom := shared.inbounds
 	access, err := rt.mgr.Store().UserAccess(userID)
 	if err != nil {
 		return nil, err
@@ -206,17 +203,16 @@ func (rt *Router) subServers(local *model.Settings, userID int64, clientIP strin
 	// drops out like anything else once it is full with hide-when-full set, and
 	// attaching to nothing at all silently took every external server down with it —
 	// for a plan whose grants are all external, the whole subscription.
-	if ext := rt.mgr.EnabledExtServers(); len(ext) > 0 {
+	if ext := shared.ext; len(ext) > 0 {
 		if len(ordered) > 0 {
 			carrier := 0
-			for i, s := range ordered {
-				if s.Set.ServerID == model.LocalNodeID {
+			for i := range ordered {
+				if ordered[i].Set.ServerID == model.LocalNodeID {
 					carrier = i
 					break
 				}
 			}
 			ordered[carrier].External = ext
-			ordered[carrier].Access = access
 		} else {
 			ordered = []sub.Server{{
 				Set:      local,
@@ -351,6 +347,10 @@ func (rt *Router) panelMux() http.Handler {
 	authed("GET /api/security/trusted", rt.getTrustedNets)
 	authed("POST /api/security/trusted", rt.saveTrustedNets)
 	authed("POST /api/security/unblock", rt.unblockIP)
+	// Bans by hand and every ban the panel holds (panel_bans.go).
+	authed("GET /api/security/bans", rt.listBans)
+	authed("POST /api/security/bans", rt.banIP)
+	authed("POST /api/security/unban", rt.unbanIP)
 	authed("GET /api/settings/status-page", rt.getStatusPage)
 	authed("POST /api/settings/status-page", rt.saveStatusPage)
 	authed("POST /api/settings/dns", rt.setXrayDNS)
@@ -560,7 +560,7 @@ func (rt *Router) panelMux() http.Handler {
 	// answers text/plain "Method Not Allowed". That is the same failure as issue #70
 	// wearing a different status code: a caller expecting JSON gets prose.
 	mux.HandleFunc("/", rt.fallback)
-	return mux
+	return rt.notingWrites(mux)
 }
 
 // cookiePath scopes the session cookie to the secret path so it never leaks on

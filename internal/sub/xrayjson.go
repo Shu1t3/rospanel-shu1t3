@@ -1,9 +1,12 @@
 package sub
 
 import (
-	"net/url"
-
+	"encoding/json"
+	"fmt"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/extsub"
+	"net/url"
+	"strings"
+
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 )
 
@@ -18,32 +21,84 @@ import (
 // link is parsed back into an outbound rather than assembled a second time.
 
 // XrayJSONMulti renders the user's lanes across every server as an array of Xray
-// configs (legacy helper).
+// configs. dpi decides whether a fragment/noise outbound is chained in.
 func XrayJSONMulti(u model.User, servers []Server, dpi model.SubDPI) string {
-	return GenerateXrayJSON(Request{
-		User:    u,
-		Servers: servers,
-		Access:  model.UnrestrictedAccess(),
-		DPI:     dpi,
-	})
+	configs := make([]map[string]any, 0, 8)
+	for _, l := range ShareLinksAll(u, servers) {
+		if cfg, _, ok := xrayConfigFromLink(l, dpi); ok {
+			configs = append(configs, cfg)
+		}
+	}
+	b, err := json.MarshalIndent(configs, "", "  ")
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
 }
 
 // XrayJSONWithTemplate renders each lane into the operator's own Xray config instead
-// of the panel's (legacy helper).
+// of the panel's. The template is ONE config — the format is an array of independent
+// configs, one per lane, and the client picks between them — so {{outbounds}} takes
+// that lane's whole outbound chain (its proxy, the optional fragment/noise dialer,
+// direct and block) and {{remarks}} its display name.
+//
+// Falls back to the generated profile on an unparseable template or a lane that will
+// not render: a client that cannot parse the array drops every server in it.
 func XrayJSONWithTemplate(u model.User, servers []Server, dpi model.SubDPI, template string) (string, error) {
-	return GenerateXrayJSONWithTemplate(Request{
-		User:    u,
-		Servers: servers,
-		Access:  model.UnrestrictedAccess(),
-		DPI:     dpi,
-	}, template)
+	if strings.TrimSpace(template) == "" {
+		return XrayJSONMulti(u, servers, dpi), nil
+	}
+	configs := make([]any, 0, 8)
+	for _, l := range ShareLinksAll(u, servers) {
+		cfg, remarks, ok := xrayConfigFromLink(l, dpi)
+		if !ok {
+			continue
+		}
+		// A lane with no outbound chain would render into the operator's document as an
+		// empty outbounds list: a config that parses, imports, and routes nothing. Refuse
+		// rather than hand that out — the caller falls back to the generated profile,
+		// which is a working subscription. Defensive rather than reachable today, but
+		// the cost of being wrong here is a client that looks connected and is not.
+		outbounds, ok := cfg["outbounds"].([]map[string]any)
+		if !ok || len(outbounds) == 0 {
+			return XrayJSONMulti(u, servers, dpi), fmt.Errorf("lane %q produced no outbound chain", remarks)
+		}
+		chain := make([]any, len(outbounds))
+		for i, o := range outbounds {
+			chain[i] = o
+		}
+		rendered, err := renderJSONTemplate(template,
+			map[string]any{TplRemarks: remarks},
+			map[string][]any{TplOutbounds: chain},
+		)
+		if err != nil {
+			return XrayJSONMulti(u, servers, dpi), err
+		}
+		var doc any
+		if err := json.Unmarshal([]byte(rendered), &doc); err != nil {
+			return XrayJSONMulti(u, servers, dpi), err
+		}
+		configs = append(configs, doc)
+	}
+	if len(configs) == 0 {
+		return XrayJSONMulti(u, servers, dpi), nil
+	}
+	b, err := json.MarshalIndent(configs, "", "  ")
+	if err != nil {
+		return XrayJSONMulti(u, servers, dpi), err
+	}
+	return string(b), nil
 }
 
 // xrayConfigFromLink turns one share link into a complete client config: local
 // SOCKS/HTTP inbounds on the ports every Xray app expects, the proxy outbound, the
 // optional fragment/noise dialer, direct and block, and a routing block that keeps
-// private ranges local. It returns the display name separately from the configuration
-// map, which also contains outbound credentials; false means the scheme is unsupported.
+// private ranges local. Returns false for a scheme the format cannot carry.
+//
+// The lane's display name comes back on its own rather than being read back out of
+// the config: the map holds the outbound's credentials next to it, so anything
+// pulled from it by key is a secret as far as a caller — or a taint analyser — can
+// tell. Callers that want the name for a log line or a template take this one.
 func xrayConfigFromLink(raw string, dpi model.SubDPI) (map[string]any, string, bool) {
 	parsed, err := url.Parse(raw)
 	if err != nil {

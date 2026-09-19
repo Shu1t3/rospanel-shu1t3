@@ -58,6 +58,25 @@ type proc struct {
 	// process is actually running. nil when the file could not be read: then there is
 	// simply nothing to promote.
 	cfg []byte
+	// hysteria is what this process's QUIC inbounds and routing hold as the panel has
+	// changed them, read from cfg on first use; hysteriaLost marks a change to them that
+	// failed part way, after which that is no longer known (see hysteria_live.go). Both
+	// under the Supervisor's runMu.
+	hysteria     *hysteriaLive
+	hysteriaLost bool
+	// wireGuard is the peers this process's WireGuard inbounds hold as the panel has
+	// changed them (inbound tag → email → peer), and wireGuardLost the same mark as
+	// hysteriaLost (see wireguard_live.go). Under runMu.
+	wireGuard     map[string]map[string]wireGuardPeerState
+	wireGuardLost bool
+	// tunnelUsers is who each WireGuard inbound's tunnel addresses belong to, for the
+	// access-log tap: that inbound logs no email (see attributeTunnel). Replaced whole
+	// whenever the peers change.
+	tunnelUsers atomic.Pointer[tunnelUsers]
+	// cutOff is who this process's routing cuts off, for the access-log tap: a removed
+	// Hysteria2 user's open connection goes on opening streams into the block outbound,
+	// and Xray logs each one as accepted. Replaced whole; nil while nobody is cut off.
+	cutOff atomic.Pointer[cutOffView]
 }
 
 // Supervisor owns the Xray child process and the on-disk config.json. It
@@ -70,6 +89,14 @@ type Supervisor struct {
 	bin        string // resolved binary path, or "" if unavailable
 	configPath string
 	assetDir   string // XRAY_LOCATION_ASSET (geoip.dat / geosite.dat)
+	// waitFn waits between tries of an api call that could not reach Xray; nil is
+	// time.Sleep. Tests shorten it.
+	waitFn func(time.Duration)
+	// promoteAfter is how long a run must last before its config is trusted as the
+	// rollback target: healthyUptime. A field, set before anything is started, so a
+	// test can shorten it for its own supervisor. As a package variable a test that
+	// shortened it raced every other test's promotion still waiting in the background.
+	promoteAfter time.Duration
 
 	runMu sync.Mutex // serializes whole start/stop/apply operations
 
@@ -366,7 +393,7 @@ func NewSupervisor(binName, configPath, assetDir string) *Supervisor {
 	if bin == "" {
 		slog.Warn("xray: binary not found; config will be generated but Xray won't be started", "binary", binName)
 	}
-	return &Supervisor{bin: bin, configPath: configPath, assetDir: assetDir, logs: logbuf.New()}
+	return &Supervisor{bin: bin, configPath: configPath, assetDir: assetDir, logs: logbuf.New(), promoteAfter: healthyUptime}
 }
 
 // ConfigBytes returns the on-disk config.json currently applied to Xray.
@@ -383,6 +410,11 @@ func (s *Supervisor) BinPath() string { return s.bin }
 // add/remove). The wiring lives here so callers don't rebuild it ad hoc.
 func (s *Supervisor) APIAddr() string { return fmt.Sprintf("127.0.0.1:%d", APIPort) }
 
+// MemoryLimit is the soft heap ceiling Xray is started with. Whoever starts Xray is
+// spending this much of the box on it, so they set the same amount aside when sizing
+// their own limit (see tuning.SetMemoryLimit): with 50,000 users Xray holds all of it.
+const MemoryLimit = 256 << 20
+
 func (s *Supervisor) env() []string {
 	env := os.Environ()
 	if s.assetDir != "" {
@@ -392,7 +424,7 @@ func (s *Supervisor) env() []string {
 	// a traffic spike can't balloon RSS on a small box. It's a SOFT limit — the
 	// runtime exceeds it rather than OOM-killing if the live heap genuinely needs
 	// more, so it can't break xray.
-	env = append(env, "GOMEMLIMIT=256MiB")
+	env = append(env, "GOMEMLIMIT="+strconv.FormatInt(MemoryLimit, 10))
 	if tz := childTZ(); tz != "" {
 		env = append(env, "TZ="+tz)
 	}
@@ -771,6 +803,33 @@ func (s *Supervisor) runXray(timeout time.Duration, args ...string) ([]byte, err
 	return out, err
 }
 
+// runXrayAPI is runXray for an `xray api` call that changes the running Xray, asked
+// again while the call never reached it.
+func (s *Supervisor) runXrayAPI(timeout time.Duration, args ...string) ([]byte, error) {
+	for attempt := 0; ; attempt++ {
+		out, err := s.runXray(timeout, args...)
+		if err == nil || !neverReachedXray(err) || attempt >= len(apiDialRetries) {
+			return out, err
+		}
+		slog.Warn("xray: api call could not reach xray, asking again", "call", args[1], "attempt", attempt+1, "err", err)
+		if s.waitFn != nil {
+			s.waitFn(apiDialRetries[attempt])
+		} else {
+			time.Sleep(apiDialRetries[attempt])
+		}
+	}
+}
+
+// apiDialRetries are the waits before each further try of a call that could not reach
+// Xray: three more, seven and a half seconds in all.
+var apiDialRetries = []time.Duration{time.Second, 2500 * time.Millisecond, 4 * time.Second}
+
+// neverReachedXray reports whether an `xray api` failure happened before anything was
+// sent: the CLI's own message when its connection to the API cannot be made.
+func neverReachedXray(err error) bool {
+	return strings.Contains(err.Error(), "failed to dial")
+}
+
 func (s *Supervisor) AddUsers(apiAddr string, inbounds []Inbound) error {
 	if s.bin == "" {
 		return fmt.Errorf("xray binary unavailable")
@@ -778,22 +837,7 @@ func (s *Supervisor) AddUsers(apiAddr string, inbounds []Inbound) error {
 	if len(inbounds) == 0 {
 		return nil
 	}
-	data, err := json.Marshal(map[string]any{"inbounds": inbounds})
-	if err != nil {
-		return err
-	}
-	f, err := os.CreateTemp("", "xray-adu-*.json")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		return err
-	}
-	f.Close()
-
-	out, err := s.runXray(statsTimeout, "api", "adu", "--server="+apiAddr, f.Name())
+	out, err := s.runXrayFile(statsTimeout, "xray-adu-*.json", map[string]any{"inbounds": inbounds}, "api", "adu", "--server="+apiAddr)
 	if err != nil {
 		return fmt.Errorf("api adu: %w", err)
 	}
@@ -882,7 +926,7 @@ func (s *Supervisor) replaceInbound(apiAddr, tag string, inbound any) error {
 	}
 	// A failed removal is not fatal on its own — an inbound that isn't there is
 	// exactly the state the add below wants. Only the add has to succeed.
-	if _, err := s.runXray(statsTimeout, "api", "rmi", "--server="+apiAddr, tag); err != nil {
+	if _, err := s.runXrayAPI(statsTimeout, "api", "rmi", "--server="+apiAddr, tag); err != nil {
 		slog.Warn("xray: could not remove inbound before re-adding it", "tag", tag, "err", err)
 	}
 	out, err := s.runXrayFile(statsTimeout, "xray-adi-*.json", map[string]any{"inbounds": []any{inbound}}, "api", "adi", "--server="+apiAddr)
@@ -905,7 +949,7 @@ func (s *Supervisor) RemoveUsers(apiAddr string, tags, emails []string) error {
 	}
 	for _, tag := range tags {
 		args := append([]string{"api", "rmu", "--server=" + apiAddr, "-tag=" + tag}, emails...)
-		if _, err := s.runXray(statsTimeout, args...); err != nil {
+		if _, err := s.runXrayAPI(statsTimeout, args...); err != nil {
 			return fmt.Errorf("api rmu tag=%s: %w", tag, err)
 		}
 	}
@@ -974,11 +1018,14 @@ func (s *Supervisor) startProc() error {
 		return fmt.Errorf("start xray: %w", err)
 	}
 	p := &proc{cmd: cmd, done: make(chan struct{}), started: time.Now(), cfg: startedWith}
+	if peers, err := readWireGuardLive(startedWith); err == nil {
+		p.tunnelUsers.Store(tunnelUsersOf(peers))
+	}
 	s.mu.Lock()
 	s.cur = p
 	s.mu.Unlock()
-	go s.tap(stdout, os.Stdout, true)
-	go s.tap(stderr, os.Stderr, false)
+	go s.tap(p, stdout, os.Stdout, true)
+	go s.tap(p, stderr, os.Stderr, false)
 	go s.monitor(p)
 	go s.promoteWhenHealthy(p)
 	slog.Info("xray: started", "pid", cmd.Process.Pid, "config", s.configPath)
@@ -1153,7 +1200,7 @@ func backoffFor(n int) time.Duration {
 // tap reads one Xray output stream line-by-line: it forwards each line to w (so
 // journald keeps the full log), records it in the log hub for the dashboard
 // viewer, and — when access is set — extracts connection info from access lines.
-func (s *Supervisor) tap(r io.Reader, w io.Writer, access bool) {
+func (s *Supervisor) tap(p *proc, r io.Reader, w io.Writer, access bool) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
 	newline := []byte("\n")
@@ -1170,7 +1217,14 @@ func (s *Supervisor) tap(r io.Reader, w io.Writer, access bool) {
 		_, _ = s.logs.Write(b)
 		_, _ = s.logs.Write(newline)
 		if access && s.onAccess != nil {
-			if email, ip, dest := parseAccessBytes(b); email != "" && ip != "" {
+			email, ip, dest := parseAccessBytes(b)
+			if email == "" {
+				email, ip, dest = p.tunnelUsers.Load().attribute(string(b))
+			}
+			if email != "" && ip != "" {
+				if v := p.cutOff.Load(); v != nil && v.cuts(string(b)) {
+					continue
+				}
 				s.dispatchAccess(email, ip, dest)
 			}
 		}
@@ -1224,38 +1278,51 @@ func parseAccess(line string) (email, ip, dest string) {
 	}
 	email = strings.TrimSpace(line[e+len("email: "):])
 
+	host := accessSource(line)
+	if host == "" || host == "127.0.0.1" || host == "::1" {
+		return "", "", ""
+	}
+	return email, host, accessDest(line)
+}
+
+// accessSource is the host an access line's connection came from, "" when it has none.
+func accessSource(line string) string {
 	f := strings.Index(line, "from ")
 	if f < 0 {
-		return "", "", ""
+		return ""
 	}
 	rest := line[f+len("from "):]
 	if sp := strings.IndexByte(rest, ' '); sp > 0 {
 		rest = rest[:sp]
 	}
-	host := hostOf(rest)
-	if host == "" || host == "127.0.0.1" || host == "::1" {
-		return "", "", ""
-	}
-
-	// Leading space so the marker cannot match inside some other token. Anything that
-	// does not parse as a host is dropped: the segment after "accepted" is only a
-	// destination on real connection lines, and on anything else (a truncated line, a
-	// future Xray format) it is arbitrary text we must not report as a domain.
-	if a := strings.Index(line, " accepted "); a >= 0 {
-		d := line[a+len(" accepted "):]
-		if sp := strings.IndexByte(d, ' '); sp > 0 {
-			d = d[:sp]
-		}
-		// Normalise before validating so the two agree on what the host is: a trailing
-		// root dot and upper-case SNI would otherwise each split one domain into two
-		// buckets downstream.
-		h := strings.ToLower(strings.TrimSuffix(hostOf(d), "."))
-		if validHost(h) {
-			dest = h
-		}
-	}
-	return email, host, dest
+	return hostOf(rest)
 }
+
+// accessDest is an access line's destination host, "" when it has none.
+//
+// Leading space so the marker cannot match inside some other token. Anything that does
+// not parse as a host is dropped: the segment after "accepted" is only a destination on
+// real connection lines, and on anything else (a truncated line, a future Xray format)
+// it is arbitrary text we must not report as a domain.
+func accessDest(line string) string {
+	a := strings.Index(line, " accepted ")
+	if a < 0 {
+		return ""
+	}
+	d := line[a+len(" accepted "):]
+	if sp := strings.IndexByte(d, ' '); sp > 0 {
+		d = d[:sp]
+	}
+	// Normalise before validating so the two agree on what the host is: a trailing
+	// root dot and upper-case SNI would otherwise each split one domain into two
+	// buckets downstream.
+	h := strings.ToLower(strings.TrimSuffix(hostOf(d), "."))
+	if validHost(h) {
+		return h
+	}
+	return ""
+}
+
 
 // hostOf strips the optional network prefix and the port off an Xray address token
 // ("tcp:1.2.3.4:5678", "udp:[2001:db8::1]:53", "example.com:443"), returning the
@@ -1580,10 +1647,6 @@ func (s *Supervisor) currentConfigUnloadable() bool {
 // Waits out healthyUptime because a config that crashes immediately must never become
 // the thing we roll back TO. Promotion is best-effort and silent: failing to refresh the
 // copy leaves the previous one, which is the conservative half of the trade.
-// promoteAfter is how long a run must last before its config is trusted as the
-// rollback target. A variable so tests need not wait it out; nothing else writes it.
-var promoteAfter = healthyUptime
-
 func (s *Supervisor) promoteWhenHealthy(p *proc) {
 	if len(p.cfg) == 0 {
 		return
@@ -1591,7 +1654,7 @@ func (s *Supervisor) promoteWhenHealthy(p *proc) {
 	select {
 	case <-p.done: // died before proving anything
 		return
-	case <-time.After(promoteAfter):
+	case <-time.After(s.promoteAfter):
 	}
 	s.mu.Lock()
 	current := s.cur == p && !s.closed

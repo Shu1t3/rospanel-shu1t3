@@ -249,8 +249,8 @@ func (m *Manager) notifyStatusTransitions(users []model.User) {
 		}
 		switch u.Status {
 		case model.StatusExpired:
-			m.notifyAdminEvent(model.AdminEventExpired,
-				i18n.T(m.botLang(), "notify.adminExpired", escHTML(u.Name)))
+			m.notifyAdminEvent(model.AdminEventExpired, fmt.Sprintf(
+				i18n.T(m.botLang(), "notify.adminExpired"), escHTML(u.Name)))
 			if serr == nil {
 				m.notifyUserEvent(set, u, model.UserNotifyExpired,
 					i18n.T(m.userLang(u.TgChatID), "notify.userExpired"))
@@ -258,8 +258,8 @@ func (m *Manager) notifyStatusTransitions(users []model.User) {
 			m.auditNamed(ctx, u.ID, u.Name, model.EventUserExpired, map[string]any{"expire_at": u.ExpireAt})
 			m.EmitWebhook(model.WebhookUserExpired, userEventData(u))
 		case model.StatusLimited:
-			m.notifyAdminEvent(model.AdminEventLimited,
-				i18n.T(m.botLang(), "notify.adminLimited", escHTML(u.Name)))
+			m.notifyAdminEvent(model.AdminEventLimited, fmt.Sprintf(
+				i18n.T(m.botLang(), "notify.adminLimited"), escHTML(u.Name)))
 			if serr == nil {
 				m.notifyUserEvent(set, u, model.UserNotifyLimited,
 					i18n.T(m.userLang(u.TgChatID), "notify.userLimited"))
@@ -269,13 +269,13 @@ func (m *Manager) notifyStatusTransitions(users []model.User) {
 			})
 			m.EmitWebhook(model.WebhookUserLimited, userEventData(u))
 		case model.StatusDeviceLimited:
-			m.notifyAdminEvent(model.AdminEventDeviceLimited,
-				i18n.T(m.botLang(), "notify.adminDeviceLimited",
-					escHTML(u.Name), u.ActiveDevices, u.DeviceLimit))
+			m.notifyAdminEvent(model.AdminEventDeviceLimited, fmt.Sprintf(
+				i18n.T(m.botLang(), "notify.adminDeviceLimited"),
+				escHTML(u.Name), u.ActiveDevices, u.DeviceLimit))
 			if serr == nil {
-				m.notifyUserEvent(set, u, model.UserNotifyDeviceLimited,
-					i18n.T(m.userLang(u.TgChatID), "notify.userDeviceLimited",
-						u.ActiveDevices, u.DeviceLimit))
+				m.notifyUserEvent(set, u, model.UserNotifyDeviceLimited, fmt.Sprintf(
+					i18n.T(m.userLang(u.TgChatID), "notify.userDeviceLimited"),
+					u.ActiveDevices, u.DeviceLimit))
 			}
 			m.auditNamed(ctx, u.ID, u.Name, model.EventDeviceLimited, map[string]any{
 				"device_limit": u.DeviceLimit, "active_devices": u.ActiveDevices,
@@ -327,13 +327,9 @@ const probeDigestHour = 9
 // by the "Path scanners" (AdminEventProbe) notification category: on → the digest is
 // sent, off → it isn't.
 func (m *Manager) probeDigestLoop() {
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
 	lastSent := "" // calendar day of the last digest, so it fires once per day
 	for {
-		select {
-		case <-ticker.C:
-		case <-m.done:
+		if !m.wait(time.Hour) {
 			return
 		}
 		set, err := m.store.GetSettings()
@@ -345,12 +341,9 @@ func (m *Manager) probeDigestLoop() {
 		if now.Hour() != probeDigestHour || today == lastSent {
 			continue
 		}
-		probes, err := m.store.ProbesSince(now.Add(-24 * time.Hour).Unix())
-		if err != nil {
-			continue // retry next minute on DB error
-		}
 		lastSent = today
-		if len(probes) == 0 {
+		probes, err := m.store.ProbesSince(now.Add(-24 * time.Hour).Unix())
+		if err != nil || len(probes) == 0 {
 			continue // nothing new — don't send an empty digest
 		}
 		m.annotateProbes(probes)
@@ -367,8 +360,7 @@ func (m *Manager) sendProbeDigest(probes []model.ProbeHit) {
 	const show = 10
 	for i, p := range probes {
 		if i >= show {
-			b.WriteByte('\n')
-			b.WriteString(i18n.T(lang, "notify.probeDigestMore", len(probes)-show))
+			b.WriteString("\n" + i18n.T(lang, "notify.probeDigestMore", len(probes)-show))
 			break
 		}
 		fmt.Fprintf(&b, "\n• <code>%s</code> — %d%s", escHTML(p.IP), p.Paths, probeOrigin(p))
@@ -418,12 +410,14 @@ func probeOrigin(p model.ProbeHit) string {
 	return " · " + strings.Join(parts, " · ")
 }
 
-// onXrayWedged is the watchdog callback when Xray is alive but no longer answering
-// its API. restarted tells whether auto-recovery bounced Xray (true) or the toggle
-// is off so we only detected+alerted (false). When restarted=true, the restart has
-// already run so there is no separate all-clear; when restarted=false, the process
-// remains wedged until resolved so crashAlerted is set for onXrayRecover. Shares the
+// onXrayWedged reports that the watchdog found Xray alive but no longer answering its
+// API and restarted it. Unlike a crash this is self-resolving — the restart has
+// already run — so the message says so and there is no separate all-clear. Shares the
 // crash throttle so a process that keeps wedging can't spam the chat.
+// onXrayWedged is the watchdog callback. restarted tells whether auto-recovery actually
+// bounced Xray (true) or the toggle is off so we only detected+alerted (false) — the
+// journal row and the Telegram wording differ accordingly, but the operator is told
+// either way (turning off auto-restart must not mean turning off the outage alarm).
 func (m *Manager) onXrayWedged(restarted bool) {
 	action := model.AuditWatchdogRestart
 	msg := "notify.xrayWedged"
@@ -447,9 +441,6 @@ func (m *Manager) onXrayWedged(restarted bool) {
 		return
 	}
 	m.lastCrashNotify = now
-	if !restarted {
-		m.crashAlerted = true
-	}
 	m.throttleMu.Unlock()
 	lang := m.botLang()
 	m.notifyAdminEvent(model.AdminEventXrayDown, i18n.T(lang, msg, model.LocalNodeName))
@@ -498,9 +489,9 @@ func fmtDowntime(d time.Duration, lang i18n.Lang) string {
 
 // notifyCertRenewed reports a successful certificate renewal.
 func (m *Manager) notifyCertRenewed(host string, daysLeft int) {
-	m.notifyAdminEvent(model.AdminEventCert,
-		i18n.T(m.botLang(), "notify.certRenewed",
-			model.LocalNodeName, escHTML(host), daysLeft))
+	m.notifyAdminEvent(model.AdminEventCert, fmt.Sprintf(
+		i18n.T(m.botLang(), "notify.certRenewed"),
+		model.LocalNodeName, escHTML(host), daysLeft))
 }
 
 // notifyCertError reports a failed ACME renewal, throttled so the fast retry
@@ -514,9 +505,9 @@ func (m *Manager) notifyCertError(host string, err error) {
 	}
 	m.lastCertErrNotify = now
 	m.throttleMu.Unlock()
-	m.notifyAdminEvent(model.AdminEventCert,
-		i18n.T(m.botLang(), "notify.certFailed",
-			model.LocalNodeName, escHTML(host), escHTML(err.Error())))
+	m.notifyAdminEvent(model.AdminEventCert, fmt.Sprintf(
+		i18n.T(m.botLang(), "notify.certFailed"),
+		model.LocalNodeName, escHTML(host), escHTML(err.Error())))
 }
 
 // onConfigRolledBack reports that the panel reverted config.json to its backup because

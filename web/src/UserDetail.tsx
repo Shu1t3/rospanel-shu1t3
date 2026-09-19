@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { QRCodeSVG } from 'qrcode.react'
 import {
+  banIP,
   bulkUsers,
   MAX_DEVICE_LIMIT,
   deleteUser,
@@ -12,6 +13,7 @@ import {
   getUserConnections,
   getUserDevices,
   getUserHappLink,
+  unbanIP,
   unbindUserDevice,
   renameUser,
   resetUserTraffic,
@@ -39,6 +41,7 @@ import {
   dateToUnixEndOfDay,
   deviceLimitOptions,
   fmtBytes,
+  fmtDuration,
   fmtExpire,
   fmtLastSeen,
   fmtQuota,
@@ -62,6 +65,7 @@ import { TrafficArea } from './charts'
 import { NodeTrafficSplit } from './NodeTrafficSplit'
 import { ABUSE_WINDOW_DAYS, AbuseList } from './AbuseList'
 import { UserEventsModal } from './UserEventsModal'
+import { inPanelTz } from './tz'
 import {
   Button,
   cn,
@@ -72,7 +76,9 @@ import {
   IconButton,
   IconCalendar,
   IconCheck,
+  IconBan,
   IconClose,
+  IconUnlock,
   IconCopy,
   IconExternal,
   IconKey,
@@ -96,6 +102,7 @@ import {
   useCopy,
 } from './ui'
 import i18n from './i18n'
+import { useIsAdmin } from './role'
 
 // planSelectData builds the tariff dropdown: "manual" plus enabled plans, and a
 // fallback entry if the user is on a plan that's hidden/disabled (so the current
@@ -263,6 +270,12 @@ export function UserDetail({
   const { t } = useTranslation()
   const [series, setSeries] = useState<DailyPoint[]>([])
   const [conns, setConns] = useState<Connection[]>([])
+  // The address a ban or unban is in flight for, so a second click cannot race it.
+  const [banBusy, setBanBusy] = useState<string | null>(null)
+  // The user the card shows now: a ban's reply must not write one user's addresses
+  // into the card after it switched to another.
+  const shownUser = useRef<number | undefined>(undefined)
+  shownUser.current = user?.id
   // Bound installs (HWID). Null until the first load, and left empty when the
   // operator hasn't switched device binding on — the whole block then stays hidden.
   const [bound, setBound] = useState<DeviceList | null>(null)
@@ -301,6 +314,7 @@ export function UserDetail({
   const email = useCopy()
   const happCopy = useCopy()
   const { confirm, confirmNode } = useConfirm()
+  const isAdmin = useIsAdmin()
   // The encrypted Happ link is asked for on its own — each one is an RSA encryption,
   // too dear to carry in the user list — and exists only while the operator has it
   // switched on: "" hides the row. A rotated token is a new address, so a new link.
@@ -571,6 +585,37 @@ export function UserDetail({
     }
   }
 
+  // A ban drops the address on every server until it is lifted, for everyone behind
+  // it — hence the confirmation. Unbanning lifts every ban on it, whatever placed it.
+  const banConn = async (ip: string) => {
+    if (!user) return
+    const ok = await confirm({
+      title: t('userDetail.banTitle', { ip }),
+      body: t('userDetail.banBody'),
+      confirmLabel: t('userDetail.ban'),
+      danger: true,
+    })
+    if (!ok) return
+    await changeBan(ip, user.id, () => banIP(ip, user.id))
+  }
+  const unbanConn = async (ip: string) => {
+    if (!user) return
+    await changeBan(ip, user.id, () => unbanIP(ip))
+  }
+  const changeBan = async (ip: string, id: number, change: () => Promise<unknown>) => {
+    if (banBusy) return
+    setBanBusy(ip)
+    try {
+      await change()
+      const fresh = await getUserConnections(id)
+      if (shownUser.current === id) setConns(fresh)
+    } catch (e) {
+      fail(e)
+    } finally {
+      setBanBusy(null)
+    }
+  }
+
   const activeConnCount = user ? conns.filter((c) => isOnline(c.last_seen)).length : 0
   // Devices are the longest list in the card (the server hands over up to 20 IPs) and
   // sit between two sections the operator scrolls to, so only the most recent few are
@@ -631,7 +676,7 @@ export function UserDetail({
                 user.abuse_action === 'disable'
                   ? 'userDetail.abuseDisabled'
                   : 'userDetail.abuseThrottled',
-                { when: new Date(user.abuse_until * 1000).toLocaleString(i18n.language) },
+                { when: new Date(user.abuse_until * 1000).toLocaleString(i18n.language, inPanelTz()) },
               )}
             </p>
           )}
@@ -752,8 +797,9 @@ export function UserDetail({
             </StateRow>
           </Panel>
 
-          {/* 4. Devices: bound installs when HWID is on, otherwise the addresses the
-                 subscription has been fetched from. */}
+          {/* 4. Devices: the addresses the account connects from, always. A router or
+                 any client that sends no HWID shows up only here, so this list must not
+                 give way to the bound installs below. */}
           <Panel
             title={t('userDetail.devices')}
             aside={
@@ -771,37 +817,7 @@ export function UserDetail({
               </span>
             }
           >
-            {bound?.enabled ? (
-              bound.devices.length === 0 ? (
-                <p className="px-3.5 py-3 text-xs text-ink-muted">
-                  {t('userDetail.noBoundDevices')}
-                </p>
-              ) : (
-                bound.devices.map((d) => (
-                  <div
-                    key={d.hwid}
-                    className="flex items-center justify-between gap-3 border-b border-gray-100 px-3.5 py-2.5 last:border-0"
-                  >
-                    <span className="flex min-w-0 flex-col">
-                      <Mono className="truncate text-xs text-ink">{d.ip || d.hwid}</Mono>
-                      <span className="truncate text-xs text-ink-muted">
-                        {[d.model, d.os, d.os_version].filter(Boolean).join(' · ') || d.hwid}
-                      </span>
-                    </span>
-                    <span className="flex shrink-0 items-center gap-3">
-                      <Mono className="text-[11px] text-ink-muted">{fmtLastSeen(d.last_seen)}</Mono>
-                      <IconButton
-                        color="red"
-                        title={t('userDetail.unbind')}
-                        onClick={() => unbindDevice(d.hwid)}
-                      >
-                        <IconClose size={16} />
-                      </IconButton>
-                    </span>
-                  </div>
-                ))
-              )
-            ) : conns.length === 0 ? (
+            {conns.length === 0 ? (
               <p className="px-3.5 py-3 text-xs text-ink-muted">
                 {t('userDetail.noConnections')}
               </p>
@@ -810,20 +826,68 @@ export function UserDetail({
                 {devices.shown.map((c) => (
                   <div
                     key={c.ip}
-                    className="flex items-center justify-between gap-3 border-b border-gray-100 px-3.5 py-2.5 last:border-0"
+                    className={cn(
+                      'flex items-center justify-between gap-3 border-b border-gray-100 px-3.5 py-2.5 last:border-0',
+                      c.banned && 'bg-gray-50',
+                    )}
                   >
                     <span className="flex min-w-0 items-center gap-2">
                       <span
                         className={cn(
                           'size-1.5 shrink-0 rounded-full',
-                          isOnline(c.last_seen) ? 'bg-success' : 'bg-gray-400',
+                          c.banned
+                            ? 'bg-gray-300'
+                            : isOnline(c.last_seen)
+                              ? 'bg-success'
+                              : 'bg-gray-400',
                         )}
                       />
-                      <Mono className="truncate text-xs text-ink">{c.ip}</Mono>
+                      <Mono
+                        className={cn('truncate text-xs', c.banned ? 'text-ink-muted' : 'text-ink')}
+                      >
+                        {c.ip}
+                      </Mono>
                     </span>
-                    <Mono className="shrink-0 text-[11px] text-ink-muted">
-                      {fmtLastSeen(c.last_seen)} · {c.count}×
-                    </Mono>
+                    <span className="flex shrink-0 items-center gap-2">
+                      <Mono
+                        className="text-[11px] text-ink-muted"
+                        title={`${t('userDetail.lastConnect')}\n${t('userDetail.approxHint', {
+                          time: fmtDuration(c.approx_seconds),
+                          count: c.count,
+                        })}`}
+                      >
+                        {fmtLastSeen(c.last_seen)}
+                      </Mono>
+                      {/* One slot on every row, button or not, so the rows keep one
+                          height and the times one column; the negative margin keeps the
+                          button from making its row taller than a row of text. */}
+                      {isAdmin && (
+                        <span className="-my-1 flex size-6 shrink-0 items-center justify-center">
+                          {c.banned ? (
+                            <IconButton
+                              compact
+                              disabled={banBusy !== null}
+                              title={t('userDetail.unban')}
+                              onClick={() => unbanConn(c.ip)}
+                            >
+                              <IconUnlock size={16} />
+                            </IconButton>
+                          ) : (
+                            c.can_ban && (
+                              <IconButton
+                                compact
+                                color="red"
+                                disabled={banBusy !== null}
+                                title={t('userDetail.ban')}
+                                onClick={() => banConn(c.ip)}
+                              >
+                                <IconBan size={16} />
+                              </IconButton>
+                            )
+                          )}
+                        </span>
+                      )}
+                    </span>
                   </div>
                 ))}
                 {devices.rest > 0 && (
@@ -833,14 +897,75 @@ export function UserDetail({
                 )}
               </>
             )}
-            {bound?.enabled && bound.devices.length > 0 && (
-              <div className="border-t border-gray-100 px-3.5 py-2">
-                <Button variant="subtle" color="red" size="xs" onClick={() => unbindDevice()}>
-                  {t('userDetail.unbindAll')}
-                </Button>
-              </div>
-            )}
           </Panel>
+
+          {/* 4b. Bound installs, when HWID binding is on: the apps that fetched the
+                 subscription with an HWID, each of which can be unbound. */}
+          {bound?.enabled && (
+            <Panel
+              title={t('userDetail.boundDevices')}
+              aside={
+                <span className="text-xs text-ink-muted">
+                  {bound.limit > 0
+                    ? t('userDetail.boundOfLimit', {
+                        count: bound.devices.length,
+                        limit: bound.limit,
+                      })
+                    : t('userDetail.boundTotal', { count: bound.devices.length })}
+                </span>
+              }
+            >
+              {bound.devices.length === 0 ? (
+                <p className="px-3.5 py-3 text-xs text-ink-muted">
+                  {t('userDetail.noBoundDevices')}
+                </p>
+              ) : (
+                bound.devices.map((d) => {
+                  // No address here: it is where the subscription was last fetched
+                  // from, which the list of addresses above tells better.
+                  const os = [d.os, d.os_version].filter(Boolean).join(' ')
+                  return (
+                    <div
+                      key={d.hwid}
+                      className="flex items-center justify-between gap-3 border-b border-gray-100 px-3.5 py-2.5 last:border-0"
+                    >
+                      <span className="flex min-w-0 flex-col" title={d.hwid}>
+                        {d.model || os ? (
+                          <>
+                            <span className="truncate text-xs text-ink">{d.model || os}</span>
+                            {d.model && os && (
+                              <span className="truncate text-xs text-ink-muted">{os}</span>
+                            )}
+                          </>
+                        ) : (
+                          <Mono className="truncate text-xs text-ink">{d.hwid}</Mono>
+                        )}
+                      </span>
+                      <span className="flex shrink-0 items-center gap-3">
+                        <Mono className="text-[11px] text-ink-muted" title={t('userDetail.lastSubFetch')}>
+                          {fmtLastSeen(d.last_seen)}
+                        </Mono>
+                        <IconButton
+                          color="red"
+                          title={t('userDetail.unbind')}
+                          onClick={() => unbindDevice(d.hwid)}
+                        >
+                          <IconClose size={16} />
+                        </IconButton>
+                      </span>
+                    </div>
+                  )
+                })
+              )}
+              {bound.devices.length > 0 && (
+                <div className="border-t border-gray-100 px-3.5 py-2">
+                  <Button variant="subtle" color="red" size="xs" onClick={() => unbindDevice()}>
+                    {t('userDetail.unbindAll')}
+                  </Button>
+                </div>
+              )}
+            </Panel>
+          )}
 
           {/* 5. Tariff and limits. A tariff owns the quota, the device cap and the
                  reset cycle, so under one the fields are shown disabled rather than

@@ -72,7 +72,14 @@ export interface UserTotal {
 export interface Connection {
   ip: string
   last_seen: number
+  // how many times the address was seen opening connections, at most once per 45 s
   count: number
+  // count × that interval: a lower bound on how long the address was active
+  approx_seconds: number
+  // dropped at the firewall right now, by any ban
+  banned: boolean
+  // whether the caller may ban it: an admin, and an address a ban may touch
+  can_ban?: boolean
 }
 
 export const getUserConnections = (id: number) =>
@@ -276,36 +283,6 @@ export interface ConnInfo {
   fingerprint: string // uTLS fingerprint; "" for Hysteria2 (no uTLS)
 }
 
-export interface AWGParams {
-  jc: number
-  jmin: number
-  jmax: number
-  s1: number
-  s2: number
-  s3?: number
-  s4?: number
-  h1: string | number
-  h2: string | number
-  h3: string | number
-  h4: string | number
-  i1?: string
-  i2?: string
-  i3?: string
-  i4?: string
-  i5?: string
-  header_protection_key?: string
-  content_padding_addition?: string
-  random_trailers?: boolean
-  disable_cookies?: boolean
-  rekey_after_time?: string
-  rekey_timeout?: string
-  reject_after_time?: string
-  keepalive_timeout?: string
-  max_handshake_attempts?: string
-}
-
-// ConnectionsStatus is the public connection surface: where clients connect and
-// how, per protocol.
 export interface ConnectionsStatus {
   host: string
   sni: string
@@ -315,7 +292,7 @@ export interface ConnectionsStatus {
   hop_end: number
   hop_interval: string
   // Salamander pre-shared key for the built-in Hysteria2 lane ("" = obfuscation off).
-  hysteria_obfs?: string
+  hysteria_obfs: string
   reality_port: number
   reality_dest: string
   reality_public_key: string
@@ -333,33 +310,46 @@ export interface ConnectionsStatus {
   // The obfuscation parameters as the server stores them. The headers and the
   // ranges are strings because in AmneziaWG 3.1 each is a band ("110-130"); a
   // block written before it holds a single number, which arrives as one.
-  awg_params: {
-    jc: number
-    jmin: number
-    jmax: number
-    s1: number
-    s2: number
-    s3?: number
-    s4?: number
-    h1: number | string
-    h2: number | string
-    h3: number | string
-    h4: number | string
-    i1?: string
-    i2?: string
-    imitation?: string
-    header_key?: string
-    padding?: string
-    trailers?: boolean
-    rekey_after?: string
-    rekey_timeout?: string
-    reject_after?: string
-    keepalive?: string
-    handshakes?: string
-  }
+  awg_params: AWGParams
   awg_dns: string
   awg_running: boolean
   awg_error?: string
+}
+
+export interface AWGParams {
+  jc: number
+  jmin: number
+  jmax: number
+  s1: number
+  s2: number
+  s3?: number
+  s4?: number
+  h1: number | string
+  h2: number | string
+  h3: number | string
+  h4: number | string
+  i1?: string
+  i2?: string
+  i3?: string
+  i4?: string
+  i5?: string
+  imitation?: string
+  header_key?: string
+  header_protection_key?: string
+  content_padding_addition?: string
+  padding?: string
+  random_trailers?: boolean
+  trailers?: boolean
+  disable_cookies?: boolean
+  rekey_after_time?: string
+  rekey_after?: string
+  rekey_timeout?: string
+  reject_after_time?: string
+  reject_after?: string
+  keepalive_timeout?: string
+  keepalive?: string
+  max_handshake_attempts?: string
+  handshakes?: string
 }
 
 // ConnectionsUpdate is the whole connection surface, applied in one request.
@@ -372,9 +362,9 @@ export interface ConnectionsUpdate {
   hop_start: number
   hop_end: number
   hop_interval: string
-  hysteria_obfs?: string
+  hysteria_obfs: string
   // Ask the server to mint a fresh Salamander key, ignoring hysteria_obfs.
-  regen_obfs?: boolean
+  regen_obfs: boolean
   reality_port: number
   reality_dest: string
   reality_anti_replay: boolean
@@ -382,10 +372,10 @@ export interface ConnectionsUpdate {
   tls_fragment: boolean
   tls_min13: boolean
   block_quic: boolean
-  awg_port?: number
-  awg_dns?: string
+  awg_port: number
+  awg_dns: string
   awg_params?: AWGParams
-  regen_awg_keys?: boolean
+  regen_awg_keys: boolean
 }
 
 export const applyConnections = (u: ConnectionsUpdate) =>
@@ -498,15 +488,13 @@ export const restoreBackup = (file: File, currentPassword: string, code = '', ba
 // resetPanel wipes all state and restarts the panel into first-run mode. It
 // returns the URL the panel will come back on (auto-detected IP + default path),
 // which may differ from the current address (e.g. a custom domain).
-export const resetPanel = (currentPassword: string, code?: string) =>
+export const resetPanel = (currentPassword: string, code: string) =>
   api<{ url: string }>('api/reset', {
     method: 'POST',
-    body: JSON.stringify({ current_password: currentPassword, code: code || '' }),
+    body: JSON.stringify({ current_password: currentPassword, code }),
   })
 
 export const getConnections = () => api<ConnectionsStatus>('api/connections')
-export const resetConnections = () =>
-  api<ConnectionsStatus>('api/connections/reset', { method: 'POST' })
 
 // Per-node connections: a node's own transport/protocols/REALITY. Same shape as the
 // master's, so the same editor drives both.
@@ -517,9 +505,6 @@ export const applyNodeConnections = (id: number, u: ConnectionsUpdate) =>
     method: 'POST',
     body: JSON.stringify(u),
   })
-export const resetNodeConnections = (id: number) =>
-  api<ConnectionsStatus>(`api/nodes/${id}/connections/reset`, { method: 'POST' })
-
 export const deleteUser = (id: number) =>
   api<{ ok: boolean }>(`api/users/${id}`, { method: 'DELETE' })
 export const resetUserTraffic = (id: number) =>
@@ -750,6 +735,8 @@ export interface Me {
   timezone: string
   version: string
   must_change_password?: boolean
+  // Whether this admin has an authenticator bound. Decides whether the irreversible
+  // actions ask for a code as well as a password (see stepup.tsx).
   totp_enabled?: boolean
   billing_enabled?: boolean
   user_bot_enabled?: boolean
@@ -817,32 +804,6 @@ export const deleteAdmin = (id: number, currentPassword: string) =>
     method: 'DELETE',
     body: JSON.stringify({ current_password: currentPassword }),
   })
-
-export interface AdminSession {
-  token_hash: string
-  admin_id: number
-  username?: string
-  role?: Role
-  ip: string
-  user_agent: string
-  created_at: number
-  expires_at: number
-  last_seen_at: number
-  is_current?: boolean
-}
-
-export const listMySessions = () => api<{ sessions: AdminSession[] }>('api/account/sessions')
-export const deleteMySession = (hash: string) =>
-  api<{ ok: boolean }>(`api/account/sessions/${encodeURIComponent(hash)}`, { method: 'DELETE' })
-export const deleteAllMyOtherSessions = () =>
-  api<{ ok: boolean }>('api/account/sessions', { method: 'DELETE' })
-
-export const listAdminSessions = (id: number) =>
-  api<{ sessions: AdminSession[] }>(`api/admins/${id}/sessions`)
-export const deleteAdminSession = (id: number, hash: string) =>
-  api<{ ok: boolean }>(`api/admins/${id}/sessions/${encodeURIComponent(hash)}`, { method: 'DELETE' })
-export const deleteAllAdminSessions = (id: number) =>
-  api<{ ok: boolean }>(`api/admins/${id}/sessions`, { method: 'DELETE' })
 
 // The admin trail: what was done to the panel itself (the roster, the settings, TLS,
 // backups, sign-ins) and by whom, from where. Owner-only.
@@ -1602,8 +1563,31 @@ export const saveConnPolicy = (p: ConnPolicy) =>
 export const getTrustedNets = () => api<{ nets: string[] }>('api/security/trusted')
 export const saveTrustedNets = (nets: string[]) =>
   api<{ ok: boolean }>('api/security/trusted', { method: 'POST', body: JSON.stringify({ nets }) })
-export const unblockIP = (ip: string) =>
-  api<{ ok: boolean }>('api/security/unblock', { method: 'POST', body: JSON.stringify({ ip }) })
+
+// ---- Every address dropped at the firewall ---------------------------------
+export interface Ban {
+  ip: string
+  // manual | country | asn | brute | probe
+  source: string
+  user_id?: number
+  user_name?: string
+  country?: string
+  asn?: number
+  org?: string
+  at?: number // 0 when not known
+  until: number // 0 = until lifted
+}
+export const getBans = () => api<{ bans: Ban[]; can_enforce: boolean }>('api/security/bans')
+// banIP bans an address on every server until it is lifted; userId is whose address
+// list it was banned from.
+export const banIP = (ip: string, userId: number) =>
+  api<{ ok: boolean }>('api/security/bans', {
+    method: 'POST',
+    body: JSON.stringify({ ip, user_id: userId }),
+  })
+// unbanIP lifts every ban on the address, whatever placed it.
+export const unbanIP = (ip: string) =>
+  api<{ ok: boolean }>('api/security/unban', { method: 'POST', body: JSON.stringify({ ip }) })
 
 // ---- The admin's own open sessions -----------------------------------------
 export interface AdminSession {
@@ -2412,8 +2396,6 @@ export async function provisionNode(
   return outcome
 }
 
-
-
 // ---- Happ Subscriptions ----------------------------------------------------
 
 export interface HappSubscription {
@@ -2479,7 +2461,6 @@ export const setHappNodeEnabled = (id: number, enabled: boolean) =>
 export const deleteHappNode = (id: number) =>
   api<void>(`api/happ/nodes/${id}`, { method: 'DELETE' })
 
-
 // ---- Custom inbounds -------------------------------------------------------
 //
 // Operator-defined listeners that sit beside the three built-in lanes. Each
@@ -2507,6 +2488,12 @@ export interface InboundOpts {
   // Shadowsocks-2022: the AEAD method. The server key is generated and never sent to
   // the client, so there is no field for it here.
   method?: string
+  // WireGuard behind a TURN relay: the inbound's public key, the loopback port Xray
+  // listens on behind the relay (both generated), and the call link users get. The
+  // masking key is generated too and never shown.
+  wg_public_key?: string
+  wg_local_port?: number
+  turn_link?: string
   // Advanced. header_* / authority / multi_mode are simple mirrored-into-links knobs.
   // The three JSON sections travel as typed forms, not on opts — see the *_form fields
   // on Inbound below (the server nils the raw blobs out of opts).
@@ -2639,6 +2626,8 @@ export interface InboundInput {
   multi_mode: boolean
   // Shadowsocks-2022 method; ignored by the server for the other protocols.
   method: string
+  // WireGuard's VK call invite link; ignored for the others.
+  turn_link: string
   // The three advanced sections as typed forms; the server assembles them into the
   // JSON blob Xray reads and validates that.
   xhttp_extra: XHTTPExtraForm
@@ -2889,4 +2878,9 @@ export interface Release {
 // The history this binary was built with, newest first, and the version it is.
 export const getChangelog = () => api<{ version: string; releases: Release[] }>('api/changelog')
 
+// ---- Factory reset of the connection surface --------------------------------
 
+export const resetConnections = () =>
+  api<ConnectionsStatus>('api/connections/reset', { method: 'POST' })
+export const resetNodeConnections = (id: number) =>
+  api<ConnectionsStatus>(`api/nodes/${id}/connections/reset`, { method: 'POST' })

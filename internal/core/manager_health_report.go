@@ -7,6 +7,7 @@ import (
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/connguard"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/geo"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/ipblock"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/tlsutil"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/tuning"
@@ -73,7 +74,7 @@ func (m *Manager) Health() *HealthReport {
 	}
 	checks = append(checks, m.geoHealth())
 
-	checks = append(checks, m.connGuardHealth(), bbrHealth())
+	checks = append(checks, m.connGuardHealth(), firewallHealth(), bbrHealth())
 
 	if nc := m.nodesHealth(); nc != nil {
 		checks = append(checks, *nc)
@@ -89,6 +90,25 @@ func (m *Manager) Health() *HealthReport {
 		}
 	}
 	return &HealthReport{Status: worstStatus(checks), Checks: checks}
+}
+
+// awgHealth reports the master's own tunnel. Same detail keys a node's check uses —
+// the facts are identical — with a hint that points at this machine rather than at a
+// remote one.
+func (m *Manager) awgHealth() HealthCheck {
+	const label = "health.awg"
+	running, lastErr := m.AWGStatus()
+	switch {
+	case running:
+		return HealthCheck{Key: "awg", LabelKey: label, Status: healthOK, DetailKey: "health.awgOK"}
+	case lastErr != "":
+		return HealthCheck{Key: "awg", LabelKey: label, Status: healthError,
+			DetailKey: "health.awgFailed", HintKey: "health.awgHint",
+			Args: map[string]any{"err": lastErr}}
+	default:
+		return HealthCheck{Key: "awg", LabelKey: label, Status: healthError,
+			DetailKey: "health.awgDown", HintKey: "health.awgHint"}
+	}
 }
 
 // nodesHealth summarizes the remote nodes: how many are online, and a warning
@@ -234,6 +254,19 @@ func (m *Manager) connGuardHealth() HealthCheck {
 		DetailKey: "health.connguardMissing", HintKey: "health.connguardHint"}
 }
 
+// firewallHealth reports whether this server can drop addresses at its firewall. The
+// bans, the source policy's blocks and the brute-force and scanner guards all go
+// through it, and without nftables or the rights to change it they do nothing here,
+// silently — a ban shows in the list while the address still gets through.
+func firewallHealth() HealthCheck {
+	const label = "health.firewall"
+	if ipblock.CanEnforce() {
+		return HealthCheck{Key: "firewall", LabelKey: label, Status: healthOK, DetailKey: "health.firewallOK"}
+	}
+	return HealthCheck{Key: "firewall", LabelKey: label, Status: healthWarn,
+		DetailKey: "health.firewallMissing", HintKey: "health.firewallHint"}
+}
+
 // bbrHealth reports the congestion-control algorithm. Informational, not a warning:
 // BBR is a throughput optimization, and plenty of healthy kernels (and every non-
 // Linux dev box) simply don't offer it — flagging that as a problem would be noise.
@@ -309,25 +342,6 @@ func memHealth(used, total int64) HealthCheck {
 	}
 	return HealthCheck{Key: "mem", LabelKey: label, Status: healthOK,
 		DetailKey: "health.memUsage", Args: args}
-}
-
-// awgHealth reports the master's own tunnel. Same detail keys a node's check uses —
-// the facts are identical on either side and only the hint differs, which is one for
-// a remote machine and one for this one.
-func (m *Manager) awgHealth() HealthCheck {
-	const label = "health.awg"
-	running, lastErr := m.AWGStatus()
-	switch {
-	case running:
-		return HealthCheck{Key: "awg", LabelKey: label, Status: healthOK, DetailKey: "health.awgOK"}
-	case lastErr != "":
-		return HealthCheck{Key: "awg", LabelKey: label, Status: healthError,
-			DetailKey: "health.awgFailed", HintKey: "health.awgHint",
-			Args: map[string]any{"err": lastErr}}
-	default:
-		return HealthCheck{Key: "awg", LabelKey: label, Status: healthError,
-			DetailKey: "health.awgDown", HintKey: "health.awgHint"}
-	}
 }
 
 // worstStatus returns the most severe status among the checks (error > warn > ok),

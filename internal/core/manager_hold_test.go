@@ -69,7 +69,7 @@ func TestHeldTermStartsOnTheFirstConnection(t *testing.T) {
 	}
 
 	// Later connections are ordinary ones.
-	m.accLast = map[accPendingKey]int64{} // past the per-address throttle
+	m.accLast = map[string]int64{} // past the per-address throttle
 	connect(m, u, "198.51.100.5")
 	again, _ := m.store.GetUser(u.ID)
 	if again.ExpireAt != got.ExpireAt {
