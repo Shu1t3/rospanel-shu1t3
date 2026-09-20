@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.4.2](https://github.com/Shu1t3/rospanel-shu1t3/compare/v3.4.1...v3.4.2) (2026-09-20)
+
+
+### Bug Fixes
+
+* **i18n:** remove country note from placement hint ([8c5a575](https://github.com/Shu1t3/rospanel-shu1t3/commit/8c5a575055116ca9cc3ba0604a3c86c1e82ed873))
+
 ## [3.4.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v3.4.0...v3.4.1) (2026-09-19)
 
 
