@@ -9,7 +9,7 @@
 ![Release](https://img.shields.io/github/v/release/Shu1t3/rospanel-shu1t3?label=версия&sort=semver&color=2ea44f)
 ![Downloads](https://img.shields.io/github/downloads/Shu1t3/rospanel-shu1t3/total?label=скачиваний&color=6f42c1)
 ![Go](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white)
-![Xray-core](https://img.shields.io/badge/Xray--core-v26.7.28-2b2b2b)
+![Xray-core](https://img.shields.io/badge/Xray--core-v26.9.9-2b2b2b)
 ![React](https://img.shields.io/badge/UI-React%20%2B%20Vite%20%2B%20Tailwind-61DAFB?logo=react&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Linux-555?logo=linux&logoColor=white)
 ![Deploy](https://img.shields.io/badge/deploy-single%20binary%20%7C%20Docker-2496ED?logo=docker&logoColor=white)
