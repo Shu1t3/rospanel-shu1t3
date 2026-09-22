@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.4.3](https://github.com/Shu1t3/rospanel-shu1t3/compare/v3.4.2...v3.4.3) (2026-09-22)
+
+
+### Bug Fixes
+
+* clone DefaultTransport in joinClient for proper ALPN support and add unit tests ([a622169](https://github.com/Shu1t3/rospanel-shu1t3/commit/a62216997ca3e0ce0be684dc2150743fd8ed0bc1))
+
 ## [3.4.2](https://github.com/Shu1t3/rospanel-shu1t3/compare/v3.4.1...v3.4.2) (2026-09-20)
 
 
