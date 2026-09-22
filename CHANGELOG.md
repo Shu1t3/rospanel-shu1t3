@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.5.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v3.4.3...v3.5.0) (2026-09-22)
+
+
+### Features
+
+* sync upstream updates (v3.7.0..v3.9.0) preserving fork enhancements ([5bd0548](https://github.com/Shu1t3/rospanel-shu1t3/commit/5bd05480afaa8de3f9d3a0d794475836307d6048))
+
+
+### Bug Fixes
+
+* **lint:** resolve staticcheck and unused warnings reported by golangci-lint ([f8b8855](https://github.com/Shu1t3/rospanel-shu1t3/commit/f8b8855c2bb7a33899d3e9b43dc5911eb79c17e9))
+
 ## [3.4.3](https://github.com/Shu1t3/rospanel-shu1t3/compare/v3.4.2...v3.4.3) (2026-09-22)
 
 
