@@ -1656,8 +1656,6 @@ func parseStats(data []byte) map[string]Traffic {
 		return nil
 	}
 	out := make(map[string]Traffic, len(resp.Stat)/2)
-	const userPrefix = "user>>>"
-	const trafficPrefix = "traffic>>>"
 	for _, st := range resp.Stat {
 		val, _ := strconv.ParseInt(strings.Trim(string(st.Value), `"`), 10, 64)
 		foldStat(out, st.Name, val)

@@ -40,7 +40,7 @@ func TestRoutingProfileIsolationAndSecurityFloor(t *testing.T) {
 	}
 
 	// 3. Block rules must precede egress rules
-	var lastBlockIdx, firstDirectIdx int = -1, -1
+	lastBlockIdx, firstDirectIdx := -1, -1
 	for idx, r := range routing.Rules {
 		if r.OutboundTag == "block" {
 			lastBlockIdx = idx

@@ -93,7 +93,7 @@ func decryptCrypt1to4(payload string, keyIndex int) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("crypt%d base64: %w", keyIndex+1, err)
 	}
-	plain, err := rsa.DecryptPKCS1v15(rand.Reader, key, ciphertext)
+	plain, err := rsa.DecryptPKCS1v15(rand.Reader, key, ciphertext) //nolint:staticcheck // Happ protocol requires RSA PKCS#1 v1.5
 	if err != nil {
 		return nil, fmt.Errorf("crypt%d RSA decrypt: %w", keyIndex+1, err)
 	}
@@ -174,7 +174,7 @@ func decryptCrypt5(payload string) ([]byte, error) {
 		}
 		rsaBlock := transformed[:rsaSize]
 		chachaData := transformed[rsaSize:]
-		symKey, err := rsa.DecryptPKCS1v15(rand.Reader, privKey, rsaBlock)
+		symKey, err := rsa.DecryptPKCS1v15(rand.Reader, privKey, rsaBlock) //nolint:staticcheck // Happ protocol requires RSA PKCS#1 v1.5
 		if err != nil || len(symKey) < chacha20poly1305.KeySize+chacha20poly1305.NonceSize {
 			continue
 		}

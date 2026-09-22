@@ -90,7 +90,7 @@ type vmessServer struct {
 
 type vmessUser struct {
 	ID       string `json:"id"`
-	AlterId  int    `json:"alterId"`
+	AlterID  int    `json:"alterId"`
 	Security string `json:"security"`
 }
 
@@ -160,7 +160,7 @@ func vmessOutbound(n *Node) (*xray.Outbound, error) {
 				Port:    port,
 				Users: []vmessUser{{
 					ID:       cfg.ID,
-					AlterId:  aid,
+					AlterID:  aid,
 					Security: security,
 				}},
 			}},

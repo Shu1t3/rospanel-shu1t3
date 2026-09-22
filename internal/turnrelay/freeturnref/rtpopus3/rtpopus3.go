@@ -150,7 +150,7 @@ func randRange(n int) int {
 	return int(b[0]) % n
 }
 
-func pickTsStep() uint32 {
+func pickTSStep() uint32 {
 	r := randRange(256)
 	switch {
 	case r < 10:
@@ -225,7 +225,7 @@ func (c *Conn) WrapInPlace(buf []byte, plainLen int) (int, error) {
 	level := c.audioLevel()
 	seq := c.computeSeq()
 	ts := c.timestamp
-	c.timestamp += pickTsStep()
+	c.timestamp += pickTSStep()
 	tcc := c.tcc
 	c.tcc++
 	ctr := c.counter

@@ -36,7 +36,7 @@ func TestCrypt1to4RSAKeys(t *testing.T) {
 			t.Fatalf("getRSAKey(%d) failed: %v", i, err)
 		}
 		secretText := []byte("vless://11111111-2222-3333-4444-555555555555@example.com:443#KeyTest")
-		cipher, err := rsa.EncryptPKCS1v15(rand.Reader, &key.PublicKey, secretText)
+		cipher, err := rsa.EncryptPKCS1v15(rand.Reader, &key.PublicKey, secretText) //nolint:staticcheck // Happ protocol requires RSA PKCS#1 v1.5
 		if err != nil {
 			t.Fatalf("rsa.EncryptPKCS1v15 failed for key %d: %v", i, err)
 		}

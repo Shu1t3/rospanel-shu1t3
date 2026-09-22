@@ -162,20 +162,6 @@ func (rt *Router) subSettings(local *model.Settings, nodes []*model.Settings) []
 // failure as fatal (see genOptsFor), so the credential is withheld and the links cannot
 // work anyway. Failing the fetch locks nobody out: a client that cannot refresh keeps the
 // config it already has and tries again later.
-// subPhysicalServers returns the ordered physical nodes and the user's access grants.
-func (rt *Router) subPhysicalServers(local *model.Settings, userID int64, clientIP string) ([]sub.Server, model.Access, error) {
-	shared := rt.sharedSubInputs()
-	sets := rt.subSettings(local, shared.nodes)
-	custom := shared.inbounds
-	access, err := rt.mgr.Store().UserAccess(userID)
-	if err != nil {
-		return nil, model.Access{}, err
-	}
-	servers := sub.Servers(sets, custom, access)
-	ordered := sub.Order(servers, local.SubOrderMode, rt.mgr.CountryOfIP(clientIP),
-		rt.mgr.OnlineByServer(), rt.mgr.ServersOverTrafficLimit())
-	return ordered, access, nil
-}
 
 // subExternalServers returns all enabled external subscription servers.
 func (rt *Router) subExternalServers() []model.ExtServer {

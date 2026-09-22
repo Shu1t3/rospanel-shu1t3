@@ -156,7 +156,7 @@ func (s *Store) UpsertHappNodes(subscriptionID int64, nodes []happ.Node) (added,
 	return
 }
 
-// UpsertHappNodesDiff performs an upsert and also returns how many new/updated/removed.
+// UpsertHappNodesFull performs an upsert and also returns how many new/updated/removed.
 // "Removed" means nodes of this subscription not seen in the current fetch (last_seen_at is old).
 // Nodes not seen are left in the DB (soft-keep policy — fetch failure should not delete nodes).
 func (s *Store) UpsertHappNodesFull(subscriptionID int64, nodes []happ.Node) (added, updated int, err error) {
