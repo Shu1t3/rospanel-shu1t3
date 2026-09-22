@@ -3,6 +3,7 @@ package xray
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -66,6 +67,9 @@ func planUserChanges(cur, next []byte) (changes []userChange, ok bool) {
 	if err != nil {
 		return nil, false
 	}
+	// Who a relay rule lets through is changed live too, by the caller (relay.go).
+	stripRelayUsers(curCfg)
+	stripRelayUsers(nextCfg)
 	curIn, _ := curCfg["inbounds"].([]any)
 	nextIn, _ := nextCfg["inbounds"].([]any)
 	if len(curIn) != len(nextIn) {
@@ -271,10 +275,24 @@ func (s *Supervisor) tryLiveUsers(apiAddr string, data []byte) (RawApply, bool, 
 	}
 	changes, ok := planUserChanges(cur, data)
 	if !ok {
-		return RawRestarted, false, nil
-	}
-	if err := s.applyUserChanges(apiAddr, changes); err != nil {
-		return RawRestarted, false, err
+		// Not users alone: the custom inbounds may be what changed (see live_inbounds.go).
+		live, err := s.tryLiveInbounds(apiAddr, data)
+		if !live {
+			return RawRestarted, false, err
+		}
+	} else {
+		if err := s.applyUserChanges(apiAddr, changes); err != nil {
+			return RawRestarted, false, err
+		}
+		rules, changed, ok := relayRulesChanged(cur, data)
+		switch {
+		case !ok:
+			return RawRestarted, false, errors.New("the routing changed beyond the relay users")
+		case changed:
+			if err := s.replaceOwnRulesLocked(apiAddr, rules); err != nil {
+				return RawRestarted, false, err
+			}
+		}
 	}
 	if err := writeFileAtomic(s.configPath, data); err != nil {
 		return RawRestarted, false, err
@@ -292,6 +310,10 @@ func (s *Supervisor) applyUserChanges(apiAddr string, changes []userChange) erro
 		if _, err := s.runXrayAPI(statsTimeout, append([]string{"api", "rmu", "--server=" + apiAddr, "-tag=" + c.tag}, c.remove...)...); err != nil {
 			return fmt.Errorf("api rmu tag=%s: %w", c.tag, err)
 		}
+		// Only this inbound's: a user taken off one inbound may still be on another.
+		// A rekeyed user is removed and added back, and their old key's connections
+		// are closed with the key.
+		s.cutConns(c.remove, []string{c.tag})
 	}
 
 	var stubs []any

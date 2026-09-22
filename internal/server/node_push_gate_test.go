@@ -63,6 +63,7 @@ func pushNode(t *testing.T, st *store.Store, name string) *model.Node {
 // the next node's state is built while the first write is still stuck. What is
 // finally written is the whole response, compressed or not.
 func TestAStuckNodeHoldsUpNoOtherPush(t *testing.T) {
+	t.Parallel()
 	for _, gz := range []bool{true, false} {
 		t.Run(map[bool]string{true: "gzip", false: "plain"}[gz], func(t *testing.T) {
 			rt, st := rolesTestRouter(t)

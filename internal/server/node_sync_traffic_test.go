@@ -72,6 +72,7 @@ func TestTrafficBacklogChunkIsAnsweredAtOnce(t *testing.T) {
 // resends that same batch forever. The panel has to take it, or the node never syncs
 // again — not even to receive the update that would chunk it.
 func TestOversizedTrafficBatchFromAnOlderAgentIsAccepted(t *testing.T) {
+	t.Parallel()
 	rt, _ := rolesTestRouter(t)
 	_, token := joinedNode(t, rt, "berlin")
 	req := nodeapi.SyncRequest{ReportID: 1}

@@ -883,8 +883,12 @@ export interface UpdateInfo {
 
 export const checkUpdate = () => api<UpdateInfo>('api/update')
 
-export const applyUpdate = () =>
-  api<{ ok: boolean; version: string }>('api/update', { method: 'POST' })
+// withNodes also tells every node to update, once the panel's own download is in place.
+export const applyUpdate = (withNodes = false) =>
+  api<{ ok: boolean; version: string; nodes?: number; nodes_error?: string }>(
+    withNodes ? 'api/update?nodes=1' : 'api/update',
+    { method: 'POST' },
+  )
 
 export const setupPassword = (password: string) =>
   api<{ ok: boolean }>('api/setup/password', {
@@ -1858,6 +1862,10 @@ export interface BillingInfo {
   free_plan_id: number
   trial_plan_id: number
   payment_note: string
+  // Manual payment is a method of its own: offered beside the providers, switched
+  // on and off like one, with a pay-button label of its own ("" = the default).
+  manual: boolean
+  manual_label: string
   plans: TariffPlan[]
   plan_users?: Record<string, number> // plan id → number of users on it
 }
@@ -1909,6 +1917,8 @@ export const saveBilling = (b: {
   free_plan_id: number
   trial_plan_id: number
   payment_note: string
+  manual: boolean
+  manual_label: string
 }) =>
   api<{ ok: boolean }>('api/billing', {
     method: 'POST',
@@ -2780,6 +2790,10 @@ export interface ExtSubscription {
   last_error?: string
   server_count: number
   created_at: number
+  // The lane ("vless" | "reality") and server the servers are relayed through; an
+  // empty lane hands them out as they are.
+  relay_lane: string
+  relay_server_id: number
 }
 
 // ExtIdentity is what the panel presents to a subscription that requires a device.
@@ -2827,12 +2841,12 @@ export const createExternal = (name: string, source: string, identity: ExtIdenti
     body: JSON.stringify({ name, source, identity }),
   })
 
-// Changes where a subscription is read from and the device it presents, then re-reads
-// it — the answer is what that read found.
-export const updateExternalSource = (id: number, source: string, identity: ExtIdentity) =>
+// Changes a subscription's name, where it is read from and the device it presents, then
+// re-reads it — the answer is what that read found. An empty name keeps the one it has.
+export const updateExternalSource = (id: number, name: string, source: string, identity: ExtIdentity) =>
   api<{ report: ExtSyncReport }>(`api/external/${id}/source`, {
     method: 'POST',
-    body: JSON.stringify({ source, identity }),
+    body: JSON.stringify({ name, source, identity }),
   })
 
 export const deleteExternal = (id: number) =>
@@ -2845,6 +2859,14 @@ export const setExternalEnabled = (id: number, enabled: boolean) =>
   api<{ ok: boolean }>(`api/external/${id}/enabled`, {
     method: 'POST',
     body: JSON.stringify({ enabled }),
+  })
+
+// Relays a subscription through a lane of one of our servers, or ("" lane) hands its
+// servers out as they are.
+export const setExternalRelay = (id: number, lane: string, serverId: number) =>
+  api<{ ok: boolean }>(`api/external/${id}/relay`, {
+    method: 'POST',
+    body: JSON.stringify({ lane, server_id: serverId }),
   })
 
 export const setExternalServersEnabled = (id: number, enabled: boolean) =>

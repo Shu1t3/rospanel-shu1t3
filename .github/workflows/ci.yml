@@ -1,9 +1,9 @@
 name: ci
 
 # Quality gate for every push to main and every pull request: build the SPA,
-# vet + build + race-test the Go code, lint changed code, and scan for known
-# vulnerabilities. release-please.yml only runs on release; this is what stops a
-# broken change from ever reaching main.
+# vet + build + race-test the Go code, lint it, and scan for known
+# vulnerabilities. release-please.yml runs only after this passes on main, so a
+# release is never cut from a commit these checks failed.
 on:
   push:
     branches: [main]
@@ -23,9 +23,62 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Merging the release PR pushes a commit that touches only the version, the
+  # manifest and the changelog. Its checks are skipped — but the run itself still has
+  # to happen and succeed: release-please.yml waits for exactly this run to tag the
+  # release. The skip trusts the run before it, so it is taken only when all three
+  # hold, and anything else gets the full gate:
+  #   - only those three files changed;
+  #   - every commit in the push is release-please's own (its release commit, or the
+  #     merge of its branch) — a hand edit of version.go is code nothing has checked;
+  #   - the commit underneath passed ci. A red, cancelled or missing run there means
+  #     the code this merge would release was never proven, and skipping would tag it.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          full() { echo "code=true" >> "$GITHUB_OUTPUT"; exit 0; }
+          [ "$EVENT" = "push" ] || full
+          # A new branch, a force push or a base this clone lacks: check everything.
+          case "$BEFORE" in ""|0000000000000000000000000000000000000000) full ;; esac
+          git cat-file -e "$BEFORE^{commit}" 2>/dev/null || full
+          other=$(git diff --name-only "$BEFORE" "$AFTER" |
+            grep -vxE '\.release-please-manifest\.json|CHANGELOG\.md|internal/version/version\.go' || true)
+          [ -n "$other" ] && full
+          while read -r subject; do
+            case "$subject" in
+              "chore(main): release "*) ;;
+              "Merge pull request #"*" from "*"/release-please--"*) ;;
+              *) full ;;
+            esac
+          done < <(git log --format=%s "$BEFORE..$AFTER")
+          passed=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$BEFORE&event=push&status=success" \
+            --jq '.total_count' 2>/dev/null || echo 0)
+          [ "${passed:-0}" -gt 0 ] || full
+          echo "A release merge on a commit that passed ci: skipping the checks."
+          echo "code=false" >> "$GITHUB_OUTPUT"
+
   # Build the SPA once and share web/dist with the Go jobs — the Go binary embeds
   # it via //go:embed, so every Go package fails to compile without dist present.
+  # Skipped with it, the Go jobs below are skipped too: they all need it.
   frontend:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -76,9 +129,10 @@ jobs:
 
   lint:
     needs: frontend
-    # Only-new-issues diffs against the PR base, so run on pull_request where that
-    # base exists. The existing lint baseline never blocks; only debt a PR adds does.
-    if: github.event_name == 'pull_request'
+    # The whole tree on a push to main — work lands there directly, and a lint job
+    # that only ever ran on pull requests checked none of it; the tree is clean, so a
+    # full run is also a fair one. On a pull request only the issues it adds block,
+    # diffed against its base.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -94,7 +148,7 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13.2
-          only-new-issues: true
+          only-new-issues: ${{ github.event_name == 'pull_request' }}
 
   govulncheck:
     needs: frontend

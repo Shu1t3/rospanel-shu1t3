@@ -75,6 +75,7 @@ func send(t *testing.T, rt *Router, method, path, body string, c *http.Cookie, h
 // Deleting a server cuts off users, so an admin who has bound an authenticator must
 // hand over a fresh code before the panel acts on it.
 func TestDeleteNodeRequiresFreshTOTP(t *testing.T) {
+	t.Parallel()
 	rt, st := rolesTestRouter(t)
 	setupDone(t, st)
 	cookie, secret := adminWithTOTP(t, st, "owner")
@@ -103,9 +104,11 @@ func TestDeleteNodeRequiresFreshTOTP(t *testing.T) {
 	}
 }
 
-// When the admin has NOT turned on 2FA, the password alone must be enough: 2FA is an
-// optional layer, not a prerequisite for deleting a node.
-func TestDeleteNodePasswordOnlyWhenTOTPDisabled(t *testing.T) {
+// An admin with no authenticator keeps the password-only step-up: turning 2FA on for
+// one account must not change how anyone else operates the panel.
+func TestDeleteNodeWithoutTOTPNeedsOnlyThePassword(t *testing.T) {
+	t.Parallel()
+
 	rt, st := rolesTestRouter(t)
 	setupDone(t, st)
 	cookie := signIn(t, st, "owner", model.RoleOwner, false)
@@ -127,6 +130,7 @@ func TestDeleteNodePasswordOnlyWhenTOTPDisabled(t *testing.T) {
 // password change several steps before it marks setup done, so an abandoned wizard
 // would otherwise leave a working panel where a session cookie alone deletes servers.
 func TestIrreversibleActionsAreNotWaivedDuringSetup(t *testing.T) {
+	t.Parallel()
 	rt, st := rolesTestRouter(t)
 	// Deliberately NOT marking setup done.
 	cookie := signIn(t, st, "owner", model.RoleOwner, false)
@@ -143,6 +147,7 @@ func TestIrreversibleActionsAreNotWaivedDuringSetup(t *testing.T) {
 // The factory reset asks for the same pair. It had the password already; the code is
 // what is new, and the reset must not run without it.
 func TestFactoryResetRequiresFreshTOTP(t *testing.T) {
+	t.Parallel()
 	rt, st := rolesTestRouter(t)
 	setupDone(t, st)
 	cookie, secret := adminWithTOTP(t, st, "owner")
@@ -184,6 +189,7 @@ func TestFactoryResetRequiresFreshTOTP(t *testing.T) {
 // else costs them nothing — and putting the count on the LOGIN counter cost the
 // legitimate admin their login while leaving the guessing at full speed.
 func TestStepUpTOTPThrottlesItselfAndNotTheLogin(t *testing.T) {
+	t.Parallel()
 	rt, st := rolesTestRouter(t)
 	setupDone(t, st)
 	cookie, secret := adminWithTOTP(t, st, "owner")
@@ -207,6 +213,7 @@ func TestStepUpTOTPThrottlesItselfAndNotTheLogin(t *testing.T) {
 // A correct code clears the count, so a typo on the way to the right code costs
 // nothing once it lands.
 func TestStepUpTOTPSuccessClearsTheCount(t *testing.T) {
+	t.Parallel()
 	rt, st := rolesTestRouter(t)
 	setupDone(t, st)
 	cookie, secret := adminWithTOTP(t, st, "owner")
@@ -230,6 +237,7 @@ func TestStepUpTOTPSuccessClearsTheCount(t *testing.T) {
 // is ISO-8859-1, so a browser refuses a Cyrillic password outright and turns an
 // accented one into bytes that can never match the stored hash.
 func TestStepUpAcceptsANonASCIIPassword(t *testing.T) {
+	t.Parallel()
 	rt, st := rolesTestRouter(t)
 	setupDone(t, st)
 	const pw = "пароль-Ω-123"
@@ -263,6 +271,7 @@ func TestStepUpAcceptsANonASCIIPassword(t *testing.T) {
 // the irreversible actions do: a header is ISO-8859-1, so a browser cannot send a
 // Cyrillic password at all, and an owner with one could never remove an account.
 func TestDeleteAdminAcceptsANonASCIIPassword(t *testing.T) {
+	t.Parallel()
 	rt, st := rolesTestRouter(t)
 	setupDone(t, st)
 	const pw = "Владелец-Ω-9"
@@ -340,6 +349,7 @@ func sendRestore(t *testing.T, rt *Router, c *http.Cookie, password, code string
 // the factory reset, which only wipes, asked for a fresh code too. Now it asks for
 // the same pair.
 func TestRestoreRequiresFreshTOTP(t *testing.T) {
+	t.Parallel()
 	rt, st := rolesTestRouter(t)
 	setupDone(t, st)
 	cookie, secret := adminWithTOTP(t, st, "owner")
@@ -360,6 +370,7 @@ func TestRestoreRequiresFreshTOTP(t *testing.T) {
 // An admin with no authenticator is not asked for one: turning 2FA on must not become
 // a prerequisite for restoring a backup.
 func TestRestoreWithout2FAStillNeedsOnlyThePassword(t *testing.T) {
+	t.Parallel()
 	rt, st := rolesTestRouter(t)
 	setupDone(t, st)
 	cookie := signIn(t, st, "owner", model.RoleOwner, false)
@@ -376,6 +387,7 @@ func TestRestoreWithout2FAStillNeedsOnlyThePassword(t *testing.T) {
 // becomes an old one, before there is an admin worth protecting. That path must keep
 // working; tightening the restore after setup must not reach back into it.
 func TestTheWizardRestoreStillNeedsNoCredentials(t *testing.T) {
+	t.Parallel()
 	rt, st := rolesTestRouter(t) // setup not done
 	cookie := signIn(t, st, "owner", model.RoleOwner, false)
 

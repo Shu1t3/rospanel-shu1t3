@@ -111,6 +111,7 @@ func TestRevokedNodePollIsHeldOnlyOnceItKnows(t *testing.T) {
 // So a node still reporting itself revoked while the panel has it enabled must be
 // answered at once, with no wake involved anywhere in this test.
 func TestReEnabledNodeIsAnsweredWithoutWaitingForAWake(t *testing.T) {
+	t.Parallel()
 	rt, _ := rolesTestRouter(t)
 	id, token := joinedNode(t, rt, "berlin")
 

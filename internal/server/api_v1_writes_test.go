@@ -36,6 +36,7 @@ type writeProbe struct {
 }
 
 func TestMCPFleetWritesReachTheStore(t *testing.T) {
+	t.Parallel()
 	h, mgr, st := nodeAPITestServer(t)
 	base, key := apiFixture(t, h, st)
 	url := base + "/v1/mcp/" + key + "/write"
@@ -152,7 +153,8 @@ func TestMCPFleetWritesReachTheStore(t *testing.T) {
 		"post_billing_settings": {
 			body: map[string]any{
 				"enabled": true, "free_plan_id": float64(0),
-				"trial_plan_id": float64(0), "payment_note": "landed",
+				"trial_plan_id": float64(0), "payment_note": "landed", "manual": true,
+				"manual_label": "By transfer",
 			},
 			check: func(t *testing.T) map[string]any {
 				set, err := st.GetSettings()
@@ -162,6 +164,7 @@ func TestMCPFleetWritesReachTheStore(t *testing.T) {
 				return map[string]any{
 					"enabled": set.BillingEnabled, "free_plan_id": float64(set.BillingFreePlanID),
 					"trial_plan_id": float64(set.BillingTrialPlanID), "payment_note": set.BillingPaymentNote,
+					"manual": set.BillingManualEnabled, "manual_label": set.BillingManualLabel,
 				}
 			},
 		},
@@ -255,6 +258,7 @@ func contains(list []string, s string) bool {
 // by one inbound per field group, and the union has to account for every field the
 // schema advertises.
 func TestMCPInboundWritesReachTheStore(t *testing.T) {
+	t.Parallel()
 	h, _, st := nodeAPITestServer(t)
 	base, key := apiFixture(t, h, st)
 	url := base + "/v1/mcp/" + key + "/write"

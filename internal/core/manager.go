@@ -135,6 +135,20 @@ type Manager struct {
 	enforceMu      sync.Mutex
 	enforcePending atomic.Bool
 
+	// frontVLESS puts the master's TCP-TLS lane behind the panel's front (see tlsfront
+	// and xray.Options.FrontVLESS). Never a node's: their agents do that themselves.
+	frontVLESS bool
+
+	// statsMu runs one local stats read-and-flush at a time; quota is what TickStats
+	// watches between flushes (see manager_stats.go). statsSource replaces the Xray
+	// query in tests.
+	statsMu     sync.Mutex
+	quota       quotaWatch
+	quotaStale  atomic.Bool // a user changed since the watch was read
+	statsSource func() (map[string]xray.Traffic, error)
+	// clock, when set, is the time the enforcement pass judges users at (now).
+	clock func() time.Time
+
 	// stateGate keeps node states from being built and encoded side by side.
 	stateGate stateGate
 	// nodeInputsMu guards nodeInputsCache, the fleet-wide inputs every node's desired
@@ -396,10 +410,15 @@ type nodeLogEntry struct {
 // panel's loopback fallback dest); tls carries the managed cert paths; operaDir
 // is where the opera-proxy helper binary is downloaded/run from.
 func New(st *store.Store, sup *xray.Supervisor, opts xray.Options, tls TLSPaths, operaDir string) *Manager {
+	// The front is this process's: only the master's own config goes behind it (see
+	// genOptsFor). Kept out of opts, which every node's config is built from as well.
+	front := opts.FrontVLESS
+	opts.FrontVLESS = false
 	m := &Manager{
 		store:          st,
 		sup:            sup,
 		opts:           opts,
+		frontVLESS:     front,
 		tls:            tls,
 		reconcileCh:    make(chan struct{}, 1),
 		done:           make(chan struct{}),
@@ -459,6 +478,7 @@ func New(st *store.Store, sup *xray.Supervisor, opts xray.Options, tls TLSPaths,
 	m.sup.SetOnRecover(m.onXrayRecover)         // ...and tell them when it is back
 	m.sup.SetOnRolledBack(m.onConfigRolledBack) // ...and when a change was undone to get it back
 	m.sup.SetOnWedged(m.onXrayWedged)           // ...and when the watchdog revives a hung one
+	m.sup.SetOnBeforeRestart(m.flushBeforeRestart)
 	if wd, err := st.GetSettings(); err == nil {
 		m.sup.SetWatchdogEnabled(wd.WatchdogEnabled) // honour the operator's toggle
 	}
@@ -763,6 +783,9 @@ func (m *Manager) Wait() {
 // TriggerUserSync requests a live user-set sync (add/remove users via the Xray
 // API, no restart) for user-only changes — far cheaper than a full reload.
 func (m *Manager) TriggerUserSync() {
+	// A user edit may have set, raised or reset a quota the watch between stats
+	// flushes still measures against its old value.
+	m.quotaStale.Store(true)
 	m.signalReload()
 }
 
@@ -939,6 +962,11 @@ func (m *Manager) syncUsers(ws *workingSet, wsErr error) (bool, error) {
 		return true, err
 	}
 	m.setApplied(users)
+	// Who a relayed external server lets through follows the users (xray/relay.go);
+	// first, so a Hysteria2 cut-off below rebuilds the rules with the new lists.
+	if err := m.sup.SyncRelayRules(apiAddr, cfg); err != nil {
+		return true, err
+	}
 	// Hysteria2 users, on the built-in lane and on every custom QUIC inbound, go through
 	// the supervisor: it adds and removes them without closing anyone else's connection
 	// and cuts off the open connections of those removed (see xray/hysteria_live.go).

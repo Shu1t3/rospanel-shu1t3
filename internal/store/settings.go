@@ -16,7 +16,7 @@ func (s *Store) GetSettings() (*model.Settings, error) {
 	// the two leaves the copy kept looking older than it is, so the next call reads
 	// again — the other order could keep a stale copy under a current revision.
 	var rev int64
-	if err := s.db.QueryRow(`SELECT v FROM settings_rev WHERE id = 1`).Scan(&rev); err != nil {
+	if err := s.rdb.QueryRow(`SELECT v FROM settings_rev WHERE id = 1`).Scan(&rev); err != nil {
 		return nil, err
 	}
 	c := &s.settings
@@ -55,7 +55,7 @@ func (s *Store) readSettings() (*model.Settings, error) {
 	var subBase64, subNameInTitle, subRouting, warpEn int
 	var operaEn int
 	var tlsFragment, tlsMin13, blockQUIC int
-	var tgBotEn, tgUserBotEn, tgUserRegEn, billingEn int
+	var tgBotEn, tgUserBotEn, tgUserRegEn, billingEn, billingManualEn int
 	var tgSupportEn int
 	var abuseEn int
 	var hwidEn, hwidRequire int
@@ -64,7 +64,7 @@ func (s *Store) readSettings() (*model.Settings, error) {
 	var routingCfg, subRulesJSON, subDPIJSON string
 	var masterHideFull, masterHideOver, awgEn, hideOffline, subHappCrypt int
 	var awgParamsJSON, connPolicyJSON string
-	err := s.db.QueryRow(`
+	err := s.rdb.QueryRow(`
 		SELECT id, host, sni, tls_mode, acme_email, cert_path, key_path,
 		       vless_port, config_revision, last_config_error, updated_at,
 		       panel_secret_path, panel_name, panel_theme, decoy_template,
@@ -89,7 +89,8 @@ func (s *Store) readSettings() (*model.Settings, error) {
 		       tg_user_bot_enabled, tg_user_bot_token, tg_user_reg_enabled,
 		       tg_user_reg_mode, tg_user_reg_code,
 		       billing_enabled, billing_free_plan_id,
-		       billing_trial_plan_id, billing_payment_note,
+		       billing_trial_plan_id, billing_payment_note, billing_manual_enabled,
+		       billing_manual_label,
 		       payment_webhook_secret,
 		       tg_admin_events, api_path,
 		       vless_name, reality_name, hysteria_name,
@@ -136,7 +137,8 @@ func (s *Store) readSettings() (*model.Settings, error) {
 		&tgUserBotEn, &st.TGUserBotToken, &tgUserRegEn,
 		&st.TGUserRegMode, &st.TGUserRegCode,
 		&billingEn, &st.BillingFreePlanID,
-		&st.BillingTrialPlanID, &st.BillingPaymentNote,
+		&st.BillingTrialPlanID, &st.BillingPaymentNote, &billingManualEn,
+		&st.BillingManualLabel,
 		&st.PaymentWebhookSecret,
 		&st.TGAdminEvents, &st.APIPath,
 		&st.VLESSName, &st.RealityName, &st.HysteriaName,
@@ -225,6 +227,7 @@ func (s *Store) readSettings() (*model.Settings, error) {
 	st.TGUserRegEnabled = tgUserRegEn != 0
 	st.TGSupportEnabled = tgSupportEn != 0
 	st.BillingEnabled = billingEn != 0
+	st.BillingManualEnabled = billingManualEn != 0
 	st.AbuseEnabled = abuseEn != 0
 	st.HWIDEnabled = hwidEn != 0
 	st.HWIDRequire = hwidRequire != 0

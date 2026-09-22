@@ -226,11 +226,19 @@ func (m *Manager) genOpts() xray.Options {
 func (m *Manager) genOptsFor(serverID int64) (xray.Options, error) {
 	opts := m.genOpts()
 	opts.ServerID = serverID
+	// The front is the master's own: a node's agent puts its lane behind a front itself,
+	// when it has one to put it behind (xray.FrontVLESSRaw).
+	opts.FrontVLESS = serverID == model.LocalNodeID && m.frontVLESS
 	access, err := m.store.AccessMap()
 	if err != nil {
 		return opts, fmt.Errorf("load access map: %w", err)
 	}
 	opts.Access = access
+	// Soft, like the custom inbounds below: the lanes themselves still work, the
+	// relayed servers wait for the next reload.
+	if opts.Relays, err = m.relaysFor(serverID); err != nil {
+		logErr("extsub: relays: load failed", "server", serverID, "err", err)
+	}
 	list, err := m.store.EnabledInbounds(serverID)
 	if err != nil {
 		logErr("inbounds: load failed", "server", serverID, "err", err)

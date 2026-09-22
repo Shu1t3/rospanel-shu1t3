@@ -154,6 +154,7 @@ func readHysteriaLive(cfg []byte) (*hysteriaLive, error) {
 	}
 	st.rules, st.ruleTags, st.routable = doc.Routing.Rules, tags, true
 	return st, nil
+
 }
 
 // SyncHysteria brings the running Xray's Hysteria2 inbounds to the users the generated

@@ -11,7 +11,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
+	"time"
+
 
 	_ "modernc.org/sqlite"
 )
@@ -36,11 +37,8 @@ type queryer interface {
 
 // withTx runs fn inside a transaction, rolling back on any error. Worth reaching
 // for whenever a change spans more than one row: each transaction pays one commit
-// and fsync. Multi-statement write transactions are serialized via writeMu to avoid
-// SQLITE_BUSY under concurrent write requests.
+// and fsync.
 func (s *Store) withTx(fn func(tx *sql.Tx) error) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -52,17 +50,33 @@ func (s *Store) withTx(fn func(tx *sql.Tx) error) error {
 	return tx.Commit()
 }
 
+
 // ErrCorrupt reports a database file that exists but SQLite cannot use: a torn
 // page, a truncated header ("file is not a database"), or a failed integrity
 // check. It is the one failure a caller can act on — the file is unusable, so the
 // only way back is a restore. Everything else from Open is a plain error.
 var ErrCorrupt = errors.New("database is corrupt")
 
-// Store wraps the SQLite connection pool.
+// Store wraps the SQLite connections: db, the one writer, and rdb, a small pool
+// for bounded reads. Every write and every transaction goes through the writer, and
+// so does every read that walks a big table — all users, all connections, a series.
+// The pool serves the lookups the request paths make over and over (a user by id or
+// subscription token, the settings, the nodes and inbounds, a session or API key, one
+// user's devices and addresses), which WAL lets answer from the last commit while the
+// writer works instead of queueing behind its batches.
+//
+// Only bounded reads, because a WAL checkpoint cannot finish past the oldest open
+// snapshot: long reads running beside a steady stream of commits kept a snapshot
+// open at every moment, the WAL never reset, and it grew until writes crawled — the
+// load test measured edits going from 76ms to 4.5s. A pass over a big table queued on
+// the writer never overlaps a commit, and a lookup's snapshot is gone in microseconds.
+// A new read goes to the pool only when it is one of those lookups.
 type Store struct {
 	db       *sql.DB
-	writeMu  sync.Mutex
+	rdb      *sql.DB
 	settings settingsCache
+	// clock, when set, is the time user statuses are derived at (SetClock).
+	clock func() int64
 }
 
 // invalidateSettingsCache clears the cached settings singleton so the next read
@@ -72,6 +86,23 @@ func (s *Store) invalidateSettingsCache() {
 	s.settings.val = nil
 	s.settings.mu.Unlock()
 }
+
+// SetClock fixes the time user statuses are derived at, for a test whose reads must
+// all see one moment however long the machine takes. Set before the store is shared.
+func (s *Store) SetClock(fn func() int64) { s.clock = fn }
+
+// nowUnix is the time user statuses are derived at: the real one unless SetClock said.
+func (s *Store) nowUnix() int64 {
+	if s.clock != nil {
+		return s.clock()
+	}
+	return time.Now().Unix()
+}
+
+// readPoolSize bounds the read connections. Each holds its own page cache; four is
+// already more readers than the panel runs at once on the one-vCPU boxes it is
+// usually on.
+const readPoolSize = 4
 
 // Open opens (creating if needed) the SQLite database at path, applies pragmas,
 // verifies the file's integrity, and runs pending migrations. A file SQLite can't
@@ -97,11 +128,11 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	// In WAL mode, concurrent readers do not block writers and writers do not block readers.
-	// Allow up to 8 connections for parallel query execution, keeping up to 4 idle connections.
-	// Multi-statement write transactions are serialized via writeMu to avoid SQLITE_BUSY.
-	db.SetMaxOpenConns(8)
-	db.SetMaxIdleConns(4)
+	// One writer keeps writes serialized: SQLite takes one at a time anyway, and a
+	// single connection makes that order ours rather than a busy-retry lottery.
+	// Bounded lookups go to the read pool opened below; see Store.
+	db.SetMaxOpenConns(1)
+
 	if err := db.Ping(); err != nil {
 		_ = db.Close()
 		return nil, corruptOr("open db", err)
@@ -115,10 +146,28 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, corruptOr("migrate", err)
 	}
+	// Opened after the migrations, so no reader ever sees a schema mid-change.
+	// query_only makes a write that strayed onto this pool fail loudly instead of
+	// racing the writer.
+	rdb, err := sql.Open("sqlite", fmt.Sprintf(
+		"file:%s?_pragma=busy_timeout(5000)&_pragma=query_only(1)", path,
+	))
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	rdb.SetMaxOpenConns(readPoolSize)
+	rdb.SetMaxIdleConns(readPoolSize)
+	if err := rdb.Ping(); err != nil {
+		_ = rdb.Close()
+		_ = db.Close()
+		return nil, corruptOr("open read pool", err)
+	}
+	s.rdb = rdb
 	switch {
 	case seeded:
 		if err := restampSeeded(db); err != nil {
-			_ = db.Close()
+			_ = s.Close()
 			return nil, err
 		}
 	case fresh:
@@ -195,8 +244,14 @@ func corruptOr(stage string, err error) error {
 	return fmt.Errorf("%s: %w", stage, err)
 }
 
-// Close releases the database.
-func (s *Store) Close() error { return s.db.Close() }
+// Close releases the database: the read pool, then the writer.
+func (s *Store) Close() error {
+	rerr := s.rdb.Close()
+	if err := s.db.Close(); err != nil {
+		return err
+	}
+	return rerr
+}
 
 // InspectDB opens the database file at path read-only and reports whether it's a
 // usable rospanel database, along with its user/admin counts and configured
