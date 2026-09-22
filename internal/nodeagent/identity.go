@@ -173,8 +173,15 @@ func isLoopbackHost(h string) bool {
 }
 
 // joinClient is a short-lived HTTP client for the one join request.
+//
+// Clone from DefaultTransport so the TLS ClientHello carries the correct ALPN
+// extension (["h2","http/1.1"]). A bare &http.Transport{} has no NextProtos,
+// which means some CDN/proxy endpoints (e.g. Cloudflare) respond with HTTP/2
+// SETTINGS frames regardless, and the Go HTTP/1.1 parser dies with
+// "malformed HTTP response". The join is a single short request, so HTTP/2
+// is perfectly safe here — unlike the long-poll (see syncTransport).
 func joinClient(insecure bool) *http.Client {
-	tr := &http.Transport{}
+	tr := http.DefaultTransport.(*http.Transport).Clone()
 	if insecure {
 		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // opt-in escape hatch
 	}
