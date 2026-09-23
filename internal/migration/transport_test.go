@@ -59,7 +59,11 @@ func TestCandidatePreflightUsesPinnedHTTPS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := badClient.Get(srv.URL + "/migration/health"); err == nil || !strings.Contains(err.Error(), "does not match") {
+	badResp, err := badClient.Get(srv.URL + "/migration/health")
+	if badResp != nil {
+		_ = badResp.Body.Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), "does not match") {
 		t.Fatalf("wrong token accepted, err = %v", err)
 	}
 
