@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -15,8 +16,24 @@ import (
 type StandbyController struct {
 	stateManager *StateManager
 	newMasterURL *url.URL
+	publicHost   string
 	proxy        *httputil.ReverseProxy
 	lastSeen     atomic.Int64
+}
+
+// StandbyTarget routes through the candidate's IP after promotion. Looking up
+// the public domain on the old master can resolve back to the old IP while DNS
+// caches expire, causing the standby proxy to call itself.
+func StandbyTarget(candidateAddr string) (string, error) {
+	candidateURL, err := CandidateURL(candidateAddr)
+	if err != nil {
+		return "", err
+	}
+	u, err := url.Parse(candidateURL)
+	if err != nil {
+		return "", err
+	}
+	return "https://" + net.JoinHostPort(u.Hostname(), "443"), nil
 }
 
 // NewStandbyController builds a controller that reverse-proxies control requests
@@ -30,16 +47,23 @@ func NewStandbyController(sm *StateManager, newMasterTarget string) (*StandbyCon
 	sc := &StandbyController{
 		stateManager: sm,
 		newMasterURL: target,
+		publicHost:   sm.GetSession().PublicDomain,
 	}
 
 	sc.proxy = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
+			if sc.publicHost != "" {
+				pr.Out.Host = sc.publicHost
+			}
 			pr.SetXForwarded()
 			sc.RecordRequest(pr.In)
 		},
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // may use technical IP during migration window
+			TLSClientConfig: &tls.Config{
+				ServerName:         sc.publicHost,
+				InsecureSkipVerify: true, // the transport dials the candidate's technical IP
+			},
 		},
 	}
 

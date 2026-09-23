@@ -173,7 +173,12 @@ func (rt *Router) handleMigrationDecommission(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	sc, err := migration.NewStandbyController(coord.StateManager(), "https://"+sess.PublicDomain)
+	target, err := migration.StandbyTarget(sess.CandidateAddr)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	sc, err := migration.NewStandbyController(coord.StateManager(), target)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

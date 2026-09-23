@@ -88,6 +88,9 @@ type Router struct {
 	spaIndex    []byte       // index.html with <base href> injected for the secret
 	decoy       http.Handler // current decoy template handler
 	coord       *migration.Coordinator
+	standbyMu   sync.Mutex
+	standbyID   string
+	standbyHTTP *migration.StandbyController
 }
 
 // New builds the masquerade router for the given secret path and decoy template.
@@ -276,10 +279,43 @@ func (rt *Router) currentDecoy() http.Handler {
 	return rt.decoy
 }
 
+// standbyController reuses the direct-IP proxy for one migration session.
+func (rt *Router) standbyController(sess migration.Session) (*migration.StandbyController, error) {
+	rt.standbyMu.Lock()
+	defer rt.standbyMu.Unlock()
+	if rt.standbyHTTP != nil && rt.standbyID == sess.ID {
+		return rt.standbyHTTP, nil
+	}
+	target, err := migration.StandbyTarget(sess.CandidateAddr)
+	if err != nil {
+		return nil, err
+	}
+	sc, err := migration.NewStandbyController(rt.coord.StateManager(), target)
+	if err != nil {
+		return nil, err
+	}
+	rt.standbyID = sess.ID
+	rt.standbyHTTP = sc
+	return sc, nil
+}
+
 // ServeHTTP routes by the first path segment: the secret unlocks the panel,
 // anything else falls through to the decoy.
 func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	seg, rest := firstSegment(r.URL.Path)
+
+	if coord := rt.coord; coord != nil {
+		sess := coord.StateManager().GetSession()
+		if sess.Role == migration.RoleStandby && !strings.Contains(r.URL.Path, "/api/migration/") {
+			sc, err := rt.standbyController(sess)
+			if err != nil {
+				http.Error(w, "standby proxy unavailable", http.StatusBadGateway)
+				return
+			}
+			sc.ServeHTTP(w, r)
+			return
+		}
+	}
 
 	if rt.mgr.IsFenced() && (r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete || r.Method == http.MethodPatch) {
 		if !strings.Contains(r.URL.Path, "/api/migration/") {
@@ -287,18 +323,6 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte(`{"error":"server_fenced","message":"сервер заблокирован для завершения переезда (fencing active)"}`))
 			return
-		}
-	}
-
-	if coord := rt.coord; coord != nil {
-		sess := coord.StateManager().GetSession()
-		if sess.Role == migration.RoleStandby && sess.PublicDomain != "" {
-			if !strings.Contains(r.URL.Path, "/api/migration/") {
-				if sc, err := migration.NewStandbyController(coord.StateManager(), "https://"+sess.PublicDomain); err == nil {
-					sc.ServeHTTP(w, r)
-					return
-				}
-			}
 		}
 	}
 

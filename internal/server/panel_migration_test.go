@@ -7,8 +7,47 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Shu1t3/rospanel-shu1t3/internal/migration"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 )
+
+func TestStandbyProxiesNodeSyncBeforeFencing(t *testing.T) {
+	rt, _ := rolesTestRouter(t)
+	if err := rt.InitMigration(rt.dataDir); err != nil {
+		t.Fatal(err)
+	}
+	sm := rt.coord.StateManager()
+	if _, err := sm.StartMigration("vpn.example.com", "127.0.0.1:8080", "manual"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sm.SetRole(migration.RoleStandby); err != nil {
+		t.Fatal(err)
+	}
+	if err := sm.SetPhase(migration.PhaseStandby); err != nil {
+		t.Fatal(err)
+	}
+	rt.mgr.SetFenced(true)
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/node/v1/sync" {
+			t.Errorf("proxied request = %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+	sc, err := migration.NewStandbyController(sm, backend.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.standbyHTTP = sc
+	rt.standbyID = sm.GetSession().ID
+
+	rec := httptest.NewRecorder()
+	rt.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/node/v1/sync", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("standby sync = HTTP %d, want proxied 200; body: %s", rec.Code, rec.Body.String())
+	}
+}
 
 func TestMigrationEndpointsAndFencing(t *testing.T) {
 	rt, st := rolesTestRouter(t)
