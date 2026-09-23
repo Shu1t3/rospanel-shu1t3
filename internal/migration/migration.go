@@ -1,3 +1,4 @@
+// Package migration coordinates live migration of master nodes between servers.
 package migration
 
 import (

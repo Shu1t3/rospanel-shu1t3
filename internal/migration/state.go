@@ -51,37 +51,37 @@ type CheckResult struct {
 
 // StandbyStats reports metrics while the old master is in standby mode.
 type StandbyStats struct {
-	ActiveClients     int   `json:"active_clients"`
-	LastSeenClientAt  int64 `json:"last_seen_client_at"` // unix
-	SwitchedAt        int64 `json:"switched_at"`          // unix
-	SyncFailures      int   `json:"sync_failures"`
-	LastSyncAt        int64 `json:"last_sync_at"`
-	TrafficUpStandby  int64 `json:"traffic_up_standby"`
+	ActiveClients      int   `json:"active_clients"`
+	LastSeenClientAt   int64 `json:"last_seen_client_at"` // unix
+	SwitchedAt         int64 `json:"switched_at"`         // unix
+	SyncFailures       int   `json:"sync_failures"`
+	LastSyncAt         int64 `json:"last_sync_at"`
+	TrafficUpStandby   int64 `json:"traffic_up_standby"`
 	TrafficDownStandby int64 `json:"traffic_down_standby"`
 }
 
 // Session holds the complete state of a master migration attempt.
 type Session struct {
-	ID                    string         `json:"id"`
-	Phase                 MigrationPhase `json:"phase"`
-	Role                  ServerRole     `json:"role"`
-	PublicDomain          string         `json:"public_domain"`
-	CandidateAddr         string         `json:"candidate_addr"`
-	PairToken             string         `json:"-"` // sensitive: never serialized to clients
-	PairTokenExpiresAt    int64          `json:"pair_token_expires_at"`
-	CreatedAt             int64          `json:"created_at"`
-	UpdatedAt             int64          `json:"updated_at"`
-	Fenced                bool           `json:"fenced"`
-	DNSType               string         `json:"dns_type"` // "cloudflare", "manual"
-	DNSRecordID           string         `json:"dns_record_id,omitempty"`
-	DNSZoneID             string         `json:"dns_zone_id,omitempty"`
-	OriginalTTL           int            `json:"original_ttl,omitempty"`
-	CandidatePublicIP     string         `json:"candidate_public_ip,omitempty"`
-	OldMasterIP           string         `json:"old_master_ip,omitempty"`
-	Checks                []CheckResult  `json:"checks,omitempty"`
-	Standby               StandbyStats   `json:"standby,omitempty"`
-	LastError             string         `json:"last_error,omitempty"`
-	DisasterRecovery      bool           `json:"disaster_recovery,omitempty"`
+	ID                 string         `json:"id"`
+	Phase              MigrationPhase `json:"phase"`
+	Role               ServerRole     `json:"role"`
+	PublicDomain       string         `json:"public_domain"`
+	CandidateAddr      string         `json:"candidate_addr"`
+	PairToken          string         `json:"-"` // sensitive: never serialized to clients
+	PairTokenExpiresAt int64          `json:"pair_token_expires_at"`
+	CreatedAt          int64          `json:"created_at"`
+	UpdatedAt          int64          `json:"updated_at"`
+	Fenced             bool           `json:"fenced"`
+	DNSType            string         `json:"dns_type"` // "cloudflare", "manual"
+	DNSRecordID        string         `json:"dns_record_id,omitempty"`
+	DNSZoneID          string         `json:"dns_zone_id,omitempty"`
+	OriginalTTL        int            `json:"original_ttl,omitempty"`
+	CandidatePublicIP  string         `json:"candidate_public_ip,omitempty"`
+	OldMasterIP        string         `json:"old_master_ip,omitempty"`
+	Checks             []CheckResult  `json:"checks,omitempty"`
+	Standby            StandbyStats   `json:"standby,omitempty"`
+	LastError          string         `json:"last_error,omitempty"`
+	DisasterRecovery   bool           `json:"disaster_recovery,omitempty"`
 }
 
 // StateManager persists and governs migration state transitions ensuring only

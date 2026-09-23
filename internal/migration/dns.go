@@ -13,13 +13,13 @@ import (
 
 // DNSChangeResult contains details about updated DNS records.
 type DNSChangeResult struct {
-	Domain      string   `json:"domain"`
-	OldIPs      []string `json:"old_ips"`
-	NewIPs      []string `json:"new_ips"`
-	TTL         int      `json:"ttl"`
-	Provider    string   `json:"provider"`
+	Domain       string   `json:"domain"`
+	OldIPs       []string `json:"old_ips"`
+	NewIPs       []string `json:"new_ips"`
+	TTL          int      `json:"ttl"`
+	Provider     string   `json:"provider"`
 	RequiresWait bool     `json:"requires_wait"`
-	Notice      string   `json:"notice"`
+	Notice       string   `json:"notice"`
 }
 
 // DNSPropagationStatus tracks whether the new IP is visible worldwide and on authoritative nameservers.
@@ -86,7 +86,7 @@ type cfDNSRecord struct {
 }
 
 type cfRecordsResponse struct {
-	Success bool          `json:"success"`
+	Success bool `json:"success"`
 	Errors  []struct {
 		Message string `json:"message"`
 	} `json:"errors"`

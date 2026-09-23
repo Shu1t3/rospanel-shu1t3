@@ -16,7 +16,6 @@ type StandbyController struct {
 	stateManager *StateManager
 	newMasterURL *url.URL
 	proxy        *httputil.ReverseProxy
-	activeConns  atomic.Int64
 	lastSeen     atomic.Int64
 }
 
@@ -28,22 +27,20 @@ func NewStandbyController(sm *StateManager, newMasterTarget string) (*StandbyCon
 		return nil, fmt.Errorf("invalid new master URL: %w", err)
 	}
 
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	proxy.Transport = &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // may use technical IP during migration window
-	}
-
 	sc := &StandbyController{
 		stateManager: sm,
 		newMasterURL: target,
-		proxy:        proxy,
 	}
 
-	originalDirector := proxy.Director
-	proxy.Director = func(req *http.Request) {
-		originalDirector(req)
-		req.Host = target.Host
-		sc.RecordRequest(req)
+	sc.proxy = &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(target)
+			pr.SetXForwarded()
+			sc.RecordRequest(pr.In)
+		},
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // may use technical IP during migration window
+		},
 	}
 
 	return sc, nil
@@ -77,7 +74,7 @@ func (sc *StandbyController) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (sc *StandbyController) Decommission(ctx context.Context, force bool) error {
 	sess := sc.stateManager.GetSession()
 	if !force && sess.Standby.ActiveClients > 0 {
-		return fmt.Errorf("старый сервер все еще обслуживает %d активных клиентов. Используйте принудительное отключение (force).", sess.Standby.ActiveClients)
+		return fmt.Errorf("старый сервер все еще обслуживает %d активных клиентов (используйте force)", sess.Standby.ActiveClients)
 	}
 
 	if err := sc.stateManager.SetRole(RoleDecommissioned); err != nil {
