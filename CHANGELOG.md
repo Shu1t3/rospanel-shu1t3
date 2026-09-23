@@ -6,6 +6,8 @@
 ### Bug Fixes
 
 * **migration:** proxy standby node sync before fencing ([20bca94](https://github.com/Shu1t3/rospanel-shu1t3/commit/20bca94803557da341697932e8e94d23979339cd))
+  * Nodes still connected to the old IP can sync through the standby proxy instead of receiving HTTP 503.
+  * The proxy dials the promoted master's IP directly on port 443, preserves the public domain for HTTP and TLS, and reuses its connection pool to avoid stale DNS loops.
 
 ## [3.6.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v3.6.0...v3.6.1) (2026-09-23)
 
