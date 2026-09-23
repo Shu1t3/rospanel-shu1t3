@@ -111,7 +111,10 @@ export function MigrationModal({ open, onClose, currentDomain }: MigrationModalP
       if (s.checks && s.checks.length > 0) {
         setChecks(s.checks);
         const allRequiredPassed = s.checks.every((c) => !c.required || c.passed);
-        setReady(allRequiredPassed);
+        setReady(allRequiredPassed && s.phase === "candidate_ready");
+      } else {
+        setChecks([]);
+        setReady(false);
       }
     } catch {
       // Ignored if migration not initialized
@@ -154,6 +157,8 @@ export function MigrationModal({ open, onClose, currentDomain }: MigrationModalP
         cf_zone_id: dnsType === "cloudflare" ? cfZoneId.trim() : undefined,
       });
       setInstallCmd(resp.install_cmd);
+      setChecks([]);
+      setReady(false);
       notifySuccess(t("migration.started", "Переезд запущен. Скопируйте команду установки."));
       await refreshStatus();
     } catch (e) {
@@ -313,6 +318,12 @@ export function MigrationModal({ open, onClose, currentDomain }: MigrationModalP
             </Badge>
           </div>
 
+          {currentPhase === "error" && session?.last_error && (
+            <div className="rounded-lg border border-danger/30 bg-red-50 p-3 text-xs text-danger">
+              {session.last_error}
+            </div>
+          )}
+
           {/* Standby Mode Active View */}
           {isStandby && session && (
             <div className="flex flex-col gap-3 rounded-xl border border-amber-200 bg-amber-50/50 p-4">
@@ -407,7 +418,7 @@ export function MigrationModal({ open, onClose, currentDomain }: MigrationModalP
                     value={candidateAddr}
                     onChange={setCandidateAddr}
                     mono
-                    disabled={currentPhase !== "idle" && currentPhase !== "rolled_back"}
+                    disabled={currentPhase !== "idle" && currentPhase !== "rolled_back" && currentPhase !== "error"}
                   />
                   <span className="mt-1 block text-[11px] text-ink-muted">
                     {t("migration.candidateAddrHint", "Используется исключительно для передачи снимка и проверок до смены DNS.")}
@@ -424,14 +435,14 @@ export function MigrationModal({ open, onClose, currentDomain }: MigrationModalP
                       onChange={() => setDnsType("manual")}
                       label={t("migration.dnsManual", "Вручную (самостоятельное обновление A/AAAA записей)")}
                       hint={t("migration.dnsManualHint", "Потребуется изменить IP домена у вашего DNS-провайдера.")}
-                      disabled={currentPhase !== "idle" && currentPhase !== "rolled_back"}
+                      disabled={currentPhase !== "idle" && currentPhase !== "rolled_back" && currentPhase !== "error"}
                     />
                     <RadioCard
                       checked={dnsType === "cloudflare"}
                       onChange={() => setDnsType("cloudflare")}
                       label={t("migration.dnsCloudflare", "Автоматически через Cloudflare API")}
                       hint={t("migration.dnsCloudflareHint", "Автоматическое понижение TTL до 60с и мгновенное переключение.")}
-                      disabled={currentPhase !== "idle" && currentPhase !== "rolled_back"}
+                      disabled={currentPhase !== "idle" && currentPhase !== "rolled_back" && currentPhase !== "error"}
                     />
                   </div>
                 </div>
@@ -444,19 +455,19 @@ export function MigrationModal({ open, onClose, currentDomain }: MigrationModalP
                       placeholder="Bearer token"
                       value={cfToken}
                       onChange={setCfToken}
-                      disabled={currentPhase !== "idle" && currentPhase !== "rolled_back"}
+                      disabled={currentPhase !== "idle" && currentPhase !== "rolled_back" && currentPhase !== "error"}
                     />
                     <TextInput
                       label="Cloudflare Zone ID"
                       placeholder="32-символьный Zone ID"
                       value={cfZoneId}
                       onChange={setCfZoneId}
-                      disabled={currentPhase !== "idle" && currentPhase !== "rolled_back"}
+                      disabled={currentPhase !== "idle" && currentPhase !== "rolled_back" && currentPhase !== "error"}
                     />
                   </div>
                 )}
 
-                {(currentPhase === "idle" || currentPhase === "rolled_back") && (
+                {(currentPhase === "idle" || currentPhase === "rolled_back" || currentPhase === "error") && (
                   <div className="mt-2 flex justify-end">
                     <Button onClick={handleStart} disabled={loading || !candidateAddr.trim()}>
                       {loading ? <Spinner size={16} /> : t("migration.btnStart", "Создать переезд")}

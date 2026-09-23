@@ -37,6 +37,12 @@ func TestMigrationStateLifecycle(t *testing.T) {
 	if sess.CandidateAddr != "192.0.2.10:8080" {
 		t.Errorf("expected candidate 192.0.2.10:8080, got %s", sess.CandidateAddr)
 	}
+	// The master may restart before the final snapshot; transport pinning still
+	// needs the pairing token after reloading the migration state.
+	reloaded, err := NewStateManager(tmpDir)
+	if err != nil || reloaded.GetSession().PairToken != pairToken {
+		t.Fatalf("pair token did not survive restart: %v", err)
+	}
 
 	// Cannot start second migration while active
 	if _, err := sm.StartMigration("other.com", "192.0.2.20", "manual"); err == nil {

@@ -88,6 +88,8 @@ func main() {
 			runNode(os.Args[2:])
 		case "candidate":
 			runCandidate(dataDir, os.Args[2:])
+		case "candidate-install":
+			runCandidateInstall(dataDir, os.Args[2:])
 		case "disaster-recover":
 			runDisasterRecover(dataDir, os.Args[2:])
 		case "reset":

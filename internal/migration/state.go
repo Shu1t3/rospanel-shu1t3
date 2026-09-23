@@ -67,7 +67,7 @@ type Session struct {
 	Role               ServerRole     `json:"role"`
 	PublicDomain       string         `json:"public_domain"`
 	CandidateAddr      string         `json:"candidate_addr"`
-	PairToken          string         `json:"-"` // sensitive: never serialized to clients
+	PairToken          string         `json:"pair_token,omitempty"` // persisted for restarts; strip from API responses
 	PairTokenExpiresAt int64          `json:"pair_token_expires_at"`
 	CreatedAt          int64          `json:"created_at"`
 	UpdatedAt          int64          `json:"updated_at"`

@@ -92,7 +92,7 @@ fi
 # (/dev/tty) instead. Opening fd 3 on /dev/tty fails when there is no terminal
 # (cron, CI, non-interactive SSH); in that case we skip and serve over IP.
 # Node mode needs no domain prompt (the panel assigns the node its host).
-if [ -z "$JOIN_URL" ] && [ -z "${ROSPANEL_HOST:-}" ] && { exec 3</dev/tty; } 2>/dev/null; then
+if [ -z "$JOIN_URL" ] && [ -z "$CANDIDATE_ADDR" ] && [ -z "${ROSPANEL_HOST:-}" ] && { exec 3</dev/tty; } 2>/dev/null; then
 	printf '%sDomain for the panel%s (leave empty to serve over IP): ' "$BLD" "$RST" >&2
 	read -r answer <&3 || answer=""
 	ROSPANEL_HOST="$(printf '%s' "$answer" | tr -d '[:space:]')"
@@ -135,7 +135,8 @@ fi
 # --- candidate mode: run as master migration candidate in passive mode -------
 if [ -n "$CANDIDATE_ADDR" ]; then
 	info "installing as a ${BLD}master migration candidate${RST}"
-	"$tmp/rospanel" candidate --addr "$CANDIDATE_ADDR" --master "$MASTER_URL" --pair-token "$PAIR_TOKEN"
+	"$tmp/rospanel" candidate-install --addr "$CANDIDATE_ADDR" --master "$MASTER_URL" --pair-token "$PAIR_TOKEN"
+	info "candidate HTTPS service: ${BLD}systemctl status rospanel${RST}"
 	exit 0
 fi
 

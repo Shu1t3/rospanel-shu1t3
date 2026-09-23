@@ -2,9 +2,7 @@ package migration
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -21,18 +19,7 @@ type PreflightChecker struct {
 
 // NewPreflightChecker builds a checker for candidate node health and equivalence.
 func NewPreflightChecker() *PreflightChecker {
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // technical addr may use self-signed cert
-		DialContext: (&net.Dialer{
-			Timeout: 5 * time.Second,
-		}).DialContext,
-	}
-	return &PreflightChecker{
-		client: &http.Client{
-			Transport: tr,
-			Timeout:   10 * time.Second,
-		},
-	}
+	return &PreflightChecker{client: &http.Client{Timeout: 10 * time.Second}}
 }
 
 // RunAllPreflightChecks executes the complete pre-switch check suite.
@@ -74,19 +61,32 @@ func (pc *PreflightChecker) RunAllPreflightChecks(
 		Name:     "candidate_reachability",
 		Required: true,
 	}
-	candAddr := sess.CandidateAddr
-	if !strings.Contains(candAddr, ":") {
-		candAddr = net.JoinHostPort(candAddr, "8080")
+	candURL, err := CandidateURL(sess.CandidateAddr)
+	if err == nil {
+		var client *http.Client
+		client, err = CandidateClient(sess.PairToken, 10*time.Second)
+		if err == nil {
+			var req *http.Request
+			req, err = http.NewRequestWithContext(ctx, http.MethodGet, candURL+"/migration/health", nil)
+			if err == nil {
+				var resp *http.Response
+				resp, err = client.Do(req)
+				if err == nil {
+					_ = resp.Body.Close()
+					if resp.StatusCode != http.StatusOK {
+						err = fmt.Errorf("candidate health returned HTTP %d", resp.StatusCode)
+					}
+				}
+			}
+		}
 	}
-	conn, err := net.DialTimeout("tcp", candAddr, 4*time.Second)
 	if err != nil {
 		checkReach.Passed = false
-		checkReach.Error = fmt.Sprintf("Кандидат недоступен по адресу %s: %v", candAddr, err)
+		checkReach.Error = fmt.Sprintf("Кандидат недоступен по адресу %s: %v", candURL, err)
 		allPassed = false
 	} else {
-		_ = conn.Close()
 		checkReach.Passed = true
-		checkReach.Details = fmt.Sprintf("Связь с кандидатом %s установлена", candAddr)
+		checkReach.Details = fmt.Sprintf("HTTPS-связь с кандидатом %s установлена", candURL)
 	}
 	results = append(results, checkReach)
 

@@ -4,7 +4,6 @@ package migration
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -36,7 +35,6 @@ type Coordinator struct {
 	stateManager *StateManager
 	store        StoreReader
 	checker      *PreflightChecker
-	httpClient   *http.Client
 }
 
 // NewCoordinator initializes the migration coordinator.
@@ -45,15 +43,11 @@ func NewCoordinator(dataDir string, store StoreReader) (*Coordinator, error) {
 	if err != nil {
 		return nil, err
 	}
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
 	return &Coordinator{
 		dataDir:      dataDir,
 		stateManager: sm,
 		store:        store,
 		checker:      NewPreflightChecker(),
-		httpClient:   &http.Client{Transport: tr, Timeout: 30 * time.Second},
 	}, nil
 }
 
@@ -72,13 +66,13 @@ func (c *Coordinator) InitiateMigration(candidateAddr, dnsType string, cfConfig 
 		return "", fmt.Errorf("load settings: %w", err)
 	}
 
-	cleanCand := strings.TrimSpace(candidateAddr)
-	if cleanCand == "" {
-		return "", errors.New("технический адрес кандидата не может быть пустым")
+	cleanCand, err := CandidateURL(candidateAddr)
+	if err != nil {
+		return "", err
 	}
 
 	// Invariant: Do not replace Settings.Host with candidate technical address
-	if strings.EqualFold(set.Host, cleanCand) {
+	if strings.EqualFold(set.Host, extractIP(cleanCand)) {
 		return "", errors.New("технический адрес кандидата не должен совпадать с публичным доменом")
 	}
 
@@ -163,6 +157,9 @@ func (c *Coordinator) ExecuteSwitchover(ctx context.Context, dnsAdapter DNSAdapt
 
 	// 3. Transfer snapshot to candidate
 	slog.Info("migration: transferring snapshot to candidate", "candidate", sess.CandidateAddr)
+	if candidateSecret == "" {
+		candidateSecret = sess.PairToken
+	}
 	if err := c.pushSnapshotToCandidate(ctx, snapPath, sess.CandidateAddr, candidateSecret); err != nil {
 		_ = c.stateManager.SetError(fmt.Sprintf("push snapshot: %v", err))
 		return err
@@ -200,11 +197,15 @@ func (c *Coordinator) ExecuteSwitchover(ctx context.Context, dnsAdapter DNSAdapt
 }
 
 func (c *Coordinator) pushSnapshotToCandidate(ctx context.Context, snapshotPath, candidateAddr, secret string) error {
-	candURL := candidateAddr
-	if !strings.HasPrefix(candURL, "http://") && !strings.HasPrefix(candURL, "https://") {
-		candURL = "https://" + candURL
+	candURL, err := CandidateURL(candidateAddr)
+	if err != nil {
+		return err
 	}
-	candURL = strings.TrimRight(candURL, "/") + "/migration/apply-snapshot"
+	candURL += "/migration/apply-snapshot"
+	client, err := CandidateClient(secret, 30*time.Second)
+	if err != nil {
+		return err
+	}
 
 	f, err := os.Open(snapshotPath)
 	if err != nil {
@@ -232,7 +233,7 @@ func (c *Coordinator) pushSnapshotToCandidate(ctx context.Context, snapshotPath,
 		req.Header.Set("X-Migration-Secret", secret)
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -246,11 +247,15 @@ func (c *Coordinator) pushSnapshotToCandidate(ctx context.Context, snapshotPath,
 }
 
 func (c *Coordinator) promoteCandidate(ctx context.Context, candidateAddr, secret string) error {
-	candURL := candidateAddr
-	if !strings.HasPrefix(candURL, "http://") && !strings.HasPrefix(candURL, "https://") {
-		candURL = "https://" + candURL
+	candURL, err := CandidateURL(candidateAddr)
+	if err != nil {
+		return err
 	}
-	candURL = strings.TrimRight(candURL, "/") + "/migration/promote"
+	candURL += "/migration/promote"
+	client, err := CandidateClient(secret, 30*time.Second)
+	if err != nil {
+		return err
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, candURL, nil)
 	if err != nil {
@@ -260,7 +265,7 @@ func (c *Coordinator) promoteCandidate(ctx context.Context, candidateAddr, secre
 		req.Header.Set("X-Migration-Secret", secret)
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}

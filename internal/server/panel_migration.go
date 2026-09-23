@@ -4,11 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/backup"
@@ -53,6 +51,7 @@ func (rt *Router) handleMigrationStatus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	sess := coord.StateManager().GetSession()
+	sess.PairToken = ""
 	writeJSON(w, http.StatusOK, sess)
 }
 
@@ -89,10 +88,7 @@ func (rt *Router) handleMigrationStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate one-line install command for candidate server
-	candHost := req.CandidateAddr
-	if !strings.Contains(candHost, ":") {
-		candHost = candHost + ":8080"
-	}
+	candHost := coord.StateManager().GetSession().CandidateAddr
 	masterURL := "https://" + r.Host
 	installCmd := fmt.Sprintf(
 		"curl -Ls https://raw.githubusercontent.com/Shu1t3/rospanel-shu1t3/main/install.sh | sudo bash -s -- --candidate '%s' --master '%s' --pair-token '%s'",
@@ -263,71 +259,4 @@ func (rt *Router) handleMigrationTrialRestore(w http.ResponseWriter, r *http.Req
 		return
 	}
 	writeJSON(w, http.StatusOK, report)
-}
-
-// Candidate API endpoints (invoked on candidate during setup)
-func (rt *Router) handleCandidateApplySnapshot(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Limit uploaded snapshot size (e.g. 500 MB)
-	r.Body = http.MaxBytesReader(w, r.Body, 500<<20)
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		http.Error(w, "parse multipart: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	file, _, err := r.FormFile("snapshot")
-	if err != nil {
-		http.Error(w, "snapshot file required", http.StatusBadRequest)
-		return
-	}
-	defer file.Close()
-
-	tmp, err := os.CreateTemp(rt.dataDir, "candidate-received-*.tar.gz")
-	if err != nil {
-		http.Error(w, "create temp: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-
-	if _, err := io.Copy(tmp, file); err != nil {
-		_ = tmp.Close()
-		http.Error(w, "save file: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	_ = tmp.Close()
-
-	// Validate and apply snapshot to local dataDir
-	manifest, err := migration.ValidateAndExtractSnapshot(tmpPath, rt.dataDir, "")
-	if err != nil {
-		http.Error(w, "snapshot validation failed: "+err.Error(), http.StatusUnprocessableEntity)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":       true,
-		"manifest": manifest,
-	})
-}
-
-func (rt *Router) handleCandidatePromote(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Set role to Master on candidate
-	if coord := rt.MigrationCoordinator(); coord != nil {
-		_ = coord.StateManager().SetRole(migration.RoleMaster)
-		_ = coord.StateManager().SetPhase(migration.PhaseCompleted)
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":      true,
-		"message": "Кандидат повышен в активный мастер.",
-	})
 }

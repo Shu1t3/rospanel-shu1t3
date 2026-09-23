@@ -51,6 +51,13 @@ func TestMigrationEndpointsAndFencing(t *testing.T) {
 	if sresp["pair_token"] == "" || !strings.Contains(sresp["install_cmd"], "--candidate") {
 		t.Errorf("unexpected start response: %+v", sresp)
 	}
+	statusReq := httptest.NewRequest(http.MethodGet, "/api/migration/status", nil)
+	statusReq.AddCookie(ownerCookie)
+	statusRec := httptest.NewRecorder()
+	h.ServeHTTP(statusRec, statusReq)
+	if strings.Contains(statusRec.Body.String(), sresp["pair_token"]) {
+		t.Fatal("migration status disclosed the pairing token")
+	}
 
 	// 3. Fencing check: when fenced, non-migration POST is blocked with 503
 	rt.mgr.SetFenced(true)
@@ -80,16 +87,6 @@ func TestMigrationEndpointsAndFencing(t *testing.T) {
 		t.Error("fencing should be cleared after rollback")
 	}
 
-	// 4. Candidate health endpoint
-	candHealthReq := httptest.NewRequest(http.MethodGet, "/migration/health", nil)
-	candHealthRec := httptest.NewRecorder()
-	rt.ServeHTTP(candHealthRec, candHealthReq)
-	if candHealthRec.Code != http.StatusOK {
-		t.Fatalf("candidate health code = %d, want 200", candHealthRec.Code)
-	}
-	if !strings.Contains(candHealthRec.Body.String(), "candidate_ready") {
-		t.Errorf("expected candidate_ready status, got %s", candHealthRec.Body.String())
-	}
 }
 
 type modelStateSession struct {
