@@ -86,6 +86,10 @@ func main() {
 			runUpdate(os.Args[2:])
 		case "node":
 			runNode(os.Args[2:])
+		case "candidate":
+			runCandidate(dataDir, os.Args[2:])
+		case "disaster-recover":
+			runDisasterRecover(dataDir, os.Args[2:])
 		case "reset":
 			runReset(os.Args[2:])
 		case "version", "--version", "-v":

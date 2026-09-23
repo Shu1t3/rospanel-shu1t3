@@ -202,6 +202,16 @@ func runServer(dataDir string) {
 		filepath.Join(dataDir, "opera"))
 	sup.SetOnAccess(mgr.RecordLocalAccess) // track online status + connection IPs
 	mgr.StartSysstat(dataDir)              // host metrics for the dashboard
+	if err := mgr.InitMigration(dataDir); err != nil {
+		log.Printf("migration init: %v", err)
+	}
+	isStandby := false
+	if coord := mgr.MigrationCoordinator(); coord != nil {
+		if coord.StateManager().GetSession().Role == "standby" {
+			isStandby = true
+			log.Print("service: server running in STANDBY role (control plane proxied, background tasks paused)")
+		}
+	}
 	// Blocklists for abuse detection. Cached copies load synchronously (fast, local),
 	// so matching works from the first access-log line; downloads run in background
 	// and a failure leaves the matcher empty rather than holding up the boot.
@@ -276,10 +286,6 @@ func runServer(dataDir string) {
 	// Writes the buffered access-log sightings. RecordAccess only buffers, so this
 	// is what actually persists who connected from where.
 	runBG("access flush", accessFlushLoop(mgr))
-	// Payment polling fallback: reconciles pending provider orders in case a webhook
-	// was missed. Idles cheaply when there are no pending orders.
-	runBG("payment poll", paymentPollLoop(mgr))
-	runBG("external subscriptions", mgr.RunExtSubLoop) // re-read hourly
 	// Audit-log + connection-row retention: drops rows past their windows.
 	runBG("retention", retentionLoop(mgr))
 	// Re-applies the addresses banned by hand: they never expire, so a ban that did
@@ -287,33 +293,26 @@ func runServer(dataDir string) {
 	runBG("ip bans", func(ctx context.Context) {
 		tick(ctx, 5*time.Minute, func() { safeTick("ip bans", mgr.ResyncIPBans) })
 	})
-	// Scheduled local backups. Independent of Telegram, so an operator with no bot
-	// still gets automatic backups; idles until a cron is set in Settings.
-	runBG("auto backup", autobackup.New(mgr, st, dataDir).Run)
-	// All three bots reach Telegram through the same egress, and in the WARP / Opera
-	// modes that egress is something this very startup brought up moments ago — Xray
-	// needs a couple of seconds past "process started" before its inbound accepts.
-	// Launched straight away they dial a refused port and then sit out their retry
-	// backoff, so the bots stay silent for ~40s after every restart. One bounded wait,
-	// shared by all three, off the startup path so the panel still serves meanwhile
-	// (it returns immediately for the direct and custom routes).
-	runBG("telegram", func(ctx context.Context) {
-		mgr.AwaitTelegramEgress(ctx)
-		// Telegram admin bot: view/add/remove users + scheduled backups. It idles until
-		// enabled with a token in Settings → Telegram, re-reading config each cycle.
-		go telegram.New(mgr, st, dataDir).Run(ctx)
-		// Telegram user bot: public self-service for VPN clients (registration,
-		// subscription, stats). Idles until enabled with its own token in Settings.
-		go telegram.NewUser(mgr, st).Run(ctx)
-		// Telegram support bot: relays messages between a user's private chat and a
-		// per-user topic in the operator's forum supergroup. Idles until enabled with
-		// its own token and a group in Settings → Telegram.
-		go telegram.NewSupport(mgr, st).Run(ctx)
-		<-ctx.Done() // the three bots stop with it
-	})
-	// Broadcast delivery. Polls the store rather than holding a queue, so a restart
-	// mid-run resumes from the remaining recipients instead of losing or repeating.
-	runBG("broadcasts", telegram.NewBroadcast(st, dataDir).Run)
+
+	if !isStandby {
+		// Payment polling fallback: reconciles pending provider orders in case a webhook
+		// was missed. Idles cheaply when there are no pending orders.
+		runBG("payment poll", paymentPollLoop(mgr))
+		runBG("external subscriptions", mgr.RunExtSubLoop) // re-read hourly
+		// Scheduled local backups. Independent of Telegram, so an operator with no bot
+		// still gets automatic backups; idles until a cron is set in Settings.
+		runBG("auto backup", autobackup.New(mgr, st, dataDir).Run)
+		// All three bots reach Telegram through the same egress.
+		runBG("telegram", func(ctx context.Context) {
+			mgr.AwaitTelegramEgress(ctx)
+			go telegram.New(mgr, st, dataDir).Run(ctx)
+			go telegram.NewUser(mgr, st).Run(ctx)
+			go telegram.NewSupport(mgr, st).Run(ctx)
+			<-ctx.Done() // the three bots stop with it
+		})
+		// Broadcast delivery.
+		runBG("broadcasts", telegram.NewBroadcast(st, dataDir).Run)
+	}
 
 	handler, err := server.New(mgr, secret, set.DecoyTemplate, dataDir)
 	if err != nil {

@@ -360,7 +360,8 @@ func (m *Manager) sendProbeDigest(probes []model.ProbeHit) {
 	const show = 10
 	for i, p := range probes {
 		if i >= show {
-			b.WriteString("\n" + i18n.T(lang, "notify.probeDigestMore", len(probes)-show))
+			b.WriteByte('\n')
+			b.WriteString(i18n.T(lang, "notify.probeDigestMore", len(probes)-show))
 			break
 		}
 		fmt.Fprintf(&b, "\n• <code>%s</code> — %d%s", escHTML(p.IP), p.Paths, probeOrigin(p))

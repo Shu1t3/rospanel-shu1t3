@@ -42,6 +42,8 @@ Commands:
   update [-y]        Update to the latest GitHub release and restart.
   node <sub>         Node mode: install --join '<url>', run, set-panel, status,
                      uninstall (see rospanel node help).
+  candidate          Run in passive candidate mode for master node migration.
+  disaster-recover   Restore new master in one command from local or remote backup.
   backup [file]      Create a .tar.gz backup (DB + certificates + Xray config).
                      Without an argument the file is named after the current time.
   restore [-y] <file>

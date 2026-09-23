@@ -28,6 +28,9 @@ ASSET=""   # resolved from the host architecture in the preflight checks below
 # --- parse args: --join <url> [--insecure] switches to node mode --------------
 JOIN_URL=""
 JOIN_INSECURE=""
+CANDIDATE_ADDR=""
+MASTER_URL=""
+PAIR_TOKEN=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--join)
@@ -35,6 +38,18 @@ while [ $# -gt 0 ]; do
 			JOIN_URL="$2"; shift 2 ;;
 		--join=*)    JOIN_URL="${1#--join=}"; shift ;;
 		--insecure)  JOIN_INSECURE="--insecure"; shift ;;
+		--candidate)
+			[ $# -ge 2 ] || die "--candidate requires an address (e.g. 1.2.3.4:8080)"
+			CANDIDATE_ADDR="$2"; shift 2 ;;
+		--candidate=*) CANDIDATE_ADDR="${1#--candidate=}"; shift ;;
+		--master)
+			[ $# -ge 2 ] || die "--master requires a master panel URL"
+			MASTER_URL="$2"; shift 2 ;;
+		--master=*) MASTER_URL="${1#--master=}"; shift ;;
+		--pair-token)
+			[ $# -ge 2 ] || die "--pair-token requires a pairing token"
+			PAIR_TOKEN="$2"; shift 2 ;;
+		--pair-token=*) PAIR_TOKEN="${1#--pair-token=}"; shift ;;
 		*)           shift ;;
 	esac
 done
@@ -114,6 +129,13 @@ if [ -n "$JOIN_URL" ]; then
 	echo
 	info "${GRN}done${RST} — the node will appear online in the panel shortly"
 	info "logs: ${BLD}journalctl -u rospanel-node -f${RST}"
+	exit 0
+fi
+
+# --- candidate mode: run as master migration candidate in passive mode -------
+if [ -n "$CANDIDATE_ADDR" ]; then
+	info "installing as a ${BLD}master migration candidate${RST}"
+	"$tmp/rospanel" candidate --addr "$CANDIDATE_ADDR" --master "$MASTER_URL" --pair-token "$PAIR_TOKEN"
 	exit 0
 fi
 

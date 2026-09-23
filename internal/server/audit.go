@@ -212,6 +212,12 @@ var auditActions = map[string]auditRoute{
 	"POST /api/update":         act(model.AuditUpdated),
 	"POST /api/xray/restart":   act(model.AuditXrayRestarted),
 	"POST /api/panel/restart":  act(model.AuditPanelRestarted),
+	"POST /api/migration/start":         set("migration"),
+	"POST /api/migration/verify":        skip, // read-only verification
+	"POST /api/migration/switch":        set("migration"),
+	"POST /api/migration/decommission":  set("migration"),
+	"POST /api/migration/rollback":      set("migration"),
+	"POST /api/migration/trial-restore": skip, // sandboxed trial restore test
 	"POST /api/stats/reset":    act(model.AuditStatsReset),
 
 	// The caller's own sessions. Ending one is a security action worth a row of its

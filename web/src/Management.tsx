@@ -20,6 +20,7 @@ import {
   ValidationNote,
 } from "./restore";
 import { Button, cn, Modal, Panel } from "./ui";
+import { MigrationModal } from "./MigrationModal";
 
 /* ----------------------------------------------------------------- icons */
 function IconList() {
@@ -40,6 +41,13 @@ function IconPower() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 3v9M18.4 6.6a9 9 0 1 1-12.8 0" />
+    </svg>
+  );
+}
+function IconTransfer() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M17 3v10M21 7l-4-4-4 4M7 21V11M3 17l4 4 4-4" />
     </svg>
   );
 }
@@ -123,6 +131,7 @@ export function ManagementCard() {
   const { data: info } = useFetch(getBackupInfo);
   const [logsOpen, setLogsOpen] = useState(false);
   const [backupOpen, setBackupOpen] = useState(false);
+  const [migrationOpen, setMigrationOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
   const [resetCreds, setResetCreds] = useState<StepUp>(EMPTY_STEP_UP);
   const { ask, stepUpNode } = useStepUpDialog();
@@ -212,6 +221,7 @@ export function ManagementCard() {
         {/* One word, like every other action here — the modal it opens is still
             titled "backup and restore", so nothing is hidden. */}
         <ManageBtn icon={<IconArchive />} label={t("manage.backups")} onClick={() => setBackupOpen(true)} />
+        <ManageBtn icon={<IconTransfer />} label={t("manage.migration")} onClick={() => setMigrationOpen(true)} />
         <ManageBtn
           icon={<IconPower />}
           label={t("manage.restart")}
@@ -221,6 +231,12 @@ export function ManagementCard() {
       </Panel>
 
       {logsOpen && <AppLogs onClose={() => setLogsOpen(false)} />}
+
+      <MigrationModal
+        open={migrationOpen}
+        onClose={() => setMigrationOpen(false)}
+        currentDomain={info?.domain}
+      />
 
       {/* Backup & restore */}
       <Modal open={backupOpen} onClose={closeBackup} title={t("manage.backupRestore")}>

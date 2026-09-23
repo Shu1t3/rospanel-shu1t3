@@ -2906,3 +2906,125 @@ export const resetConnections = () =>
   api<ConnectionsStatus>('api/connections/reset', { method: 'POST' })
 export const resetNodeConnections = (id: number) =>
   api<ConnectionsStatus>(`api/nodes/${id}/connections/reset`, { method: 'POST' })
+
+// ---- Master Node Migration --------------------------------------------------
+
+export interface MigrationCheckResult {
+  name: string
+  passed: boolean
+  required: boolean
+  details: string
+  error?: string
+}
+
+export interface MigrationStandbyStats {
+  active_clients: number
+  last_seen_client_at: number
+  switched_at: number
+  sync_failures: number
+  last_sync_at: number
+  traffic_up_standby: number
+  traffic_down_standby: number
+}
+
+export type MigrationPhase =
+  | 'idle'
+  | 'prepare'
+  | 'copying'
+  | 'candidate_ready'
+  | 'switching'
+  | 'standby'
+  | 'completed'
+  | 'error'
+  | 'rolled_back'
+
+export type ServerRole = 'master' | 'candidate' | 'standby' | 'decommissioned'
+
+export interface MigrationSession {
+  id: string
+  phase: MigrationPhase
+  role: ServerRole
+  public_domain: string
+  candidate_addr: string
+  pair_token_expires_at: number
+  created_at: number
+  updated_at: number
+  fenced: boolean
+  dns_type: string
+  dns_record_id?: string
+  dns_zone_id?: string
+  candidate_public_ip?: string
+  old_master_ip?: string
+  checks?: MigrationCheckResult[]
+  standby?: MigrationStandbyStats
+  last_error?: string
+  disaster_recovery?: boolean
+}
+
+export interface StartMigrationResp {
+  pair_token: string
+  install_cmd: string
+  phase: MigrationPhase
+}
+
+export interface VerifyMigrationResp {
+  results: MigrationCheckResult[]
+  ready: boolean
+}
+
+export interface BackupHealthView {
+  last_backup_at?: string
+  last_successful_rpo: string
+  rpo_seconds: number
+  total_local_backups: number
+}
+
+export interface TrialRestoreReport {
+  timestamp: string
+  archive_name: string
+  bytes: number
+  tables_checked: number
+  sqlite_quick_check: string
+  schema_version: number
+  users_count: number
+  success: boolean
+  error?: string
+}
+
+export const getMigrationStatus = () => api<MigrationSession>('api/migration/status')
+
+export const startMigration = (data: {
+  candidate_addr: string
+  dns_type: string
+  cf_token?: string
+  cf_zone_id?: string
+}) =>
+  api<StartMigrationResp>('api/migration/start', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  })
+
+export const verifyMigration = () =>
+  api<VerifyMigrationResp>('api/migration/verify', { method: 'POST' })
+
+export const switchMigration = () =>
+  api<{ ok: boolean; phase: MigrationPhase; message: string }>('api/migration/switch', {
+    method: 'POST',
+  })
+
+export const decommissionMigration = (force = false) =>
+  api<{ ok: boolean; phase: MigrationPhase; message: string }>(
+    `api/migration/decommission${force ? '?force=true' : ''}`,
+    { method: 'POST' },
+  )
+
+export const rollbackMigration = () =>
+  api<{ ok: boolean; phase: MigrationPhase; message: string }>('api/migration/rollback', {
+    method: 'POST',
+  })
+
+export const getBackupHealth = () => api<BackupHealthView>('api/migration/backup-status')
+
+export const runTrialRestore = () =>
+  api<TrialRestoreReport>('api/migration/trial-restore', { method: 'POST' })
+

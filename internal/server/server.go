@@ -23,7 +23,9 @@ import (
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/core"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/decoy"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/migration"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/version"
 	webui "github.com/Shu1t3/rospanel-shu1t3/web"
 )
 
@@ -277,6 +279,45 @@ func (rt *Router) currentDecoy() http.Handler {
 // anything else falls through to the decoy.
 func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	seg, rest := firstSegment(r.URL.Path)
+
+	if seg == "migration" {
+		leaf, _ := firstSegment(rest)
+		switch leaf {
+		case "apply-snapshot":
+			rt.handleCandidateApplySnapshot(w, r)
+			return
+		case "promote":
+			rt.handleCandidatePromote(w, r)
+			return
+		case "health":
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status":  "candidate_ready",
+				"version": version.Version,
+			})
+			return
+		}
+	}
+
+	if rt.mgr.IsFenced() && (r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodDelete || r.Method == http.MethodPatch) {
+		if !strings.Contains(r.URL.Path, "/api/migration/") {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"server_fenced","message":"сервер заблокирован для завершения переезда (fencing active)"}`))
+			return
+		}
+	}
+
+	if coord := rt.mgr.MigrationCoordinator(); coord != nil {
+		sess := coord.StateManager().GetSession()
+		if sess.Role == migration.RoleStandby && sess.PublicDomain != "" {
+			if !strings.Contains(r.URL.Path, "/api/migration/") {
+				if sc, err := migration.NewStandbyController(coord.StateManager(), "https://"+sess.PublicDomain); err == nil {
+					sc.ServeHTTP(w, r)
+					return
+				}
+			}
+		}
+	}
 
 	rt.mu.RLock()
 	secret, decoy, subPath, paySecret, apiPath, nodePath := rt.secret, rt.decoy, rt.subPath, rt.paySecret, rt.apiPath, rt.nodePath

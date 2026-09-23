@@ -398,6 +398,8 @@ type Manager struct {
 	// refreshes it and the subscription path reads it (see manager_node_traffic.go).
 	nodeTraffic nodeTrafficCache
 	nodeAlerts  map[int64]*nodeAlertState
+
+	migration migrationState
 }
 
 // nodeLogEntry is a node's last-reported log tail.
