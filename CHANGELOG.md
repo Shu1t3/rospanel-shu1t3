@@ -5,7 +5,18 @@
 
 ### Bug Fixes
 
-* **release:** include pending migration corrections in patch release ([1d3e768](https://github.com/Shu1t3/rospanel-shu1t3/commit/1d3e7689048b5a332065dbbe5d2549384d068b7d))
+* **migration:** run the candidate as a persistent HTTPS service on its configured technical address and pin its TLS certificate for health checks and snapshot transfer ([ada8311](https://github.com/Shu1t3/rospanel-shu1t3/commit/ada831165f6a38b675607ffe067c92b4c666297c))
+* **migration tests:** close the response body when a TLS pin check unexpectedly returns a response ([512095a](https://github.com/Shu1t3/rospanel-shu1t3/commit/512095aad2ca40d970347fe403dc47b72396a4c4))
+
+
+### Documentation
+
+* Condense the Russian README, remove the English copy, and correct the master migration guide and recovery commands ([ada8311](https://github.com/Shu1t3/rospanel-shu1t3/commit/ada831165f6a38b675607ffe067c92b4c666297c))
+
+
+### Release Process
+
+* Clarify the Conventional Commit requirement for release generation ([1d3e768](https://github.com/Shu1t3/rospanel-shu1t3/commit/1d3e7689048b5a332065dbbe5d2549384d068b7d))
 
 ## [3.6.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v3.5.0...v3.6.0) (2026-09-23)
 
