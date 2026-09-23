@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.6.2](https://github.com/Shu1t3/rospanel-shu1t3/compare/v3.6.1...v3.6.2) (2026-09-23)
+
+
+### Bug Fixes
+
+* **migration:** proxy standby node sync before fencing ([20bca94](https://github.com/Shu1t3/rospanel-shu1t3/commit/20bca94803557da341697932e8e94d23979339cd))
+
 ## [3.6.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v3.6.0...v3.6.1) (2026-09-23)
 
 
