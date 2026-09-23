@@ -6,6 +6,9 @@
   - **What changed:** specific files/modules and technical changes.
   - **Why:** problem solved or architectural motivation.
   - **Performance impact:** benchmarks, latency, memory allocations, or CPU savings where applicable.
+- Verify the final commit subject on `main`, including squash merges: release-please
+  reads commit messages, not pull request titles. A non-conventional subject is
+  ignored when it builds a release PR.
 
 ## 2. Changelog Maintenance & Release PRs
 - `release-please` extracts the commit header by default.
@@ -14,3 +17,6 @@
   - Commit SHA and link.
   - Comprehensive technical description of features, bug fixes, or optimizations.
   - Impact on performance, architecture, or breaking changes.
+- If a merged commit was ignored because of its subject, include its changes in
+  the next real Conventional Commit's release notes. Do not rewrite published
+  `main` history solely to change a commit message.
