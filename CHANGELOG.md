@@ -1,5 +1,22 @@
 # Changelog
 
+## [3.6.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v3.5.0...v3.6.0) (2026-09-23)
+
+
+### Features
+
+* **migration:** implement master node migration and disaster recovery system ([fb04f45](https://github.com/Shu1t3/rospanel-shu1t3/commit/fb04f454f32fee8aa70a2db8e4c21e86637fddfb))
+
+
+### Bug Fixes
+
+* **migration:** resolve staticcheck deprecation and package comment lint warnings ([a311fd6](https://github.com/Shu1t3/rospanel-shu1t3/commit/a311fd635b7f0a544a8cff44461872cf70d738ac))
+
+
+### Refactoring
+
+* **core:** decouple Manager from migration coordinator ([580acc2](https://github.com/Shu1t3/rospanel-shu1t3/commit/580acc25458f2186535962a99c713b7115c7b41b))
+
 ## [3.5.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v3.4.3...v3.5.0) (2026-09-22)
 
 
