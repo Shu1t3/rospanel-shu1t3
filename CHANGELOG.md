@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.6.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v3.6.0...v3.6.1) (2026-09-23)
+
+
+### Bug Fixes
+
+* **release:** include pending migration corrections in patch release ([1d3e768](https://github.com/Shu1t3/rospanel-shu1t3/commit/1d3e7689048b5a332065dbbe5d2549384d068b7d))
+
 ## [3.6.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v3.5.0...v3.6.0) (2026-09-23)
 
 
