@@ -13,7 +13,7 @@ import (
 func TestMigrationEndpointsAndFencing(t *testing.T) {
 	rt, st := rolesTestRouter(t)
 	// Initialize migration coordinator
-	if err := rt.mgr.InitMigration(rt.dataDir); err != nil {
+	if err := rt.InitMigration(rt.dataDir); err != nil {
 		t.Fatalf("InitMigration: %v", err)
 	}
 

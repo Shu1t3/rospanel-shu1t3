@@ -26,6 +26,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/geo"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/h2fix"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/http80"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/migration"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/netinfo"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/proxyproto"
@@ -202,12 +203,9 @@ func runServer(dataDir string) {
 		filepath.Join(dataDir, "opera"))
 	sup.SetOnAccess(mgr.RecordLocalAccess) // track online status + connection IPs
 	mgr.StartSysstat(dataDir)              // host metrics for the dashboard
-	if err := mgr.InitMigration(dataDir); err != nil {
-		log.Printf("migration init: %v", err)
-	}
 	isStandby := false
-	if coord := mgr.MigrationCoordinator(); coord != nil {
-		if coord.StateManager().GetSession().Role == "standby" {
+	if sm, err := migration.NewStateManager(dataDir); err == nil {
+		if sm.GetSession().Role == migration.RoleStandby {
 			isStandby = true
 			log.Print("service: server running in STANDBY role (control plane proxied, background tasks paused)")
 		}

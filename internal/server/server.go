@@ -88,6 +88,7 @@ type Router struct {
 	probeDetect bool         // record IPs that scan for the hidden panel path
 	spaIndex    []byte       // index.html with <base href> injected for the secret
 	decoy       http.Handler // current decoy template handler
+	coord       *migration.Coordinator
 }
 
 // New builds the masquerade router for the given secret path and decoy template.
@@ -152,6 +153,7 @@ func New(mgr *core.Manager, secret, decoyTemplate, dataDir string) (http.Handler
 		maintDecoy:  maintDecoy,
 		probeDetect: probeDetect,
 	}
+	_ = rt.InitMigration(dataDir)
 	// The router live-swaps the node-API segment in when the first node is created.
 	mgr.SetNodeAPIPathCallback(rt.setNodePath)
 	// The external API surface. The /v1 mux is wrapped with per-key
@@ -307,7 +309,7 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if coord := rt.mgr.MigrationCoordinator(); coord != nil {
+	if coord := rt.coord; coord != nil {
 		sess := coord.StateManager().GetSession()
 		if sess.Role == migration.RoleStandby && sess.PublicDomain != "" {
 			if !strings.Contains(r.URL.Path, "/api/migration/") {

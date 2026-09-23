@@ -399,7 +399,7 @@ type Manager struct {
 	nodeTraffic nodeTrafficCache
 	nodeAlerts  map[int64]*nodeAlertState
 
-	migration migrationState
+	fenced atomic.Bool
 }
 
 // nodeLogEntry is a node's last-reported log tail.

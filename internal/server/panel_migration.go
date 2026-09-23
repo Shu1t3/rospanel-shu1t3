@@ -28,8 +28,26 @@ type startMigrationResp struct {
 	Phase      string `json:"phase"`
 }
 
+// InitMigration initializes the migration coordinator for the router.
+func (rt *Router) InitMigration(dataDir string) error {
+	coord, err := migration.NewCoordinator(dataDir, rt.mgr.Store())
+	if err != nil {
+		return err
+	}
+	rt.coord = coord
+	if coord.StateManager().IsFenced() {
+		rt.mgr.SetFenced(true)
+	}
+	return nil
+}
+
+// MigrationCoordinator returns the active migration coordinator (may be nil).
+func (rt *Router) MigrationCoordinator() *migration.Coordinator {
+	return rt.coord
+}
+
 func (rt *Router) handleMigrationStatus(w http.ResponseWriter, r *http.Request) {
-	coord := rt.mgr.MigrationCoordinator()
+	coord := rt.MigrationCoordinator()
 	if coord == nil {
 		writeErr(w, http.StatusInternalServerError, "координатор миграции не инициализирован")
 		return
@@ -39,7 +57,7 @@ func (rt *Router) handleMigrationStatus(w http.ResponseWriter, r *http.Request) 
 }
 
 func (rt *Router) handleMigrationStart(w http.ResponseWriter, r *http.Request) {
-	coord := rt.mgr.MigrationCoordinator()
+	coord := rt.MigrationCoordinator()
 	if coord == nil {
 		writeErr(w, http.StatusInternalServerError, "координатор миграции не инициализирован")
 		return
@@ -89,7 +107,7 @@ func (rt *Router) handleMigrationStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (rt *Router) handleMigrationVerify(w http.ResponseWriter, r *http.Request) {
-	coord := rt.mgr.MigrationCoordinator()
+	coord := rt.MigrationCoordinator()
 	if coord == nil {
 		writeErr(w, http.StatusInternalServerError, "координатор миграции не инициализирован")
 		return
@@ -111,7 +129,7 @@ func (rt *Router) handleMigrationVerify(w http.ResponseWriter, r *http.Request) 
 }
 
 func (rt *Router) handleMigrationSwitch(w http.ResponseWriter, r *http.Request) {
-	coord := rt.mgr.MigrationCoordinator()
+	coord := rt.MigrationCoordinator()
 	if coord == nil {
 		writeErr(w, http.StatusInternalServerError, "координатор миграции не инициализирован")
 		return
@@ -146,7 +164,7 @@ func (rt *Router) handleMigrationSwitch(w http.ResponseWriter, r *http.Request) 
 }
 
 func (rt *Router) handleMigrationDecommission(w http.ResponseWriter, r *http.Request) {
-	coord := rt.mgr.MigrationCoordinator()
+	coord := rt.MigrationCoordinator()
 	if coord == nil {
 		writeErr(w, http.StatusInternalServerError, "координатор миграции не инициализирован")
 		return
@@ -178,7 +196,7 @@ func (rt *Router) handleMigrationDecommission(w http.ResponseWriter, r *http.Req
 }
 
 func (rt *Router) handleMigrationRollback(w http.ResponseWriter, r *http.Request) {
-	coord := rt.mgr.MigrationCoordinator()
+	coord := rt.MigrationCoordinator()
 	if coord == nil {
 		writeErr(w, http.StatusInternalServerError, "координатор миграции не инициализирован")
 		return
@@ -303,7 +321,7 @@ func (rt *Router) handleCandidatePromote(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Set role to Master on candidate
-	if coord := rt.mgr.MigrationCoordinator(); coord != nil {
+	if coord := rt.MigrationCoordinator(); coord != nil {
 		_ = coord.StateManager().SetRole(migration.RoleMaster)
 		_ = coord.StateManager().SetPhase(migration.PhaseCompleted)
 	}
