@@ -22,7 +22,11 @@ func TestCheckpointRejectsBusyWAL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reader.Rollback()
+	defer func() {
+		if err := reader.Rollback(); err != nil {
+			t.Errorf("rollback reader: %v", err)
+		}
+	}()
 	var count int
 	if err := reader.QueryRow(`SELECT count(*) FROM settings`).Scan(&count); err != nil {
 		t.Fatal(err)
