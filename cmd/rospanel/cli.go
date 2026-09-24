@@ -78,10 +78,17 @@ func runBackup(dataDir string, args []string) {
 	if len(args) > 0 {
 		out = args[0]
 	}
-	if err := backup.Create(dataDir, out); err != nil {
+	if err := createLiveBackup(dataDir, out); err != nil {
 		log.Fatalf("backup failed: %v", err)
 	}
 	log.Printf("backup written: %s", out)
+}
+
+func createLiveBackup(dataDir, out string) error {
+	if err := store.CheckpointFile(filepath.Join(dataDir, "rospanel.db")); err != nil {
+		return err
+	}
+	return backup.Create(dataDir, out)
 }
 
 func runRestore(dataDir string, args []string) {
@@ -479,7 +486,7 @@ func runUpdate(args []string) {
 	fmt.Println("Downloading and installing…")
 	dataDir := resolveDataDir()
 	backupFn := func() error {
-		return backup.Create(dataDir, filepath.Join(dataDir, "pre-update-backup.tgz"))
+		return createLiveBackup(dataDir, filepath.Join(dataDir, "pre-update-backup.tgz"))
 	}
 	if err := updater.Apply(ctx, rel, backupFn); err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)

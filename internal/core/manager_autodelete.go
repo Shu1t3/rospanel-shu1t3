@@ -17,10 +17,18 @@ const autoDeleteMaxDays = 365
 // deleted. 0 disables deletion entirely. The admin-audit row for the change is
 // written by the HTTP layer (see server/audit.go), like every other setting.
 func (m *Manager) SetUserAutoDelete(days int) error {
+	if err := ValidateUserAutoDelete(days); err != nil {
+		return err
+	}
+	return m.store.SetUserAutoDeleteDays(days)
+}
+
+// ValidateUserAutoDelete checks the value without changing the running panel.
+func ValidateUserAutoDelete(days int) error {
 	if days < 0 || days > autoDeleteMaxDays {
 		return invalidCode("err.autodeleteRange", "срок хранения истёкших: от 0 (не удалять) до {{max}} дней", map[string]any{"max": autoDeleteMaxDays})
 	}
-	return m.store.SetUserAutoDeleteDays(days)
+	return nil
 }
 
 // PurgeExpiredUsers deletes users whose expiry date is further in the past than the

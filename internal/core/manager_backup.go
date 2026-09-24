@@ -20,6 +20,14 @@ const maxBackupKeep = 90
 // were due" — so a typo would silently mean no backups at all until the day someone
 // needed one.
 func (m *Manager) SaveLocalBackup(expr string, keep int) error {
+	if err := ValidateLocalBackup(expr, keep); err != nil {
+		return err
+	}
+	return m.store.SetLocalBackup(strings.TrimSpace(expr), keep)
+}
+
+// ValidateLocalBackup checks a backup schedule without persisting it.
+func ValidateLocalBackup(expr string, keep int) error {
 	expr = strings.TrimSpace(expr)
 	if expr != "" {
 		if _, err := cron.Parse(expr); err != nil {
@@ -29,5 +37,5 @@ func (m *Manager) SaveLocalBackup(expr string, keep int) error {
 	if keep < 0 || keep > maxBackupKeep {
 		return invalidCode("err.backupKeepRange", "число хранимых копий должно быть от 0 до {{max}} (0 — хранить все)", map[string]any{"max": maxBackupKeep})
 	}
-	return m.store.SetLocalBackup(expr, keep)
+	return nil
 }

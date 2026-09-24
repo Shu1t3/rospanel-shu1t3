@@ -62,7 +62,9 @@ func (rt *Router) applyUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	backupFn := func() error {
-		_ = rt.mgr.Store().Checkpoint() // flush WAL so the snapshot is current
+		if err := rt.mgr.Store().Checkpoint(); err != nil {
+			return err
+		}
 		return backup.Create(rt.dataDir, filepath.Join(rt.dataDir, "pre-update-backup.tgz"))
 	}
 	// context.Background(): the download must outlive the HTTP request.

@@ -585,6 +585,55 @@ func TestAPIServerRoutingRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAPISettingsInvalidLaterFieldDoesNotApplyDNS(t *testing.T) {
+	rt, st := apiTestRouter(t)
+	before, err := st.GetSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _ := apiCall(t, rt, "PATCH", "/v1/settings", `{"xray_dns":"1.1.1.1","device_count_mode":"invalid"}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("PATCH status = %d, want 400", code)
+	}
+	after, err := st.GetSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.XrayDNS != before.XrayDNS {
+		t.Fatalf("DNS changed after rejected patch: %q -> %q", before.XrayDNS, after.XrayDNS)
+	}
+	code, _ = apiCall(t, rt, "PATCH", "/v1/settings", `{"xray_dns":"1.1.1.1","local_backup_cron":"invalid"}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("PATCH with invalid cron status = %d, want 400", code)
+	}
+	after, err = st.GetSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.XrayDNS != before.XrayDNS {
+		t.Fatalf("DNS changed after rejected cron: %q -> %q", before.XrayDNS, after.XrayDNS)
+	}
+}
+
+func TestAPIRoutingInvalidLaterFieldDoesNotApplyDNS(t *testing.T) {
+	rt, st := apiTestRouter(t)
+	before, err := st.GetSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _ := apiCall(t, rt, "POST", "/v1/servers/0/routing", `{"xray_dns":"1.1.1.1","routing":{"lanes":[{"name":"invalid lane"}]}}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("POST status = %d, want 400", code)
+	}
+	after, err := st.GetSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.XrayDNS != before.XrayDNS {
+		t.Fatalf("DNS changed after rejected routing: %q -> %q", before.XrayDNS, after.XrayDNS)
+	}
+}
+
 // The node branch is a different code path — it carries the rest of the node row through
 // store.NodeEdit, and a field forgotten there is silently zeroed. Server 0 exercises none
 // of it, which is why this case exists.

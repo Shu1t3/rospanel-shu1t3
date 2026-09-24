@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   type AdminAudit,
@@ -225,17 +225,29 @@ export function AdminAuditPanel() {
     }),
     [category, debounced, from, to],
   );
+  const filterRef = useRef(filter);
+  const requestGeneration = useRef(0);
+  filterRef.current = filter;
 
   // Refetch from the top whenever any part of the filter changes.
   const load = useCallback(() => {
+    const generation = ++requestGeneration.current;
     setLoading(true);
+    setMore(false);
+    setEvents([]);
+    setNext(0);
     listAdminAudit({ ...filter, limit: PAGE })
       .then((p) => {
+        if (generation !== requestGeneration.current || filterRef.current !== filter) return;
         setEvents(p.events);
         setNext(p.next_before);
       })
-      .catch((e) => notifyError(errMessage(e)))
-      .finally(() => setLoading(false));
+      .catch((e) => {
+        if (generation === requestGeneration.current && filterRef.current === filter) notifyError(errMessage(e));
+      })
+      .finally(() => {
+        if (generation === requestGeneration.current && filterRef.current === filter) setLoading(false);
+      });
   }, [filter]);
 
   useEffect(() => {
@@ -244,14 +256,20 @@ export function AdminAuditPanel() {
 
   const loadMore = () => {
     if (!next) return;
+    const generation = requestGeneration.current;
     setMore(true);
     listAdminAudit({ ...filter, before: next, limit: PAGE })
       .then((p) => {
+        if (generation !== requestGeneration.current || filterRef.current !== filter) return;
         setEvents((prev) => [...prev, ...p.events]);
         setNext(p.next_before);
       })
-      .catch((e) => notifyError(errMessage(e)))
-      .finally(() => setMore(false));
+      .catch((e) => {
+        if (generation === requestGeneration.current && filterRef.current === filter) notifyError(errMessage(e));
+      })
+      .finally(() => {
+        if (generation === requestGeneration.current && filterRef.current === filter) setMore(false);
+      });
   };
 
   return (

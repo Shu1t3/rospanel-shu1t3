@@ -82,37 +82,56 @@ func dbHasEncryptedSecrets(dbPath string) (bool, error) {
 		return false, err
 	}
 	defer db.Close()
-	// Every encrypted column belongs here, not just the ones an install usually has.
-	// This is the guard that tells "no key yet, fresh install" apart from "the key is
-	// gone" — miss a column and an install configured with only that one secret looks
-	// fresh, so a new key is minted and the old ciphertext becomes unreadable for
-	// good. tg_support_bot_token was exactly that case.
-	checks := []string{
-		`SELECT tg_bot_token FROM settings WHERE id = 1`,
-		`SELECT tg_user_bot_token FROM settings WHERE id = 1`,
-		`SELECT tg_support_bot_token FROM settings WHERE id = 1`,
-		`SELECT reality_private_key FROM settings WHERE id = 1`,
-		`SELECT warp_private_key FROM settings WHERE id = 1`,
-		`SELECT proxy_accounts FROM settings WHERE proxy_accounts LIKE '%enc:v1:%' AND id = 1`,
-		`SELECT zerossl_eab_hmac FROM settings WHERE id = 1`,
-		`SELECT password FROM users WHERE password LIKE 'enc:v1:%' LIMIT 1`,
-		`SELECT reality_private_key FROM nodes WHERE reality_private_key LIKE 'enc:v1:%' LIMIT 1`,
-		`SELECT warp_private_key FROM nodes WHERE warp_private_key LIKE 'enc:v1:%' LIMIT 1`,
-		`SELECT zerossl_eab_hmac FROM nodes WHERE zerossl_eab_hmac LIKE 'enc:v1:%' LIMIT 1`,
-		`SELECT proxy_accounts FROM nodes WHERE proxy_accounts LIKE '%enc:v1:%' LIMIT 1`,
-		`SELECT totp_secret FROM admins WHERE totp_secret LIKE 'enc:v1:%' LIMIT 1`,
+	// Older databases may lack later tables or columns. Discover those before
+	// querying, but fail closed on any actual read error: an unreadable database
+	// cannot establish that it is safe to create a replacement key.
+	checks := map[string][]string{
+		"settings":          {"tg_bot_token", "tg_user_bot_token", "tg_support_bot_token", "tg_proxy", "reality_private_key", "warp_private_key", "awg_private_key", "proxy_accounts", "zerossl_eab_hmac"},
+		"users":             {"password", "wg_private_key"},
+		"nodes":             {"reality_private_key", "warp_private_key", "awg_private_key", "zerossl_eab_hmac", "proxy_accounts"},
+		"admins":            {"totp_secret", "totp_pending"},
+		"payment_providers": {"config"},
+		"webhooks":          {"secret"},
+		"ext_subscriptions": {"source"},
+		"ext_servers":       {"link"},
+		"inbounds":          {"opts"},
+		"config_snapshots":  {"routing_json"},
 	}
-	for _, q := range checks {
-		var v string
-		if err := db.QueryRow(q).Scan(&v); err != nil {
-			continue
+	for table, cols := range checks {
+		rows, err := db.Query("PRAGMA table_info(" + table + ")")
+		if err != nil {
+			return false, fmt.Errorf("inspect %s: %w", table, err)
 		}
-		// Contains, not HasPrefix: most of these columns ARE one ciphertext, but
-		// proxy_accounts is a JSON array whose passwords each carry the envelope, so
-		// there the marker sits inside the value. The question this guard asks is
-		// "does anything stored here need the key", and that is true either way.
-		if strings.Contains(v, encPrefix) {
-			return true, nil
+		present := make(map[string]bool)
+		for rows.Next() {
+			var cid, notNull, pk int
+			var name, typ string
+			var defaultValue sql.NullString
+			if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+				rows.Close()
+				return false, fmt.Errorf("inspect %s: %w", table, err)
+			}
+			present[name] = true
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return false, fmt.Errorf("inspect %s: %w", table, err)
+		}
+		if err := rows.Close(); err != nil {
+			return false, err
+		}
+		for _, col := range cols {
+			if !present[col] {
+				continue
+			}
+			var found int
+			err := db.QueryRow("SELECT 1 FROM "+table+" WHERE instr("+col+", ?) > 0 LIMIT 1", encPrefix).Scan(&found)
+			if err == nil {
+				return true, nil
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return false, fmt.Errorf("check %s.%s: %w", table, col, err)
+			}
 		}
 	}
 	return false, nil

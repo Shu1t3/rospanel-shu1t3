@@ -44,6 +44,17 @@ func TestWriteLocalCreatesArchive(t *testing.T) {
 	}
 }
 
+func TestWriteLocalStopsOnCheckpointFailure(t *testing.T) {
+	dir := seedDataDir(t)
+	_, err := WriteLocal(dir, Manifest{}, func() error { return os.ErrDeadlineExceeded }, time.Now())
+	if err == nil {
+		t.Fatal("backup succeeded after checkpoint failure")
+	}
+	if names, err := ListLocal(dir); err != nil || len(names) != 0 {
+		t.Fatalf("archives after checkpoint failure = %v, %v", names, err)
+	}
+}
+
 // The archive must not contain previous archives, or each backup nests the last one
 // and the directory grows geometrically.
 func TestWriteLocalExcludesTheBackupDir(t *testing.T) {

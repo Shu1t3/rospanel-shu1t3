@@ -122,6 +122,8 @@ func (rt *Router) apiBackup(w http.ResponseWriter, _ *http.Request) {
 	// Flush the WAL into the .db file first so the archived database is complete.
 	if err := rt.mgr.Store().Checkpoint(); err != nil {
 		log.Printf("api backup: checkpoint: %v", err)
+		writeAPIManagerErr(w, err)
+		return
 	}
 	w.Header().Set("Content-Type", "application/gzip")
 	w.Header().Set("Content-Disposition", `attachment; filename="rospanel-backup.tar.gz"`)

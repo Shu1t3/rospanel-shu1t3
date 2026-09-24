@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-
 	_ "modernc.org/sqlite"
 )
 
@@ -49,7 +48,6 @@ func (s *Store) withTx(fn func(tx *sql.Tx) error) error {
 	}
 	return tx.Commit()
 }
-
 
 // ErrCorrupt reports a database file that exists but SQLite cannot use: a torn
 // page, a truncated header ("file is not a database"), or a failed integrity
@@ -279,8 +277,29 @@ func InspectDB(path string) (users, admins int, secret string, err error) {
 // Without this a live backup would copy a near-empty .db with everything still in
 // the uncheckpointed .db-wal (which backups intentionally exclude).
 func (s *Store) Checkpoint() error {
-	_, err := s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
-	return err
+	return checkpoint(s.db)
+}
+
+// CheckpointFile flushes a running panel's database before a standalone CLI
+// backup. It opens the database without running migrations or changing settings.
+func CheckpointFile(path string) error {
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=rw&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return checkpoint(db)
+}
+
+func checkpoint(db *sql.DB) error {
+	var busy, logFrames, checkpointedFrames int
+	if err := db.QueryRow(`PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &logFrames, &checkpointedFrames); err != nil {
+		return err
+	}
+	if busy != 0 || checkpointedFrames < logFrames {
+		return fmt.Errorf("incomplete WAL checkpoint: busy=%d, log=%d, checkpointed=%d", busy, logFrames, checkpointedFrames)
+	}
+	return nil
 }
 
 // boolToInt maps a Go bool to SQLite's 0/1 integer representation.

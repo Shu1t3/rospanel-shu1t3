@@ -375,41 +375,62 @@ func (m *Manager) ListRegistrationRequests() ([]model.RegistrationRequest, error
 	return m.store.ListRegistrationRequests()
 }
 
-// ApproveRegistrationRequest turns a pending request into a real (active) user: it
-// creates the account, links the applicant's chat, drops the request and notifies
-// them. The request is claimed atomically first, so concurrent approvals (or an
-// approve racing a reject) resolve to a single winner — no duplicate account.
+// ApproveRegistrationRequest turns a pending request into an active user. The
+// account, plan, chat link and request decision commit together.
 func (m *Manager) ApproveRegistrationRequest(ctx context.Context, reqID int64) error {
 	req, err := m.store.GetRegistrationRequest(reqID)
 	if err != nil {
 		return invalidCode("err.requestNotFound", "заявка не найдена")
 	}
-	claimed, err := m.store.ClaimRegistrationRequest(reqID)
+	name, err := cleanUserName(truncateName(req.Name))
+	if err != nil {
+		return err
+	}
+	password, err := auth.RandomPassword()
+	if err != nil {
+		return err
+	}
+	subToken, err := auth.RandomToken()
+	if err != nil {
+		return err
+	}
+	in := store.RegistrationUser{Name: name, UUID: uuid.NewString(), Password: password, SubToken: subToken}
+	set, err := m.Settings()
+	if err != nil {
+		return err
+	}
+	if set.BillingEnabled {
+		now := time.Now().Unix()
+		if set.BillingTrialPlanID > 0 {
+			plan, planErr := m.store.GetTariffPlan(set.BillingTrialPlanID)
+			if planErr == nil && plan != nil && plan.PeriodDays > 0 {
+				w := planLimits(0, plan, now+int64(plan.PeriodDays)*86400, false, now)
+				w.TrialUsed = true
+				in.Plan = &w
+			}
+		}
+		if in.Plan == nil && set.BillingFreePlanID > 0 {
+			plan, planErr := m.store.GetTariffPlan(set.BillingFreePlanID)
+			if planErr == nil && plan != nil {
+				w := planLimits(0, plan, 0, plan.IsFree(), now)
+				in.Plan = &w
+			}
+		}
+	}
+	u, claimed, alreadyLinked, err := m.store.ApproveRegistrationRequest(reqID, in)
 	if err != nil {
 		return err
 	}
 	if !claimed {
-		return nil // another admin already decided this request
+		return nil
 	}
-	// If the chat got linked to an account in the meantime (e.g. via a panel link
-	// code), don't mint a duplicate — just let the applicant know they're set.
-	if existing, _ := m.store.GetUserByTelegramChatID(req.ChatID); existing != nil {
+	if alreadyLinked {
 		m.notifyRegistrationDecision(req.ChatID, "notify.regAlreadyLinked")
 		return nil
 	}
-	u, err := m.createRegisteredUser(req.Name)
-	if err != nil {
-		// Creation failed after the request was claimed — put the request back so it's
-		// retryable instead of vanishing (the applicant keeps waiting otherwise).
-		_, _ = m.store.CreateRegistrationRequest(req.ChatID, req.Name, req.CreatedAt)
-		return err
-	}
-	if err := m.store.SetUserTelegramChat(u.ID, req.ChatID); err != nil {
-		// Account created but the chat couldn't be linked: drop the orphan and restore
-		// the request rather than leave an unreachable active account behind.
-		_ = m.store.DeleteUser(u.ID)
-		_, _ = m.store.CreateRegistrationRequest(req.ChatID, req.Name, req.CreatedAt)
-		return err
+	m.TriggerUserSync()
+	if in.Plan == nil {
+		m.EmitWebhook(model.WebhookUserCreated, userEventData(*u))
 	}
 	plan := m.PlanName(u.PlanID)
 	m.audit(ctx, u.ID, model.EventUserRegistered, map[string]any{"plan": plan, "moderation": true})

@@ -28,7 +28,18 @@ func (s *Store) sessionPepper() (string, error) {
 		return "", err
 	}
 	pepper = hex.EncodeToString(b)
-	_, err = s.db.Exec(`UPDATE settings SET session_pepper = ? WHERE id = 1`, pepper)
+	res, err := s.db.Exec(`UPDATE settings SET session_pepper = ? WHERE id = 1 AND session_pepper = ''`, pepper)
+	if err != nil {
+		return "", err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return "", err
+	} else if n == 1 {
+		return pepper, nil
+	}
+	// Another request installed the pepper after our read. Hash with its value,
+	// never with a candidate that was not committed.
+	err = s.db.QueryRow(`SELECT session_pepper FROM settings WHERE id = 1`).Scan(&pepper)
 	return pepper, err
 }
 

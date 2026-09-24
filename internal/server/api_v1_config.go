@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Shu1t3/rospanel-shu1t3/internal/core"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/decoy"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
@@ -150,6 +151,38 @@ func (rt *Router) apiPatchSettings(w http.ResponseWriter, r *http.Request) {
 	if req.SubOrderMode != nil && !model.ValidOrderMode(*req.SubOrderMode) {
 		writeAPIErr(w, http.StatusBadRequest, "bad_request", "unknown sub_order_mode")
 		return
+	}
+	if req.DeviceCountMode != nil {
+		switch *req.DeviceCountMode {
+		case model.DeviceCountAuto, model.DeviceCountHWID, model.DeviceCountBoth:
+		default:
+			writeAPIErr(w, http.StatusBadRequest, "bad_request", "unknown device_count_mode")
+			return
+		}
+	}
+	if req.UserAutoDeleteDays != nil {
+		if err := core.ValidateUserAutoDelete(*req.UserAutoDeleteDays); err != nil {
+			writeAPIManagerErr(w, err)
+			return
+		}
+	}
+	if req.LocalBackupCron != nil || req.LocalBackupKeep != nil {
+		set, err := rt.mgr.Settings()
+		if err != nil {
+			writeAPIManagerErr(w, err)
+			return
+		}
+		cron, keep := set.LocalBackupCron, set.LocalBackupKeep
+		if req.LocalBackupCron != nil {
+			cron = *req.LocalBackupCron
+		}
+		if req.LocalBackupKeep != nil {
+			keep = *req.LocalBackupKeep
+		}
+		if err := core.ValidateLocalBackup(cron, keep); err != nil {
+			writeAPIManagerErr(w, err)
+			return
+		}
 	}
 	if req.TrustedNets != nil {
 		if _, err := model.NormalizeTrustedNets(*req.TrustedNets); err != nil {
@@ -411,6 +444,14 @@ func (rt *Router) apiSetServerRouting(w http.ResponseWriter, r *http.Request, id
 	}
 
 	if id == model.LocalNodeID {
+		// Reject invalid routing before SetXrayDNS can persist the first half of
+		// this request. ApplyRouting repeats this validation for other callers.
+		validated := routing
+		validated.MigrateLanes()
+		if err := validated.ValidateLanes(); err != nil {
+			writeAPIManagerErr(w, err)
+			return
+		}
 		// The master keeps its routing in the settings singleton and its DNS is the
 		// global one — the same two calls the panel's routing screen makes. DNS is
 		// applied FIRST so a rejected value (see Manager.SetXrayDNS) fails before any

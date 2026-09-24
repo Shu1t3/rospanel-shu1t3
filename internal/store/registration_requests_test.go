@@ -53,3 +53,34 @@ func TestClaimRegistrationRequest(t *testing.T) {
 		t.Fatal("request must be gone after a claim")
 	}
 }
+
+func TestApproveRegistrationRequestRollsBackOnPlanFailure(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "approval.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	req, err := s.CreateRegistrationRequest(42, "Петя", 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	badPlan := UserPlanWrite{GroupIDs: []int64{999999}}
+	in := RegistrationUser{Name: req.Name, UUID: "approval-uuid", Password: "password", SubToken: "approval-token", Plan: &badPlan}
+	if _, _, _, err := s.ApproveRegistrationRequest(req.ID, in); err == nil {
+		t.Fatal("expected invalid plan group to fail")
+	}
+	if pending, err := s.GetRegistrationRequest(req.ID); err != nil || pending == nil {
+		t.Fatalf("request lost after rollback: %v", err)
+	}
+	if users, err := s.ListUsers(); err != nil || len(users) != 0 {
+		t.Fatalf("orphan user after rollback: users=%d err=%v", len(users), err)
+	}
+	in.Plan = nil
+	u, claimed, linked, err := s.ApproveRegistrationRequest(req.ID, in)
+	if err != nil || !claimed || linked || u == nil || u.TgChatID != 42 {
+		t.Fatalf("retry failed: user=%+v claimed=%v linked=%v err=%v", u, claimed, linked, err)
+	}
+	if pending, _ := s.GetRegistrationRequestByChat(42); pending != nil {
+		t.Fatal("request still pending after approval")
+	}
+}

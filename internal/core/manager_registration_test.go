@@ -85,6 +85,24 @@ func TestModerationRegistrationFlow(t *testing.T) {
 	}
 }
 
+func TestModerationApprovalAssignsTrialInSameDecision(t *testing.T) {
+	m, st, _, trial := designatedFixture(t)
+	req, err := st.CreateRegistrationRequest(8123, "Trial applicant", 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ApproveRegistrationRequest(context.Background(), req.ID); err != nil {
+		t.Fatal(err)
+	}
+	u, err := st.GetUserByTelegramChatID(8123)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.PlanID != trial.ID || !u.TrialUsed || u.ExpireAt == 0 {
+		t.Fatalf("approved user lost trial: %+v", u)
+	}
+}
+
 // TestRegModeHelpers checks the mode fallback and derived predicates.
 func TestRegModeHelpers(t *testing.T) {
 	t.Parallel()

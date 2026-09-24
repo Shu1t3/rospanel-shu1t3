@@ -75,7 +75,9 @@ func (s *Service) runScheduledBackup(ctx context.Context, set *model.Settings, c
 func SendBackup(ctx context.Context, client *Client, chats []int64, dataDir string,
 	manifest backup.Manifest, checkpoint func() error, caption string) error {
 	if checkpoint != nil {
-		_ = checkpoint() // flush WAL so the archived DB is complete (best-effort)
+		if err := checkpoint(); err != nil {
+			return err
+		}
 	}
 	tmp, err := os.CreateTemp("", "rospanel-tg-*.tar.gz")
 	if err != nil {

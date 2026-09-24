@@ -78,6 +78,7 @@ export function ValidationNote({
 // <RestoreWaiting/>).
 export function useRestore() {
   const fileRef = useRef<HTMLInputElement>(null);
+  const inspectionGeneration = useRef(0);
   const [file, setFile] = useState<File | null>(null);
   const [inspection, setInspection] = useState<BackupInspection | null>(null);
   const [inspecting, setInspecting] = useState(false);
@@ -87,16 +88,22 @@ export function useRestore() {
   // pick inspects the chosen file: it previews the manifest and validates that
   // the embedded database is real and non-empty before the destructive restore.
   const pick = async (f: File | null) => {
+    const generation = ++inspectionGeneration.current;
     setFile(f);
     setInspection(null);
-    if (!f) return;
+    if (!f) {
+      setInspecting(false);
+      if (fileRef.current) fileRef.current.value = "";
+      return;
+    }
     setInspecting(true);
     try {
-      setInspection(await inspectBackup(f));
+      const result = await inspectBackup(f);
+      if (generation === inspectionGeneration.current) setInspection(result);
     } catch (e) {
-      notifyError(errMessage(e));
+      if (generation === inspectionGeneration.current) notifyError(errMessage(e));
     } finally {
-      setInspecting(false);
+      if (generation === inspectionGeneration.current) setInspecting(false);
     }
   };
 

@@ -4,6 +4,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/payments"
 )
@@ -22,6 +23,7 @@ func handlePaymentWebhook(rt *Router, w http.ResponseWriter, r *http.Request, le
 		rt.currentDecoy().ServeHTTP(w, r)
 		return
 	}
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(30 * time.Second))
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)

@@ -7,6 +7,63 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 )
 
+// RegistrationUser contains credentials prepared before the approval transaction.
+type RegistrationUser struct {
+	Name, UUID, Password, SubToken string
+	Plan                           *UserPlanWrite
+}
+
+// ApproveRegistrationRequest commits the request decision, account, plan, and chat
+// link together. A crash before commit leaves the request retryable.
+func (s *Store) ApproveRegistrationRequest(id int64, in RegistrationUser) (*model.User, bool, bool, error) {
+	var userID int64
+	var claimed bool
+	var alreadyLinked bool
+	err := s.withTx(func(tx *sql.Tx) error {
+		var chatID int64
+		if err := tx.QueryRow(`SELECT chat_id FROM registration_requests WHERE id = ?`, id).Scan(&chatID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+			return err
+		}
+		claimed = true
+		// The chat may have been linked through a panel code since the request was made.
+		var existingID int64
+		err := tx.QueryRow(`SELECT id FROM users WHERE tg_chat_id = ? AND tg_chat_id <> 0 LIMIT 1`, chatID).Scan(&existingID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err == nil {
+			userID = existingID
+			alreadyLinked = true
+		} else {
+			err = tx.QueryRow(`INSERT INTO users (name, uuid, password, sub_token, tg_chat_id)
+				VALUES (?, ?, ?, ?, ?) RETURNING id`, in.Name, in.UUID, encField(in.Password), in.SubToken, chatID).Scan(&userID)
+			if err != nil {
+				return err
+			}
+			if in.Plan != nil {
+				plan := *in.Plan
+				plan.UserID = userID
+				if err := applyUserPlanOn(tx, plan); err != nil {
+					return err
+				}
+			}
+			if _, err := tx.Exec(dropPrevTelegramChatSQL, chatID); err != nil {
+				return err
+			}
+		}
+		_, err = tx.Exec(`DELETE FROM registration_requests WHERE id = ?`, id)
+		return err
+	})
+	if err != nil || !claimed {
+		return nil, claimed, false, err
+	}
+	u, err := s.GetUser(userID)
+	return u, true, alreadyLinked, err
+}
+
 // Moderated self-registration requests. A request is a signup held for an admin
 // decision; approving it is what actually creates the user (see core.Manager).
 

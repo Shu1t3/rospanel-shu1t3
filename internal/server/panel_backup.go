@@ -89,6 +89,8 @@ func (rt *Router) downloadBackup(w http.ResponseWriter, _ *http.Request) {
 	// (backups exclude the .db-wal sidecar where live data otherwise sits).
 	if err := rt.mgr.Store().Checkpoint(); err != nil {
 		log.Printf("backup: checkpoint: %v", err)
+		writeErr(w, http.StatusServiceUnavailable, "database snapshot unavailable")
+		return
 	}
 	w.Header().Set("Content-Type", "application/gzip")
 	w.Header().Set("Content-Disposition", `attachment; filename="rospanel-backup.tar.gz"`)

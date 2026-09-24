@@ -29,7 +29,9 @@ const (
 // backup — and so Rotate never sees a half-written archive as a rotation candidate.
 func WriteLocal(dataDir string, m Manifest, checkpoint func() error, now time.Time) (string, error) {
 	if checkpoint != nil {
-		_ = checkpoint() // best-effort, same as the Telegram path
+		if err := checkpoint(); err != nil {
+			return "", fmt.Errorf("checkpoint database: %w", err)
+		}
 	}
 	dir := filepath.Join(dataDir, LocalBackupDir)
 	if err := os.MkdirAll(dir, 0o700); err != nil {

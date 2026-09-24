@@ -2,6 +2,7 @@ package datasec
 
 import (
 	"database/sql"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -127,6 +128,51 @@ func TestGuardSurvivesOlderSchema(t *testing.T) {
 	}
 	if !got {
 		t.Fatal("guard missed the one encrypted column an older install has")
+	}
+}
+
+func TestInitRejectsMissingKeyForEncryptedTables(t *testing.T) {
+	for _, tc := range []struct{ table, column string }{
+		{"payment_providers", "config"},
+		{"webhooks", "secret"},
+		{"ext_subscriptions", "source"},
+		{"ext_servers", "link"},
+		{"inbounds", "opts"},
+		{"config_snapshots", "routing_json"},
+		{"admins", "totp_pending"},
+		{"users", "wg_private_key"},
+	} {
+		t.Run(tc.table+"."+tc.column, func(t *testing.T) {
+			dir := t.TempDir()
+			db, err := sql.Open("sqlite", filepath.Join(dir, "rospanel.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = db.Exec("CREATE TABLE " + tc.table + " (" + tc.column + " TEXT)")
+			if err == nil {
+				_, err = db.Exec("INSERT INTO "+tc.table+" VALUES (?)", "enc:v1:ciphertext")
+			}
+			db.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := Init(dir); err == nil || !strings.Contains(err.Error(), "secrets.key is missing") {
+				t.Fatalf("Init with encrypted %s.%s: %v", tc.table, tc.column, err)
+			}
+			if _, err := os.Stat(filepath.Join(dir, keyFile)); !os.IsNotExist(err) {
+				t.Fatalf("replacement key created: %v", err)
+			}
+		})
+	}
+}
+
+func TestGuardFailsClosedOnUnreadableDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rospanel.db")
+	if err := os.WriteFile(path, []byte("not a database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dbHasEncryptedSecrets(path); err == nil {
+		t.Fatal("unreadable database was treated as a fresh installation")
 	}
 }
 
