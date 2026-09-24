@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.0.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v4.0.0...v4.0.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* **deps:** update Go and frontend dependencies ([4b96779](https://github.com/Shu1t3/rospanel-shu1t3/commit/4b9677981cf0cf913837461ec2c96418b2398ce4))
+
 ## [4.0.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v3.6.2...v4.0.0) (2026-09-24)
 
 
