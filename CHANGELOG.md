@@ -1,5 +1,21 @@
 # Changelog
 
+## [4.0.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v3.6.2...v4.0.0) (2026-09-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **release:** sync upstream v4.0.0 with RBAC permissions
+
+### Features
+
+* sync upstream updates (v4.0.0) preserving fork enhancements ([15b9ce6](https://github.com/Shu1t3/rospanel-shu1t3/commit/15b9ce6a7a2726f0c43097342f55fb65f5795ff4))
+
+
+### Bug Fixes
+
+* **release:** restore pre-release state for release-please automation ([21c56e5](https://github.com/Shu1t3/rospanel-shu1t3/commit/21c56e590085a7d8c0d6d75175b8ac6f5dd5ea9c))
+
 ## [3.6.2](https://github.com/Shu1t3/rospanel-shu1t3/compare/v3.6.1...v3.6.2) (2026-09-23)
 
 
