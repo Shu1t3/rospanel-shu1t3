@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { AppLogs } from "./AppLogs";
+import { useCan, useIsOwner } from "./role";
 import { getBackupInfo, resetPanel, restartPanel } from "./api";
 import {
   EMPTY_STEP_UP,
@@ -128,7 +129,14 @@ const sqBtn =
 export function ManagementCard() {
   const { t } = useTranslation();
   const totpEnabled = useTotpEnabled();
-  const { data: info } = useFetch(getBackupInfo);
+  const canLogs = useCan("logs.view");
+  // Backups, restore and the factory reset are the owner's (see panelMux).
+  const canBackup = useIsOwner();
+  const canRestore = canBackup;
+  const canUpdate = useCan("system.update");
+  const { data: info } = useFetch(() =>
+    canBackup || canRestore ? getBackupInfo() : Promise.resolve(null),
+  );
   const [logsOpen, setLogsOpen] = useState(false);
   const [backupOpen, setBackupOpen] = useState(false);
   const [migrationOpen, setMigrationOpen] = useState(false);
@@ -217,17 +225,27 @@ export function ManagementCard() {
       <Panel title={t("manage.title")}>
         {/* Diagnostics is per-server now — it lives on each card under Servers,
             where the server it describes is. */}
-        <ManageBtn icon={<IconList />} label={t("manage.logs")} onClick={() => setLogsOpen(true)} />
+        {canLogs && (
+          <ManageBtn icon={<IconList />} label={t("manage.logs")} onClick={() => setLogsOpen(true)} />
+        )}
         {/* One word, like every other action here — the modal it opens is still
             titled "backup and restore", so nothing is hidden. */}
-        <ManageBtn icon={<IconArchive />} label={t("manage.backups")} onClick={() => setBackupOpen(true)} />
-        <ManageBtn icon={<IconTransfer />} label={t("manage.migration")} onClick={() => setMigrationOpen(true)} />
-        <ManageBtn
-          icon={<IconPower />}
-          label={t("manage.restart")}
-          onClick={() => setRestartOpen(true)}
-        />
-        <ManageBtn icon={<IconReset />} label={t("manage.reset")} danger onClick={() => setResetOpen(true)} />
+        {(canBackup || canRestore) && (
+          <ManageBtn icon={<IconArchive />} label={t("manage.backups")} onClick={() => setBackupOpen(true)} />
+        )}
+        {canBackup && (
+          <ManageBtn icon={<IconTransfer />} label={t("manage.migration")} onClick={() => setMigrationOpen(true)} />
+        )}
+        {canUpdate && (
+          <ManageBtn
+            icon={<IconPower />}
+            label={t("manage.restart")}
+            onClick={() => setRestartOpen(true)}
+          />
+        )}
+        {canRestore && (
+          <ManageBtn icon={<IconReset />} label={t("manage.reset")} danger onClick={() => setResetOpen(true)} />
+        )}
       </Panel>
 
       {logsOpen && <AppLogs onClose={() => setLogsOpen(false)} />}
@@ -242,6 +260,7 @@ export function ManagementCard() {
       <Modal open={backupOpen} onClose={closeBackup} title={t("manage.backupRestore")}>
         {!manifest ? (
           <div className="flex flex-col divide-y divide-gray-100 overflow-hidden rounded-xl border border-gray-200">
+            {canBackup && (
             <Row
               title={t("manage.exportTitle")}
               desc={t("manage.exportDesc")}
@@ -250,6 +269,8 @@ export function ManagementCard() {
                 <IconDownload />
               </a>
             </Row>
+            )}
+            {canRestore && (
             <Row
               title={t("manage.importTitle")}
               desc={t("manage.importDesc")}
@@ -267,6 +288,7 @@ export function ManagementCard() {
                 <IconUpload />
               </button>
             </Row>
+            )}
           </div>
         ) : (
           <>
