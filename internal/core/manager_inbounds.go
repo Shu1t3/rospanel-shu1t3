@@ -137,11 +137,15 @@ func (m *Manager) effectiveSettings(serverID int64) (*model.Settings, error) {
 // exists to prevent.
 func reservedPorts(set *model.Settings) model.ReservedPorts {
 	r := model.NewReservedPorts()
-	r.HoldTCP(set.VLESSPort, "VLESS-Vision")
-	r.HoldTCP(set.RealityPort, "VLESS-XHTTP-REALITY")
+	if set.VLESSEnabled || set.ServerID == model.LocalNodeID {
+		r.HoldTCP(set.VLESSPort, "VLESS-Vision")
+		r.HoldTCP(xray.VLESSInnerPort, "VLESS-Vision behind the front")
+	}
+	if set.RealityEnabled {
+		r.HoldTCP(set.RealityPort, "VLESS-XHTTP-REALITY")
+	}
 	r.HoldUDP(set.HysteriaPort, "HYSTERIA-UDP")
 	r.Hold(xray.APIPort, "Xray internal API")
-	r.HoldTCP(xray.VLESSInnerPort, "VLESS-Vision behind the front")
 	if set.HopEnd > set.HysteriaPort {
 		// The built-in hop range is a UDP funnel onto the Hysteria port: anything
 		// inside it would have its traffic silently stolen by the nftables redirect.
@@ -575,7 +579,7 @@ func (m *Manager) isNodeXrayPort(nodeID int64, network string, port int) bool {
 	if vlessPort == 0 {
 		vlessPort = 443
 	}
-	if network == "tcp" && (port == vlessPort || (set.RealityPort > 0 && port == set.RealityPort)) {
+	if network == "tcp" && ((set.VLESSEnabled && port == vlessPort) || (set.RealityEnabled && set.RealityPort > 0 && port == set.RealityPort)) {
 		return true
 	}
 	if network == "udp" && port == set.HysteriaPort {

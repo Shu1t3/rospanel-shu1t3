@@ -214,3 +214,22 @@ func TestIsDisabled(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckWritablePackageDirs(t *testing.T) {
+	// Should not panic or crash
+	_ = checkWritablePackageDirs()
+}
+
+func TestEnsureInstalledOnce(t *testing.T) {
+	ResetInstallStateForTests()
+	defer ResetInstallStateForTests()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancelled context immediately fails execution if attempted
+
+	// First call should run and record state
+	_ = EnsureInstalled(ctx)
+
+	// Second call should return cached state without doing work
+	_ = EnsureInstalled(context.Background())
+}

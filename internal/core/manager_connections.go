@@ -419,6 +419,16 @@ func (m *Manager) ApplyConnections(u ConnectionsUpdate) error {
 	if u.Protocols["reality"] && !realityHeld && !portFree("tcp", u.RealityPort) {
 		return invalidCode("err.tcpPortTaken", "TCP-порт {{port}} уже занят — выберите другой", map[string]any{"port": u.RealityPort})
 	}
+	if u.Protocols["reality"] {
+		inbounds, err := m.store.Inbounds(model.LocalNodeID)
+		if err == nil {
+			for _, in := range inbounds {
+				if in.Enabled && model.ProtoOf(in.Protocol) == "tcp" && in.Port == u.RealityPort {
+					return invalidCode("err.portTakenByInbound", "порт {{port}} уже занят подключением «{{who}}»", map[string]any{"port": in.Port, "who": in.Name})
+				}
+			}
+		}
+	}
 	// REALITY donor SNIs: comma-separated, the first is primary (used in links).
 	var dests []string
 	for _, d := range strings.Split(u.RealityDest, ",") {

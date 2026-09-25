@@ -158,8 +158,45 @@ func parseSSHDConfigPorts(content string) []int {
 	return ports
 }
 
+var (
+	installMu        sync.Mutex
+	installAttempted bool
+	installErr       error
+)
+
+// ResetInstallStateForTests resets the package manager auto-install cache (used in tests).
+func ResetInstallStateForTests() {
+	installMu.Lock()
+	defer installMu.Unlock()
+	installAttempted = false
+	installErr = nil
+}
+
+// checkWritablePackageDirs tests whether the filesystem allows package manager installation.
+// In containers or systemd services with ProtectSystem=strict, /var/lib is mounted read-only.
+func checkWritablePackageDirs() error {
+	const testDir = "/var/lib"
+	if _, err := os.Stat(testDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	f, err := os.CreateTemp(testDir, ".rospanel-fwrw-*")
+	if err != nil {
+		return err
+	}
+	name := f.Name()
+	_ = f.Close()
+	_ = os.Remove(name)
+	return nil
+}
+
 // EnsureInstalled checks if ufw is installed and attempts to install it via the
-// system package manager if missing. Non-fatal: logs and returns error if installation fails.
+// system package manager if missing.
+// It runs at most once per process lifetime: if installation fails (e.g. read-only filesystem,
+// missing repository, or sandboxed daemon), it records the error and skips future attempts
+// to avoid spamming the host package manager and system logs.
 func EnsureInstalled(ctx context.Context) error {
 	if IsDisabled() {
 		return nil
@@ -172,6 +209,22 @@ func EnsureInstalled(ctx context.Context) error {
 	}
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("ufw is not installed and cannot be installed without root privileges")
+	}
+
+	installMu.Lock()
+	defer installMu.Unlock()
+
+	if installAttempted {
+		return installErr
+	}
+	installAttempted = true
+
+	// Check if package directories are writable. In containerized environments or
+	// systemd services with ProtectSystem=strict, package managers cannot write to /var/lib.
+	if err := checkWritablePackageDirs(); err != nil {
+		installErr = fmt.Errorf("filesystem is read-only or restricted: %w", err)
+		log.Printf("firewall: ufw is not installed and cannot be installed automatically (%v) — skipping host firewall configuration", installErr)
+		return installErr
 	}
 
 	log.Printf("firewall: ufw not found — installing via system package manager…")
@@ -190,15 +243,21 @@ func EnsureInstalled(ctx context.Context) error {
 	case fileExists("/sbin/apk") || fileExists("/usr/bin/apk"):
 		cmd = exec.CommandContext(ctx, "apk", "add", "ufw")
 	default:
-		return fmt.Errorf("no supported package manager found to install ufw")
+		installErr = fmt.Errorf("no supported package manager found to install ufw")
+		log.Printf("firewall: %v — skipping host firewall configuration", installErr)
+		return installErr
 	}
 
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to install ufw: %w (output: %s)", err, strings.TrimSpace(string(out)))
+		installErr = fmt.Errorf("failed to install ufw: %w (output: %s)", err, strings.TrimSpace(string(out)))
+		log.Printf("firewall: %v — skipping host firewall configuration", installErr)
+		return installErr
 	}
 
 	if !Available() {
-		return fmt.Errorf("ufw package installed but ufw command is still not available in PATH")
+		installErr = fmt.Errorf("ufw package installed but ufw command is still not available in PATH")
+		log.Printf("firewall: %v", installErr)
+		return installErr
 	}
 
 	log.Printf("firewall: ufw successfully installed")
@@ -223,6 +282,9 @@ func EnsureActive(ctx context.Context) error {
 		if err := EnsureInstalled(ctx); err != nil {
 			return err
 		}
+	}
+	if !Available() {
+		return nil
 	}
 
 	// 1. Always ensure SSH ports are allowed first (anti-lockout)
@@ -339,9 +401,17 @@ func Sync(ctx context.Context, rules []Rule) error {
 	syncCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 
-	if err := EnsureInstalled(syncCtx); err != nil {
-		log.Printf("firewall: ensure installed: %v", err)
-		return err
+	if !Available() {
+		if err := EnsureInstalled(syncCtx); err != nil {
+			// Auto-installation failed or is not possible in this environment (e.g. read-only
+			// container or missing repo). UFW is optional: gracefully skip host firewall
+			// configuration without failing node or panel operation.
+			return nil
+		}
+	}
+
+	if !Available() {
+		return nil
 	}
 
 	if err := EnsureActive(syncCtx); err != nil {

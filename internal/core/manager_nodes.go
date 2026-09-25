@@ -295,6 +295,32 @@ func (m *Manager) ApplyNodeConnections(id int64, u ConnectionsUpdate) error {
 			awgPort = pickAWGPort()
 		}
 	}
+	if u.Protocols["vless"] || u.Protocols["reality"] {
+		inbounds, err := m.store.Inbounds(id)
+		if err != nil {
+			return err
+		}
+		set, err := m.store.GetSettings()
+		if err != nil {
+			return err
+		}
+		vlessPort := set.VLESSPort
+		if vlessPort == 0 {
+			vlessPort = 443
+		}
+		for _, in := range inbounds {
+			if !in.Enabled || model.ProtoOf(in.Protocol) != "tcp" {
+				continue
+			}
+			if u.Protocols["vless"] && in.Port == vlessPort {
+				return invalidCode("err.portTakenByInbound", "порт {{port}} уже занят подключением «{{who}}»", map[string]any{"port": in.Port, "who": in.Name})
+			}
+			if u.Protocols["reality"] && in.Port == u.RealityPort {
+				return invalidCode("err.portTakenByInbound", "порт {{port}} уже занят подключением «{{who}}»", map[string]any{"port": in.Port, "who": in.Name})
+			}
+		}
+	}
+
 	if err := m.store.SetNodeProtocols(id,
 		u.Protocols["vless"], u.Protocols["hysteria2"], u.Protocols["reality"]); err != nil {
 		return err
