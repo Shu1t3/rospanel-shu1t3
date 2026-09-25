@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.0.2](https://github.com/Shu1t3/rospanel-shu1t3/compare/v4.0.1...v4.0.2) (2026-09-25)
+
+
+### Bug Fixes
+
+* allow custom inbounds on port 443 when built-in protocols are disabled ([4c48bc5](https://github.com/Shu1t3/rospanel-shu1t3/commit/4c48bc5a1627fa162e7a79c7168160f67c70bb3f))
+
 ## [4.0.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v4.0.0...v4.0.1) (2026-09-24)
 
 
