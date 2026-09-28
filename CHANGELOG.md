@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.0.3](https://github.com/Shu1t3/rospanel-shu1t3/compare/v4.0.2...v4.0.3) (2026-09-28)
+
+
+### Bug Fixes
+
+* **node:** repair UFW sandbox after self-update ([2ec7f89](https://github.com/Shu1t3/rospanel-shu1t3/commit/2ec7f89125b7edcd9c22775f9190dda2af6dbac8))
+* **node:** repair UFW sandbox after self-update ([e5c93d1](https://github.com/Shu1t3/rospanel-shu1t3/commit/e5c93d14364218a0663a8e2cb835d576eec7d2c5))
+
 ## [4.0.2](https://github.com/Shu1t3/rospanel-shu1t3/compare/v4.0.1...v4.0.2) (2026-09-25)
 
 
