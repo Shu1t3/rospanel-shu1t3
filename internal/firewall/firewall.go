@@ -370,12 +370,20 @@ func AllowMany(ctx context.Context, rules []Rule) error {
 	if runtime.GOOS != "linux" || os.Geteuid() != 0 || !Available() {
 		return nil
 	}
+	return allowMany(ctx, rules, Allow)
+}
+
+func allowMany(ctx context.Context, rules []Rule, allow func(context.Context, Rule) error) error {
+	var firstErr error
 	for _, r := range rules {
-		if err := Allow(ctx, r); err != nil {
+		if err := allow(ctx, r); err != nil {
 			log.Printf("firewall: allow %s: %v", r.Format(), err)
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
-	return nil
+	return firstErr
 }
 
 // Sync performs a full firewall synchronization:

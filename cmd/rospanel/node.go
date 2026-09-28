@@ -80,6 +80,12 @@ const nodeMemoryShare = 0.25
 // node.json, so a restart re-reads the identity it already has and a spent join
 // token in a stale compose file changes nothing.
 func runNodeAgent(dataDir string) {
+	if restart, err := repairNodeServiceFirewallAccess(); err != nil {
+		log.Printf("node: systemd firewall access repair: %v", err)
+	} else if restart {
+		log.Print("node: systemd firewall access updated — restarting under the new sandbox")
+		return // the generated unit has Restart=always
+	}
 	logMemoryLimit(tuning.SetMemoryLimit(nodeMemoryShare, xray.MemoryLimit))
 	if joinURL := strings.TrimSpace(os.Getenv("ROSPANEL_JOIN")); joinURL != "" {
 		if _, err := nodeagent.LoadIdentity(dataDir); err != nil {

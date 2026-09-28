@@ -2,9 +2,26 @@ package firewall
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"testing"
 )
+
+func TestAllowManyReportsFailureAfterTryingEveryRule(t *testing.T) {
+	want := errors.New("UFW rules file is read-only")
+	rules := []Rule{TCPRule(443, "vless"), UDPRule(443, "hysteria")}
+	var tried []string
+	err := allowMany(context.Background(), rules, func(_ context.Context, rule Rule) error {
+		tried = append(tried, rule.Format())
+		if rule.Proto == "tcp" {
+			return want
+		}
+		return nil
+	})
+	if !errors.Is(err, want) || len(tried) != 2 || tried[0] != "443/tcp" || tried[1] != "443/udp" {
+		t.Fatalf("allowMany: tried=%v err=%v", tried, err)
+	}
+}
 
 func TestRuleNormalizeAndFormat(t *testing.T) {
 	tests := []struct {
