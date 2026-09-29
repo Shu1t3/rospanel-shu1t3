@@ -65,6 +65,16 @@ const (
 	EventPaymentCreated   = "payment.created"
 	EventPaymentPaid      = "payment.paid"
 	EventPaymentCancelled = "payment.cancelled"
+
+	EventPlanRenewed     = "plan.renewed"     // system: the balance paid for the next period
+	EventBalanceAdjusted = "balance.adjusted" // an operator changed the balance
+	EventPromoRedeemed   = "promo.redeemed"
+	EventUserReferred    = "user.referred"     // registered through someone's invite link
+	EventAutoRenew       = "balance.autorenew" // renewal from the balance switched on or off
+	EventPaymentRefunded = "payment.refunded"  // an order's money returned to the balance
+	EventWinbackSent     = "promo.winback"     // a lapsed user got a personal discount code
+	EventUserSource      = "user.source"       // where the user came from was set by hand or the API
+	EventAutoMessage     = "user.auto_message" // an automatic message (a rule) was sent
 )
 
 // UserEventCatalog is the stable key list the journal UI iterates over to build its
@@ -107,6 +117,15 @@ var UserEventCatalog = []string{
 	EventPaymentCreated,
 	EventPaymentPaid,
 	EventPaymentCancelled,
+	EventPlanRenewed,
+	EventBalanceAdjusted,
+	EventPromoRedeemed,
+	EventUserReferred,
+	EventAutoRenew,
+	EventPaymentRefunded,
+	EventWinbackSent,
+	EventUserSource,
+	EventAutoMessage,
 }
 
 // ValidUserEvent reports whether k is a known audit action key.
@@ -121,4 +140,4 @@ func ValidUserEvent(k string) bool {
 
 // UserEventRetentionDays is how long audit rows are kept before the retention sweep
 // drops them.
-const UserEventRetentionDays = 90
+const UserEventRetentionDays = 365

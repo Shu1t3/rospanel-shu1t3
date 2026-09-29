@@ -59,6 +59,15 @@ const ACTION_COLORS: Record<string, Color> = {
   "payment.created": "brand",
   "payment.paid": "green",
   "payment.cancelled": "gray",
+  "plan.renewed": "green",
+  "balance.adjusted": "brand",
+  "promo.redeemed": "teal",
+  "user.referred": "teal",
+  "balance.autorenew": "gray",
+  "payment.refunded": "orange",
+  "promo.winback": "teal",
+  "user.source": "gray",
+  "user.auto_message": "teal",
 };
 
 export function actionMeta(action: string): { label: string; color: Color } {
@@ -129,7 +138,7 @@ function periodLabel(p: string): string {
   return (PERIODS as readonly string[]).includes(p) ? td(`events.period.${p}`) : p;
 }
 
-const PROVIDERS = ["manual", "yookassa", "cryptobot"] as const;
+const PROVIDERS = ["manual", "yookassa", "cryptobot", "balance"] as const;
 
 function providerLabel(p: string): string {
   return (PROVIDERS as readonly string[]).includes(p)
@@ -137,7 +146,15 @@ function providerLabel(p: string): string {
     : p;
 }
 
-const CANCEL_REASONS = ["abandoned", "provider_cancelled"] as const;
+// fmtKop renders kopecks as roubles: "199", or "19,90" when there are kopecks.
+export function fmtKop(kop: number): string {
+  return (kop / 100).toLocaleString(currentLang(), {
+    minimumFractionDigits: kop % 100 === 0 ? 0 : 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+const CANCEL_REASONS = ["abandoned", "provider_cancelled", "superseded"] as const;
 
 function cancelReason(r: string): string {
   return (CANCEL_REASONS as readonly string[]).includes(r)
@@ -187,6 +204,10 @@ export function eventDetails(e: UserEvent): string {
       if (days) parts.push(i18n.t("events.det.extendedDays", { count: days }));
       break;
     }
+    case "user.auto_message":
+      return [str(d, "rule"), str(d, "code")].filter(Boolean).join(" · ");
+    case "user.source":
+      return str(d, "source") || "—";
     case "user.renamed":
       return `${str(d, "from") || "—"} → ${str(d, "to")}`;
     case "user.tags_changed": {
@@ -228,7 +249,8 @@ export function eventDetails(e: UserEvent): string {
         limit: num(d, "device_limit"),
       });
     case "user.telegram_linked":
-      return str(d, "username");
+      // The bot knows the @username; a link made through the API has only the ID.
+      return str(d, "username") || (num(d, "chat_id") ? `ID ${num(d, "chat_id")}` : "");
     case "user.device_bound":
     case "user.device_refused": {
       // What the device called itself, and where that put the count against the cap.
@@ -268,6 +290,60 @@ export function eventDetails(e: UserEvent): string {
       if (expire) parts.push(i18n.t("events.det.until", { date: fmtDate(expire) }));
       break;
     }
+    case "plan.renewed": {
+      const plan = str(d, "plan");
+      if (plan) parts.push(plan);
+      const expire = num(d, "expire_at");
+      if (expire) parts.push(i18n.t("events.det.until", { date: fmtDate(expire) }));
+      const paid = num(d, "balance_kop");
+      if (paid) parts.push(i18n.t("events.det.fromBalance", { sum: fmtKop(paid) }));
+      break;
+    }
+    case "balance.adjusted": {
+      const amount = num(d, "amount_kop");
+      parts.push(`${amount > 0 ? "+" : ""}${fmtKop(amount)} ₽`);
+      parts.push(i18n.t("events.det.balanceNow", { sum: fmtKop(num(d, "balance_kop")) }));
+      const note = str(d, "note");
+      if (note) parts.push(note);
+      break;
+    }
+    case "payment.refunded": {
+      const order = num(d, "order_id");
+      if (order) parts.push(i18n.t("events.det.order", { id: order }));
+      const plan = str(d, "plan");
+      if (plan) parts.push(plan);
+      if (d.source === "provider") {
+        // The payment system returned the money: what came off, and what went back.
+        parts.push(`${num(d, "amount_rub").toLocaleString(currentLang())} ₽`, i18n.t("events.det.byProvider"));
+        if (d.plan_cut) parts.push(i18n.t("events.det.planCut"));
+        const taken = num(d, "taken_kop");
+        if (taken) parts.push(`−${fmtKop(taken)} ₽`);
+        const returned = num(d, "returned_kop");
+        if (returned) parts.push(`+${fmtKop(returned)} ₽`);
+        const short = num(d, "short_kop");
+        if (short) parts.push(i18n.t("events.det.notRecovered", { sum: fmtKop(short) }));
+      } else {
+        parts.push(`+${fmtKop(num(d, "refund_kop"))} ₽`);
+        if (d.plan_cancelled) parts.push(i18n.t("events.det.planCancelled"));
+      }
+      break;
+    }
+    case "promo.winback": {
+      const code = str(d, "code");
+      if (code) parts.push(code);
+      parts.push(`−${num(d, "percent")}%`);
+      const until = num(d, "expires_at");
+      if (until) parts.push(i18n.t("events.det.until", { date: fmtDate(until) }));
+      break;
+    }
+    case "balance.autorenew":
+      parts.push(i18n.t(d.on ? "events.det.autoRenewOn" : "events.det.autoRenewOff"));
+      break;
+    case "promo.redeemed": {
+      const code = str(d, "code");
+      if (code) parts.push(code);
+      break;
+    }
     case "plan.cancelled": {
       const plan = str(d, "plan");
       if (plan) parts.push(plan);
@@ -282,8 +358,13 @@ export function eventDetails(e: UserEvent): string {
       if (order) parts.push(i18n.t("events.det.order", { id: order }));
       const plan = str(d, "plan");
       if (plan) parts.push(plan);
+      else if (str(d, "kind") === "topup") parts.push(i18n.t("events.det.topup"));
       const amount = num(d, "amount_rub");
       if (amount) parts.push(`${amount.toLocaleString(currentLang())} ₽`);
+      const fromBalance = num(d, "balance_kop");
+      if (fromBalance) parts.push(i18n.t("events.det.fromBalance", { sum: fmtKop(fromBalance) }));
+      const promo = str(d, "promo");
+      if (promo) parts.push(i18n.t("events.det.promo", { code: promo }));
       const provider = str(d, "provider");
       if (provider) parts.push(providerLabel(provider));
       const reason = str(d, "reason");

@@ -18,6 +18,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/abuse"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/auth"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/autobackup"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/autoupdate"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/backup"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/connguard"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/core"
@@ -38,7 +39,6 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/tuning"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/version"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/xray"
-
 )
 
 // runServer is the default (no-subcommand) path: boot the store, obtain a cert,
@@ -210,6 +210,7 @@ func runServer(dataDir string) {
 			log.Print("service: server running in STANDBY role (control plane proxied, background tasks paused)")
 		}
 	}
+	mgr.SetBillingStandby(isStandby)
 	// Blocklists for abuse detection. Cached copies load synchronously (fast, local),
 	// so matching works from the first access-log line; downloads run in background
 	// and a failure leaves the matcher empty rather than holding up the boot.
@@ -293,6 +294,12 @@ func runServer(dataDir string) {
 	})
 
 	if !isStandby {
+		if err := mgr.EnsureMiniAppPath(); err != nil {
+			log.Printf("mini app: %v", err)
+		}
+		runBG("blacklist", mgr.RunBlacklistLoop)
+		runBG("automatic messages", mgr.RunAutoRulesLoop)
+		runBG("auto update", autoupdate.New(mgr, st, dataDir).Run)
 		// Payment polling fallback: reconciles pending provider orders in case a webhook
 		// was missed. Idles cheaply when there are no pending orders.
 		runBG("payment poll", paymentPollLoop(mgr))
@@ -628,15 +635,16 @@ func retentionLoop(mgr *core.Manager) func(context.Context) {
 		mgr.PurgeOldAdminAudit()
 		mgr.PurgeOldConnections()
 		mgr.PurgePolicyBlocks()
-		mgr.PurgeOldProbes()       // scanning IPs past their retention window
-		mgr.PurgeOldOrders()       // cancelled (never-paid) orders past their retention window
-		mgr.PurgeOldNodeCommands() // node commands nobody came back for
-		mgr.PurgeIdleDevices()     // bound devices gone quiet past their TTL
-		mgr.PurgeOldAbuse()        // blocklist matches past their (short) window
-		mgr.PurgeOldTraffic()      // per-day traffic history past a year
-		mgr.PurgeOldUptime()       // status-page history past its window
-		mgr.PurgeExpiredUsers()    // no-op unless the operator set a grace period
-		mgr.PurgeDeletedNodes()    // reclaim node tombstones past their grace window
+		mgr.PurgeOldProbes()          // scanning IPs past their retention window
+		mgr.PurgeOldPaymentWebhooks() // provider callbacks past their retention window
+		mgr.PurgeOldOrders()          // cancelled (never-paid) orders past their retention window
+		mgr.PurgeOldNodeCommands()    // node commands nobody came back for
+		mgr.PurgeIdleDevices()        // bound devices gone quiet past their TTL
+		mgr.PurgeOldAbuse()           // blocklist matches past their (short) window
+		mgr.PurgeOldTraffic()         // per-day traffic history past a year
+		mgr.PurgeOldUptime()          // status-page history past its window
+		mgr.PurgeExpiredUsers()       // no-op unless the operator set a grace period
+		mgr.PurgeDeletedNodes()       // reclaim node tombstones past their grace window
 	}
 	return func(ctx context.Context) {
 		sweep() // sweep once at boot, then on the timer

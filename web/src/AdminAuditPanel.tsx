@@ -32,7 +32,7 @@ import {
 const PAGE = 20;
 
 // Mirrors model.AdminAuditRetentionDays.
-const RETENTION_DAYS = 90;
+const RETENTION_DAYS = 365;
 
 // A YYYY-MM-DD date input → unix seconds at the local day's start (from) or end (to,
 // inclusive), or 0 when blank. Local time is what the operator picked, so that is

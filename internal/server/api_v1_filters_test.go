@@ -43,6 +43,10 @@ func TestAPIQueryFiltersActuallyFilter(t *testing.T) {
 	if err := st.SetUserEnabled(beta.ID, false); err != nil {
 		t.Fatalf("disable beta: %v", err)
 	}
+	// Alpha has a Telegram, so ?telegram_id and ?sub_token each find one of two.
+	if err := st.SetUserTelegramChat(alpha.ID, 777001); err != nil {
+		t.Fatalf("link alpha: %v", err)
+	}
 	// One tagged user, so ?tag has someone to leave out.
 	if err := st.SetUserTags(alpha.ID, []string{"vip"}); err != nil {
 		t.Fatalf("tag alpha: %v", err)
@@ -119,6 +123,12 @@ func TestAPIQueryFiltersActuallyFilter(t *testing.T) {
 		}
 	}
 
+	// Beta joined long ago, so the funnel's default 30 days leaves it out and all
+	// time does not.
+	if err := st.SetUserCreatedAt(beta.ID, time.Now().AddDate(0, 0, -90).Unix()); err != nil {
+		t.Fatalf("age beta: %v", err)
+	}
+
 	// ---- one biting value per advertised parameter ---------------------------
 	// Keyed "<path>?<param>". The value must exclude something the unfiltered call
 	// returns; identical bodies mean the parameter was read by nobody.
@@ -151,6 +161,11 @@ func TestAPIQueryFiltersActuallyFilter(t *testing.T) {
 		"/v1/billing/orders?status":          "status=cancelled",
 		"/v1/billing/orders?limit":           "limit=1",
 		"/v1/billing/orders?offset":          "offset=1",
+		"/v1/billing/funnel?days":            "days=0",
+		"/v1/billing/orders?user_id":         "user_id=" + itoa64(beta.ID),
+		"/v1/users?telegram_id":              "telegram_id=777001",
+		"/v1/users/{id}/subscription?lang":   "lang=ru",
+		"/v1/users?sub_token":                "sub_token=" + alpha.SubToken,
 		"/v1/stats/abuse?limit":              "limit=1",
 		"/v1/stats/users?from":               "from=" + day(1),
 		"/v1/stats/users?to":                 "to=" + day(2),

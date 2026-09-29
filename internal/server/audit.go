@@ -121,29 +121,37 @@ var auditActions = map[string]auditRoute{
 	"POST /api/geo/cadence":                    set("geoCadence"),
 	"POST /api/tls":                            set("tls"),
 	"POST /api/telegram":                       set("telegram"),
+	"POST /api/telegram/blacklist":             set("tgBlacklist"),
+	"POST /api/telegram/blacklist/refresh":     set("tgBlacklistRefresh"),
 	"POST /api/telegram/link":                  set("tgLink"),
 	"POST /api/telegram/link/cancel":           set("tgLinkCancel"),
 	"POST /api/telegram/unlink":                set("tgUnlink"),
 	"POST /api/telegram/test-backup":           set("tgTestBackup"),
 	"POST /api/telegram/support/check":         set("tgSupportCheck"),
 
-	"POST /api/broadcasts":             act(model.AuditBroadcastStarted),
-	"POST /api/broadcasts/test":        act(model.AuditBroadcastTest),
-	"POST /api/broadcasts/{id}/pause":  act(model.AuditBroadcastChanged),
-	"POST /api/broadcasts/{id}/resume": act(model.AuditBroadcastChanged),
-	"POST /api/broadcasts/{id}/cancel": act(model.AuditBroadcastChanged),
-	"POST /api/broadcasts/{id}/retry":  act(model.AuditBroadcastChanged),
-	"POST /api/billing":                set("billing"),
-	"POST /api/payments":               set("payments"),
+	"POST /api/broadcasts":              act(model.AuditBroadcastStarted),
+	"POST /api/broadcasts/test":         act(model.AuditBroadcastTest),
+	"POST /api/broadcasts/rules":        act(model.AuditAutoRuleSaved),
+	"DELETE /api/broadcasts/rules/{id}": act(model.AuditAutoRuleDeleted),
+	"POST /api/broadcasts/{id}/pause":   act(model.AuditBroadcastChanged),
+	"POST /api/broadcasts/{id}/resume":  act(model.AuditBroadcastChanged),
+	"POST /api/broadcasts/{id}/cancel":  act(model.AuditBroadcastChanged),
+	"POST /api/broadcasts/{id}/retry":   act(model.AuditBroadcastChanged),
+	"POST /api/billing":                 set("billing"),
+	"POST /api/payments":                set("payments"),
 
 	// Tariff plans keep their own actions: they are objects with a lifecycle, not a
 	// settings form — "a plan was deleted" is a different question from "who touched the settings".
 	"POST /api/billing/plans":              act(model.AuditPlanSaved),
 	"DELETE /api/billing/plans/{id}":       act(model.AuditPlanDeleted),
 	"POST /api/billing/plans/{id}/migrate": act(model.AuditPlanMigrated),
+	"POST /api/billing/promos":             act(model.AuditPromoSaved),
+	"DELETE /api/billing/promos/{id}":      act(model.AuditPromoDeleted),
 	// Orders are user-scoped and already land in that user's journal, same actor.
 	"POST /api/billing/orders/{id}/confirm": skip,
 	"POST /api/billing/orders/{id}/cancel":  skip,
+	// A refund lands in the user's journal with the order and the amount.
+	"POST /api/billing/orders/{id}/refund": skip,
 
 	// Moderated registration: approval audits the created user inside the manager
 	// (EventUserRegistered); rejection deletes only a pending request (no user yet).
@@ -208,20 +216,21 @@ var auditActions = map[string]auditRoute{
 
 	// The panel itself. The backup download is a GET, but it hands over a file
 	// containing every secret the panel holds — that is worth a row.
-	"GET /api/backup":          act(model.AuditBackupTaken),
-	"POST /api/backup/inspect": skip, // read-only: inspects an uploaded file, changes nothing
-	"POST /api/restore":        act(model.AuditRestored),
-	"POST /api/reset":          act(model.AuditFactoryReset),
-	"POST /api/update":         act(model.AuditUpdated),
-	"POST /api/xray/restart":   act(model.AuditXrayRestarted),
-	"POST /api/panel/restart":  act(model.AuditPanelRestarted),
+	"GET /api/backup":                   act(model.AuditBackupTaken),
+	"POST /api/backup/inspect":          skip, // read-only: inspects an uploaded file, changes nothing
+	"POST /api/restore":                 act(model.AuditRestored),
+	"POST /api/reset":                   act(model.AuditFactoryReset),
+	"POST /api/update":                  act(model.AuditUpdated),
+	"POST /api/update/auto":             set("autoUpdate"),
+	"POST /api/xray/restart":            act(model.AuditXrayRestarted),
+	"POST /api/panel/restart":           act(model.AuditPanelRestarted),
 	"POST /api/migration/start":         set("migration"),
 	"POST /api/migration/verify":        skip, // read-only verification
 	"POST /api/migration/switch":        set("migration"),
 	"POST /api/migration/decommission":  set("migration"),
 	"POST /api/migration/rollback":      set("migration"),
 	"POST /api/migration/trial-restore": skip, // sandboxed trial restore test
-	"POST /api/stats/reset":    act(model.AuditStatsReset),
+	"POST /api/stats/reset":             act(model.AuditStatsReset),
 
 	// The caller's own sessions. Ending one is a security action worth a row of its
 	// own; listing them is a read.
@@ -251,6 +260,9 @@ var auditActions = map[string]auditRoute{
 	"POST /api/users/{id}/reset-period":     skip,
 	"POST /api/users/{id}/devices/unbind":   skip,
 	"POST /api/users/{id}/plan":             skip,
+	// A balance correction lands in the user's journal with the amount and the note.
+	"POST /api/users/{id}/balance":   skip,
+	"POST /api/users/{id}/autorenew": skip,
 
 	// Sessions are audited inside their handlers: login has no session to read an
 	// actor from, and a FAILED login — the row worth having — never reaches a

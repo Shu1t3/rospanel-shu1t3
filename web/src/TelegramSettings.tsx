@@ -21,6 +21,7 @@ import {
   type Schedule,
 } from "./CronPicker";
 import i18n, { LANGS } from "./i18n";
+import { BlacklistPanel } from "./BlacklistPanel";
 import { notifyError, notifySuccess, errMessage } from "./notify";
 import {
   Button,
@@ -81,6 +82,12 @@ const ADMIN_EVENTS: { key: string; label: string; desc?: string }[] = [
     label: "tg.evLoginLabel",
     desc: "tg.evLoginDesc",
   },
+  {
+    key: "node_traffic",
+    label: "tg.evNodeTrafficLabel",
+    desc: "tg.evNodeTrafficDesc",
+  },
+  { key: "update", label: "tg.evUpdateLabel", desc: "tg.evUpdateDesc" },
 ];
 
 // USER_EVENTS are what the user bot tells the person themselves. Keys must match
@@ -159,6 +166,7 @@ export function TelegramSettings() {
   const [linkCode, setLinkCode] = useState("");
   const [botUsername, setBotUsername] = useState("");
   const [userBotUsername, setUserBotUsername] = useState("");
+  const [miniAppURL, setMiniAppURL] = useState("");
   const [supportEnabled, setSupportEnabled] = useState(false);
   const [supportToken, setSupportToken] = useState("");
   const [supportGroupID, setSupportGroupID] = useState("");
@@ -205,6 +213,7 @@ export function TelegramSettings() {
         setLinkCode(cfg.link_code || "");
         setBotUsername(cfg.bot_username || "");
         setUserBotUsername(cfg.user_bot_username || "");
+        setMiniAppURL(cfg.user_miniapp_url || "");
         setSchedule(detectPreset(cfg.backup_cron || ""));
         setBotLang(cfg.lang || "ru");
         setProxy(cfg.proxy || "");
@@ -665,6 +674,14 @@ export function TelegramSettings() {
           }
         />
         {userBotUsername && botLink(userBotUsername)}
+        {miniAppURL && (
+          <SettingRow
+            label={t("tg.miniApp")}
+            hint={t("tg.miniAppHint", { bot: userBotUsername || "bot" })}
+            wideField
+            field={<Code copy>{miniAppURL}</Code>}
+          />
+        )}
         <SettingRow
           label={t("tg.selfSignup")}
           hint={
@@ -699,6 +716,8 @@ export function TelegramSettings() {
           />
         )}
       </Panel>
+
+      <BlacklistPanel />
 
       <Panel title={t("tg.userNotifs")}>
         <SettingRow hint={t("tg.userNotifsHint")} />

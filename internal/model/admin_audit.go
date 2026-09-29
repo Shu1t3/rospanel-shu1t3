@@ -23,7 +23,7 @@ type AdminAudit struct {
 }
 
 // AdminAuditRetentionDays matches the user journal's window.
-const AdminAuditRetentionDays = 90
+const AdminAuditRetentionDays = 365
 
 // Audit action keys. Stable strings persisted in admin_audit.action — never renamed
 // once shipped, or old rows lose their label.
@@ -72,6 +72,8 @@ const (
 	AuditPlanSaved    = "plan.saved"
 	AuditPlanDeleted  = "plan.deleted"
 	AuditPlanMigrated = "plan.migrated"
+	AuditPromoSaved   = "promo.saved"
+	AuditPromoDeleted = "promo.deleted"
 
 	// The API surface.
 	AuditAPIKeyCreated  = "apikey.created"
@@ -86,6 +88,8 @@ const (
 	// settings-changed row to find.
 	AuditBroadcastStarted = "broadcast.started"
 	AuditBroadcastChanged = "broadcast.changed"
+	AuditAutoRuleSaved    = "broadcast.rule_saved"
+	AuditAutoRuleDeleted  = "broadcast.rule_deleted"
 	AuditBroadcastTest    = "broadcast.test"
 	AuditUserMessaged     = "broadcast.user_messaged"
 
@@ -167,6 +171,8 @@ var AdminAuditCatalog = []AdminAuditEntry{
 	{AuditPlanSaved, AuditCatPlans},
 	{AuditPlanDeleted, AuditCatPlans},
 	{AuditPlanMigrated, AuditCatPlans},
+	{AuditPromoSaved, AuditCatPlans},
+	{AuditPromoDeleted, AuditCatPlans},
 
 	{AuditAPIKeyCreated, AuditCatAPI},
 	{AuditAPIKeyRevoked, AuditCatAPI},
@@ -176,6 +182,8 @@ var AdminAuditCatalog = []AdminAuditEntry{
 
 	{AuditBroadcastStarted, AuditCatBroadcast},
 	{AuditBroadcastChanged, AuditCatBroadcast},
+	{AuditAutoRuleSaved, AuditCatBroadcast},
+	{AuditAutoRuleDeleted, AuditCatBroadcast},
 	{AuditBroadcastTest, AuditCatBroadcast},
 	{AuditUserMessaged, AuditCatBroadcast},
 

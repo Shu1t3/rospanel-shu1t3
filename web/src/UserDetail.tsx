@@ -97,6 +97,7 @@ import i18n from './i18n'
 import { useCan } from './role'
 import { ExtendUserModal, RenameModal } from './UserModals'
 import { GroupChip, NoteAndTags } from './UserNotes'
+import { UserWallet } from './UserWallet'
 
 // planSelectData builds the tariff dropdown: "manual" plus enabled plans, and a
 // fallback entry if the user is on a plan that's hidden/disabled (so the current
@@ -140,11 +141,14 @@ export function UserDetail({
   onClose,
   onChanged,
   userBotEnabled,
+  onOpenUser,
 }: {
   user: User | null
   onClose: () => void
   onChanged: () => void
   userBotEnabled: boolean
+  // onOpenUser switches the card to another user (the one who invited this one, say).
+  onOpenUser?: (id: number) => void
 }) {
   const { t } = useTranslation()
   const [series, setSeries] = useState<DailyPoint[]>([])
@@ -195,6 +199,7 @@ export function UserDetail({
   const { confirm, confirmNode } = useConfirm()
   const canManage = useCan('users.manage')
   const canDelete = useCan('users.delete')
+  const canBillingView = useCan('billing.view')
   // The ban routes need security.manage; can_ban already says whether the address may be banned.
   const canBan = useCan('security.manage')
   // The encrypted Happ link is asked for on its own — each one is an RSA encryption,
@@ -1002,6 +1007,9 @@ export function UserDetail({
           </Panel>
           </ReadOnly>
 
+          {/* The balance, its ledger and the referral standing — billing's to see. */}
+          {billingOn && canBillingView && <UserWallet userId={user.id} onOpenUser={onOpenUser} />}
+
           {/* 6. The operator's own annotation of the account. */}
           <ReadOnly when={!canManage}>
           <Panel title={t('userDetail.noteAndTags')}>
@@ -1163,6 +1171,15 @@ export function UserDetail({
                     label="Telegram ID"
                     control={<Code copy>{String(user.tg_chat_id)}</Code>}
                   />
+                )}
+                {user.source && (
+                  <SettingRow label={t('userDetail.source')} control={<Code>{user.source}</Code>} />
+                )}
+                {user.blacklisted && (
+                  <p className="danger-tint rounded-lg px-3 py-2 text-xs text-danger">
+                    {t('userDetail.blacklisted')}
+                    {user.blacklist_reason ? `: ${user.blacklist_reason}` : ''}
+                  </p>
                 )}
               </>
             ) : user.telegram_link ? (

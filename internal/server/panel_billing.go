@@ -5,7 +5,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/payments"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
 )
 
 // paymentStats returns the revenue dashboard for the Payments page.
@@ -15,7 +17,15 @@ func (rt *Router) paymentStats(w http.ResponseWriter, _ *http.Request) {
 		writeManagerErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toPaymentStatsDTO(stats))
+	// Refunds go to the balance: the page offers them only while there is one.
+	wallet := false
+	if set, err := rt.mgr.Settings(); err == nil {
+		wallet = set.WalletEnabled
+	}
+	writeJSON(w, http.StatusOK, struct {
+		paymentStatsDTO
+		Wallet bool `json:"wallet"`
+	}{toPaymentStatsDTO(stats), wallet})
 }
 
 func (rt *Router) getBilling(w http.ResponseWriter, r *http.Request) {
@@ -43,6 +53,16 @@ func (rt *Router) getBilling(w http.ResponseWriter, r *http.Request) {
 		"trial_plan_id": set.BillingTrialPlanID,
 		"manual":        set.BillingManualEnabled,
 		"manual_label":  set.BillingManualLabel,
+		"wallet":        set.WalletEnabled,
+		"topup_min":     set.WalletTopupMin,
+		"ref_mode":      set.RefMode,
+		"ref_percent":   set.RefPercent,
+		"ref_days":      set.RefDays,
+		"ref_first":     set.RefFirstOnly,
+		"periods":       periodOffersOrEmpty(set.BillingPeriods),
+		"winback":       set.Winback,
+		"traffic_packs": packsOrEmpty(set.TrafficPacks),
+		"plan_change":   set.PlanChange,
 		"plans":         toTariffPlanDTOs(plans),
 		"plan_users":    planUsers,
 	})
@@ -56,6 +76,19 @@ func (rt *Router) saveBilling(w http.ResponseWriter, r *http.Request) {
 		PaymentNote string `json:"payment_note"`
 		Manual      bool   `json:"manual"`
 		ManualLabel string `json:"manual_label"`
+		Wallet      *bool  `json:"wallet"`
+		TopupMin    int    `json:"topup_min"`
+		RefMode     string `json:"ref_mode"`
+		RefPercent  int    `json:"ref_percent"`
+		RefDays     int    `json:"ref_days"`
+		RefFirst    *bool  `json:"ref_first"`
+		// Periods replaces the multi-period discounts; left out (null) keeps them.
+		Periods *[]model.PeriodOffer   `json:"periods"`
+		Winback *model.WinbackSettings `json:"winback"` // left out keeps it
+		// TrafficPacks replaces the packs on sale; PlanChange lets users switch plans.
+		// Left out keeps them.
+		TrafficPacks *[]model.TrafficPack `json:"traffic_packs"`
+		PlanChange   *bool                `json:"plan_change"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -71,6 +104,38 @@ func (rt *Router) saveBilling(w http.ResponseWriter, r *http.Request) {
 	set.BillingPaymentNote = strings.TrimSpace(req.PaymentNote)
 	set.BillingManualEnabled = req.Manual
 	set.BillingManualLabel = strings.TrimSpace(req.ManualLabel)
+	if req.Wallet != nil {
+		set.WalletEnabled = *req.Wallet
+	}
+	// A value left out (zero) keeps what is stored: a caller written before these
+	// fields existed must not have its save refused over them.
+	if req.TopupMin != 0 {
+		set.WalletTopupMin = req.TopupMin
+	}
+	if req.RefMode != "" {
+		set.RefMode = req.RefMode
+	}
+	if req.RefPercent != 0 {
+		set.RefPercent = req.RefPercent
+	}
+	if req.RefDays != 0 {
+		set.RefDays = req.RefDays
+	}
+	if req.RefFirst != nil {
+		set.RefFirstOnly = *req.RefFirst
+	}
+	if req.Periods != nil {
+		set.BillingPeriods = *req.Periods
+	}
+	if req.Winback != nil {
+		set.Winback = *req.Winback
+	}
+	if req.TrafficPacks != nil {
+		set.TrafficPacks = *req.TrafficPacks
+	}
+	if req.PlanChange != nil {
+		set.PlanChange = *req.PlanChange
+	}
 	if err := rt.mgr.SaveBillingSettings(set); err != nil {
 		writeManagerErr(w, err)
 		return
@@ -265,4 +330,36 @@ func (rt *Router) setUserPlan(w http.ResponseWriter, r *http.Request, userID int
 		return
 	}
 	writeOK(w)
+}
+
+// periodOffersOrEmpty keeps "no offers" a list in JSON, not null.
+func periodOffersOrEmpty(o []model.PeriodOffer) []model.PeriodOffer {
+	if o == nil {
+		return []model.PeriodOffer{}
+	}
+	return o
+}
+
+// listPaymentCallbacks is the journal of provider callbacks: what each one said and
+// what the panel did with it. Filters: provider, order, failed=1 (only the ones that
+// went wrong), before (an id, for the next page).
+func (rt *Router) listPaymentCallbacks(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	f := store.PaymentWebhookFilter{Provider: q.Get("provider"), Failed: q.Get("failed") == "1"}
+	f.OrderID, _ = strconv.ParseInt(q.Get("order"), 10, 64)
+	f.Before, _ = strconv.ParseInt(q.Get("before"), 10, 64)
+	f.Limit, _ = strconv.Atoi(q.Get("limit"))
+	out, err := rt.mgr.PaymentWebhooks(f)
+	if err != nil {
+		writeManagerErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func packsOrEmpty(p []model.TrafficPack) []model.TrafficPack {
+	if p == nil {
+		return []model.TrafficPack{}
+	}
+	return p
 }

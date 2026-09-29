@@ -127,6 +127,8 @@ func TestTariffPlanDTORoundTrip(t *testing.T) {
 	orig := model.TariffPlan{
 		ID:          101,
 		Slug:        "standard-monthly",
+		DevicePrice: 25,
+		DeviceMax:   10,
 		Name:        "Standard Monthly",
 		PriceRub:    500,
 		PeriodDays:  30,
@@ -144,7 +146,7 @@ func TestTariffPlanDTORoundTrip(t *testing.T) {
 	}
 
 	back := fromTariffPlanDTO(dto)
-	if back.ID != orig.ID || back.Name != orig.Name || len(back.GroupIDs) != len(orig.GroupIDs) {
+	if back.DevicePrice != orig.DevicePrice || back.DeviceMax != orig.DeviceMax || back.ID != orig.ID || back.Name != orig.Name || len(back.GroupIDs) != len(orig.GroupIDs) {
 		t.Fatalf("fromTariffPlanDTO mismatch: got %+v, want %+v", back, orig)
 	}
 }
@@ -217,5 +219,23 @@ func TestStatsDTOFieldFidelity(t *testing.T) {
 	asDTO := toASNStatDTO(as)
 	if asDTO.ASN != as.ASN || asDTO.Org != as.Org || asDTO.IPs != as.IPs || asDTO.Hits != as.Hits {
 		t.Errorf("asnStatDTO mismatch: got %+v, want %+v", asDTO, as)
+	}
+}
+
+// The HTTP representation must retain every billing field used by the payments UI.
+func TestPaymentOrderDTOBillingFields(t *testing.T) {
+	orig := model.PaymentOrder{ID: 1, Kind: "change", BalanceKop: 123, DiscountRub: 25,
+		PromoID: 2, PromoCode: "SAVE", Periods: 3, RefundedAt: 42, RefundSource: "balance",
+		Devices: 4, ChangeFrom: 5, ExpectExpire: 123456, PackBytes: 1024, DevicesBefore: 2}
+	raw, err := json.Marshal(toPaymentOrderDTO(&orig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back model.PaymentOrder
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatal(err)
+	}
+	if back != orig {
+		t.Fatalf("billing fields lost: got %+v, want %+v", back, orig)
 	}
 }

@@ -51,7 +51,7 @@ const ConnectionRetentionDays = 30
 
 // CancelledOrderRetentionDays is how long a cancelled (never-paid) order is kept. Paid
 // orders are never swept — they are the financial record.
-const CancelledOrderRetentionDays = 180
+const CancelledOrderRetentionDays = 365
 
 // ProbeRetentionDays is how long a scanning IP's row survives its last sighting. The
 // table is also hard-capped by row count; this ages out scanners that went quiet.
@@ -175,6 +175,12 @@ type User struct {
 	// derived from the id, so a panel's user ids can grow past the subnet's size.
 	AWGSlot int `json:"-"`
 
+	// ExtraDevices are devices bought beyond the plan's own (already in DeviceLimit);
+	// PackData is traffic bought on top of its quota (already in DataLimit), gone at
+	// the next reset.
+	ExtraDevices int   `json:"extra_devices"`
+	PackData     int64 `json:"pack_data"`
+
 	TgChatID int64 `json:"tg_chat_id"` // linked Telegram chat for the user bot (0 = not linked)
 
 	TgLinkCode   string `json:"-"` // pending one-time Telegram bind code (replaces sub-token deep links)
@@ -233,6 +239,16 @@ type TariffPlan struct {
 	// and what every pre-existing plan has) means the plan says nothing about access —
 	// the user keeps whatever groups they were given by hand.
 	GroupIDs []int64 `json:"group_ids"`
+	// DevicePrice is what one device beyond DeviceLimit costs per period, DeviceMax
+	// how many of them a user may add (0 = none sold). Only for a plan with a device
+	// limit and a term.
+	DevicePrice int `json:"device_price"`
+	DeviceMax   int `json:"device_max"`
+}
+
+// SellsDevices reports whether the plan sells extra devices.
+func (p TariffPlan) SellsDevices() bool {
+	return p.DevicePrice > 0 && p.DeviceMax > 0 && p.DeviceLimit > 0 && p.PeriodDays > 0
 }
 
 // ValidPlanResetPeriod reports whether p is an accepted tariff-level refill cycle.
@@ -266,7 +282,36 @@ type PaymentOrder struct {
 	PayURL     string `json:"pay_url,omitempty"`     // hosted payment URL for the user
 	CreatedAt  int64  `json:"created_at"`
 	PaidAt     int64  `json:"paid_at"`
+	// Kind is OrderPlan or OrderTopup. AmountRub is always the money that arrives from
+	// outside; BalanceKop is the part of the price the balance covers, DiscountRub
+	// what the promo code PromoID took off.
+	Kind        string `json:"kind"`
+	BalanceKop  int64  `json:"balance_kop"`
+	DiscountRub int    `json:"discount_rub"`
+	PromoID     int64  `json:"promo_id,omitempty"`
+	PromoCode   string `json:"promo_code,omitempty"`
+	// Periods is how many of the plan's periods the order buys; RefundedAt when its
+	// money was returned (0 = never), and RefundSource by whom: RefundToBalance or
+	// RefundByProvider.
+	Periods      int    `json:"periods"`
+	RefundedAt   int64  `json:"refunded_at,omitempty"`
+	RefundSource string `json:"refund_source,omitempty"`
+	// Devices: the extra devices a plan or change order comes with, or how many a
+	// devices order adds. ChangeFrom: the plan a change leaves. ExpectExpire: the term
+	// a change or devices order was priced for. PackBytes: a traffic order's traffic.
+	Devices      int   `json:"devices,omitempty"`
+	ChangeFrom   int64 `json:"change_from,omitempty"`
+	ExpectExpire int64 `json:"expect_expire,omitempty"`
+	PackBytes    int64 `json:"pack_bytes,omitempty"`
+	// DevicesBefore: a change's extra devices on the plan it left.
+	DevicesBefore int `json:"devices_before,omitempty"`
 }
+
+// Who returned an order's money (PaymentOrder.RefundSource).
+const (
+	RefundToBalance  = "balance"  // an operator put it on the user's balance
+	RefundByProvider = "provider" // the payment system refunded it, or a chargeback
+)
 
 // RegistrationRequest is a moderated self-registration awaiting an admin decision.
 // No user exists yet — approval creates one and links ChatID; rejection just drops
@@ -489,6 +534,7 @@ const (
 	WebhookPaymentCreated   = "payment.created"     // order opened
 	WebhookPaymentPaid      = "payment.paid"        // order paid, plan applied
 	WebhookPaymentCancelled = "payment.cancelled"   //
+	WebhookPaymentRefunded  = "payment.refunded"    // money returned: to the balance, or by the payment system
 )
 
 // WebhookEventCatalog is the stable key list the settings UI iterates over (display
@@ -505,6 +551,7 @@ var WebhookEventCatalog = []string{
 	WebhookPaymentCreated,
 	WebhookPaymentPaid,
 	WebhookPaymentCancelled,
+	WebhookPaymentRefunded,
 }
 
 // ValidWebhookEvent reports whether k is a known webhook event key.
@@ -982,6 +1029,48 @@ type Settings struct {
 	BillingManualEnabled bool   `json:"-"`
 	BillingManualLabel   string `json:"-"`
 
+	// WalletEnabled lets users keep a balance: top it up, pay for plans from it and
+	// have it renew their plan when it runs out. WalletTopupMin is the smallest
+	// top-up, in roubles.
+	WalletEnabled  bool `json:"-"`
+	WalletTopupMin int  `json:"-"`
+	// RefMode is what a referrer earns when someone they invited pays: RefOff,
+	// RefPercent (RefPercent % of the payment on their balance) or RefDays (RefDays
+	// days on their plan). RefFirstOnly pays only for that person's first payment.
+	RefMode      string `json:"-"`
+	RefPercent   int    `json:"-"`
+	RefDays      int    `json:"-"`
+	RefFirstOnly bool   `json:"-"`
+	// BillingPeriods are the discounts for buying several periods at once.
+	BillingPeriods []PeriodOffer `json:"-"`
+	// Winback sends a user whose paid term lapsed a personal discount code.
+	Winback WinbackSettings `json:"-"`
+	// TrafficPacks are the extra traffic on sale to users with a paid plan that has a
+	// quota; PlanChange lets users switch plans while one is active.
+	TrafficPacks []TrafficPack `json:"-"`
+	PlanChange   bool          `json:"-"`
+	// MiniAppPath is the Mini App's random address segment; TGMenuURL the address the
+	// user bot's menu button was last set to.
+	MiniAppPath string `json:"-"`
+	TGMenuURL   string `json:"-"`
+
+	// AutoUpdateCron is when the panel checks for a newer release and installs it (in
+	// the panel's timezone; "" = never); AutoUpdateNodes has the servers follow.
+	// AutoUpdateLastAt / AutoUpdateLast are the last attempt and its outcome — see
+	// the autoupdate package for the outcome's form.
+	AutoUpdateCron   string `json:"-"`
+	AutoUpdateNodes  bool   `json:"-"`
+	AutoUpdateLastAt int64  `json:"-"`
+	AutoUpdateLast   string `json:"-"`
+
+	// BlacklistEnabled refuses registration in the user bot to Telegram accounts on
+	// the shared blacklist fetched from BlacklistURL ("" = DefaultBlacklistURL).
+	// BlacklistSyncedAt / BlacklistError are the last fetch.
+	BlacklistEnabled  bool   `json:"-"`
+	BlacklistURL      string `json:"-"`
+	BlacklistSyncedAt int64  `json:"-"`
+	BlacklistError    string `json:"-"`
+
 	// PaymentWebhookSecret is the random URL segment the provider webhooks are
 	// mounted under (/<secret>/<provider>), so the callback path is fixed yet
 	// unguessable and doesn't reveal the hidden panel. Provider credentials
@@ -1093,6 +1182,9 @@ const (
 	// rather than riding XrayDown: nothing is down, the bill is what is at risk, and
 	// an operator who muted outage noise still wants to hear about overage.
 	AdminEventNodeTraffic int64 = 1 << 10
+	// AdminEventUpdate reports what the scheduled auto-update did: installed a
+	// release, sent the servers to one, or failed.
+	AdminEventUpdate int64 = 1 << 11
 )
 
 // AdminEventCatalog is the stable key→flag mapping the settings API/UI iterate
@@ -1112,6 +1204,7 @@ var AdminEventCatalog = []struct {
 	{"probe", AdminEventProbe},
 	{"login", AdminEventLogin},
 	{"node_traffic", AdminEventNodeTraffic},
+	{"update", AdminEventUpdate},
 }
 
 // AdminEventEnabled reports whether the given AdminEvent* flag is enabled.

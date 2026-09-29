@@ -9,6 +9,7 @@ import (
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/core"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/i18n"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/sub"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/telegram"
 )
 
@@ -42,6 +43,7 @@ func (rt *Router) getTelegram(w http.ResponseWriter, r *http.Request) {
 		"user_reg_mode":      set.RegMode(),
 		"user_reg_code":      set.TGUserRegCode,
 		"user_bot_username":  botUsername(r.Context(), set.TGUserBotToken, set.TelegramProxyURL()),
+		"user_miniapp_url":   sub.MiniAppURL(set),
 		"admin_events":       rt.mgr.AdminEventPrefs(),
 		"user_events":        userEvents,
 		"user_expiring_days": expiringDays,
@@ -436,4 +438,39 @@ func botUsernameFresh(ctx context.Context, token, proxy string) string {
 	delete(botNameCache, token+"\x00"+proxy)
 	botNameMu.Unlock()
 	return botUsername(ctx, token, proxy)
+}
+
+// getBlacklist reads the shared Telegram blacklist's settings and state.
+func (rt *Router) getBlacklist(w http.ResponseWriter, _ *http.Request) {
+	info, err := rt.mgr.BlacklistInfo()
+	if err != nil {
+		writeManagerErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
+// saveBlacklist turns the blacklist on or off and sets where it is fetched from.
+func (rt *Router) saveBlacklist(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Enabled bool   `json:"enabled"`
+		URL     string `json:"url"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := rt.mgr.SaveBlacklist(r.Context(), req.Enabled, req.URL); err != nil {
+		writeManagerErr(w, err)
+		return
+	}
+	rt.getBlacklist(w, r)
+}
+
+// refreshBlacklist fetches the list now.
+func (rt *Router) refreshBlacklist(w http.ResponseWriter, r *http.Request) {
+	if err := rt.mgr.RefreshBlacklist(r.Context()); err != nil {
+		writeManagerErr(w, err)
+		return
+	}
+	rt.getBlacklist(w, r)
 }

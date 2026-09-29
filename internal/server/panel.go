@@ -41,6 +41,12 @@ type userView struct {
 	TelegramLinked   bool             `json:"telegram_linked"`
 	TelegramLink     string           `json:"telegram_link"`      // public user bot URL
 	TelegramDeepLink string           `json:"telegram_deep_link"` // bind this (panel-created) account
+	// Blacklisted: the linked Telegram account is on the shared blacklist, for the
+	// reason given. Filled in for the user card only.
+	Blacklisted     bool   `json:"blacklisted,omitempty"`
+	BlacklistReason string `json:"blacklist_reason,omitempty"`
+	// Source is the /start tag the user came with (user card only).
+	Source string `json:"source,omitempty"`
 }
 
 // namedLink is one share link with the node name a client displays for it.
@@ -361,6 +367,8 @@ func (rt *Router) panelMux() http.Handler {
 	authedOwner("DELETE /api/roles/{key}", rt.deleteRole)
 	canUpdate("GET /api/update", rt.checkUpdate)
 	canUpdate("POST /api/update", rt.applyUpdate)
+	canUpdate("GET /api/update/auto", rt.getAutoUpdate)
+	canUpdate("POST /api/update/auto", rt.postAutoUpdate)
 	canSettingsManage("POST /api/setup/timezone", rt.setupTimezone)
 	canSettingsManage("POST /api/setup/finish", rt.setupFinish)
 	canConfigView("GET /api/settings", rt.getSettings)
@@ -490,6 +498,11 @@ func (rt *Router) panelMux() http.Handler {
 	canUsersManage("POST /api/users/{id}/telegram/message", withID(rt.messageUser))
 	canUsersManage("POST /api/users/{id}/reset-period", withID(rt.setResetPeriod))
 	canUsersManage("POST /api/users/{id}/plan", withID(rt.setUserPlan))
+	// The wallet is money, so it is billing's to show and to change.
+	canBillingView("GET /api/users/{id}/wallet", withID(rt.userWallet))
+	canBillingManage("POST /api/users/{id}/balance", withID(rt.adjustUserBalance))
+	canBillingManage("POST /api/users/{id}/autorenew", withID(rt.setUserAutoRenew))
+	canBillingView("GET /api/users/{id}/referrals", withID(rt.userReferrals))
 	canUsersView("GET /api/users/{id}/events", withID(rt.userEvents))
 	// Moderated self-registration queue (empty unless the user bot's mode is moderation).
 	canUsersView("GET /api/registrations", rt.listRegistrations)
@@ -505,11 +518,24 @@ func (rt *Router) panelMux() http.Handler {
 	canBillingManage("DELETE /api/billing/plans/{id}", withID(rt.deleteTariffPlan))
 	canBillingManage("POST /api/billing/plans/{id}/migrate", withID(rt.migratePlanUsers))
 	canBillingView("GET /api/billing/orders", rt.listPaymentOrders)
+	canBillingView("GET /api/billing/promos", rt.listPromos)
+	canBillingManage("POST /api/billing/promos", rt.savePromo)
+	canBillingManage("DELETE /api/billing/promos/{id}", withID(rt.deletePromo))
+	canBillingView("GET /api/billing/promos/{id}/uses", withID(rt.promoUses))
+	canBillingView("GET /api/billing/referrals", rt.referralStats)
+	canBillingManage("POST /api/billing/orders/{id}/refund", withID(rt.refundOrder))
 	canBillingManage("POST /api/billing/orders/{id}/confirm", withID(rt.confirmPaymentOrder))
 	canBillingManage("POST /api/billing/orders/{id}/cancel", withID(rt.cancelPaymentOrder))
 	canPayments("GET /api/payments", rt.getPayments)
 	canPayments("POST /api/payments", rt.savePayments)
 	canBillingView("GET /api/payments/stats", rt.paymentStats)
+	canBillingView("GET /api/payments/funnel", rt.paymentFunnel)
+	// Names accounts and what they share (addresses, devices): billing.manage, like
+	// the callbacks.
+	canBillingManage("GET /api/payments/fraud", rt.fraudSignals)
+	// The callbacks carry what the payer told the provider (an email, a phone), so
+	// reading them is for whoever may change billing, not merely view it.
+	canBillingManage("GET /api/payments/callbacks", rt.listPaymentCallbacks)
 	canStatsOrUsersView("GET /api/stats/series", rt.statsSeries)
 	canStatsOrUsersView("GET /api/stats/nodes", rt.statsNodes)
 	canStatsView("GET /api/stats/users", rt.statsByUser)
@@ -580,6 +606,9 @@ func (rt *Router) panelMux() http.Handler {
 	// where full backups go — no permission reaches that far (see model.PermImplies).
 	authedOwner("GET /api/telegram", rt.getTelegram)
 	authedOwner("POST /api/telegram", rt.saveTelegram)
+	authedOwner("GET /api/telegram/blacklist", rt.getBlacklist)
+	authedOwner("POST /api/telegram/blacklist", rt.saveBlacklist)
+	authedOwner("POST /api/telegram/blacklist/refresh", rt.refreshBlacklist)
 	authedOwner("POST /api/telegram/link", rt.genTelegramLink)
 	authedOwner("GET /api/telegram/link/status", rt.telegramLinkStatus)
 	authedOwner("POST /api/telegram/link/cancel", rt.cancelTelegramLink)
@@ -593,6 +622,9 @@ func (rt *Router) panelMux() http.Handler {
 	canBroadcasts("POST /api/broadcasts", rt.createBroadcast)
 	canBroadcasts("GET /api/broadcasts/audience", rt.broadcastAudience)
 	canBroadcasts("POST /api/broadcasts/test", rt.testBroadcast)
+	canBroadcasts("GET /api/broadcasts/rules", rt.listAutoRules)
+	canBroadcasts("POST /api/broadcasts/rules", rt.saveAutoRule)
+	canBroadcasts("DELETE /api/broadcasts/rules/{id}", withID(rt.deleteAutoRule))
 	canBroadcasts("GET /api/broadcasts/{id}", withID(rt.getBroadcast))
 	canBroadcasts("POST /api/broadcasts/{id}/pause", withID(rt.pauseBroadcast))
 	canBroadcasts("POST /api/broadcasts/{id}/resume", withID(rt.resumeBroadcast))

@@ -101,6 +101,19 @@ type Manager struct {
 	// deviceCheckedAt is when a flush last re-checked the device limits (unix; see
 	// deviceCheckEvery).
 	deviceCheckedAt atomic.Int64
+	// winbackAt is when the win-back sweep last ran (unix); it runs hourly.
+	winbackAt atomic.Int64
+	// billingStandby disables financial background actions on a standby master.
+	billingStandby atomic.Bool
+
+	// miniSignups bounds registrations through the Mini App entrance.
+	miniSignups miniAppSignups
+	miniRegMu   sync.Mutex
+
+	// fraudCache is the last computed fraud signals, from fraudAt.
+	fraudMu    sync.Mutex
+	fraudCache []model.FraudSignal
+	fraudAt    time.Time
 	// accPending buffers sightings between flushes, so the access-log reader never
 	// touches the database on the hot path. Bounded by the throttle above: one entry
 	// per user+IP per flush interval, not per log line.
@@ -201,6 +214,7 @@ type Manager struct {
 	// the admin bot to post a signup awaiting moderation with approve/reject buttons.
 	notifyMu      sync.Mutex
 	userNotify    func(chatID int64, html string)
+	userMessage   func(chatID int64, html string, buttons []model.BroadcastButton) error // with URL buttons, sent at once (automatic messages)
 	adminNotify   func(html string)
 	adminModerate func(reqID int64, name, plan string)
 	adminLogin    func(LoginAlert) // a sign-in from a new address, with the revoke button
@@ -226,6 +240,8 @@ type Manager struct {
 	// concurrent confirmers — a webhook + the poll fallback, or two orders for the
 	// same user — which would otherwise lose or double a paid period.
 	applyPlanMu sync.Mutex
+	// promoTry bounds how many promo codes one user may try in a window.
+	promoTry promoTries
 
 	vpnMu       sync.Mutex
 	vpnUp       int64 // current VPN throughput (bytes/sec), from Xray stats deltas
@@ -341,7 +357,7 @@ type Manager struct {
 	// reports one, which is how an agent older than the feature is told apart from a
 	// tunnel that is genuinely down — the difference between "nothing known" and "it
 	// is broken", and alerting on the first would page every operator mid-upgrade.
-	nodeAWG map[int64]nodeAWGState
+	nodeAWG        map[int64]nodeAWGState
 	nodeAWGRunning map[int64]bool
 	nodeAWGErr     map[int64]string
 	nodeComponents map[int64][]nodeapi.ComponentStatus
