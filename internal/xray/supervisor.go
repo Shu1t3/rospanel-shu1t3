@@ -238,7 +238,9 @@ func (s *Supervisor) SetPublicPort(tag string, port int) {
 	if s.publicPorts == nil {
 		s.publicPorts = map[string]uint16{}
 	}
-	if port == 0 {
+	// Only a real port is kept: anything outside 1–65535 would wrap into another one
+	// when narrowed to 16 bits.
+	if port <= 0 || port > 65535 {
 		delete(s.publicPorts, tag)
 	} else {
 		s.publicPorts[tag] = uint16(port)
@@ -754,7 +756,6 @@ func (s *Supervisor) runningMatchesDisk() bool {
 	_, ok := planUserChanges(applied, disk)
 	return ok
 }
-
 
 // ApplyRaw is Apply for a config that is already marshaled JSON — used by the node
 // agent, which receives the exact config the panel generated and applies it
@@ -1419,7 +1420,6 @@ func accessDest(line string) string {
 	return ""
 }
 
-
 // hostOf strips the optional network prefix and the port off an Xray address token
 // ("tcp:1.2.3.4:5678", "udp:[2001:db8::1]:53", "example.com:443"), returning the
 // bare host. Tokens without a port pass through unchanged.
@@ -1662,7 +1662,6 @@ func parseStats(data []byte) map[string]Traffic {
 	}
 	return out
 }
-
 
 // foldStat puts one "user>>>u1>>>traffic>>>uplink" counter into out.
 func foldStat(out map[string]Traffic, name string, val int64) {

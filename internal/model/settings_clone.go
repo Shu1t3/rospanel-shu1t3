@@ -14,6 +14,8 @@ func (s *Settings) Clone() *Settings {
 	c := *s
 	c.ProxyAccounts = slices.Clone(s.ProxyAccounts)
 	c.SubRules = slices.Clone(s.SubRules)
+	c.BillingPeriods = slices.Clone(s.BillingPeriods)
+	c.TrafficPacks = slices.Clone(s.TrafficPacks)
 	c.ConnPolicy.Countries = slices.Clone(s.ConnPolicy.Countries)
 	c.Routing = s.Routing.clone()
 	return &c

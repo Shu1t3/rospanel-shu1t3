@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"net/url"
 	"reflect"
 	"slices"
 	"sort"
@@ -95,6 +96,32 @@ type (
 		// ⇒ a manual order (admin confirms it); set ⇒ a hosted provider payment whose
 		// pay_url is returned.
 		Provider string `json:"provider,omitempty"`
+		// FromBalance buys the plan from the user's balance (after their discount
+		// code) instead of opening an order to pay; refused when the balance falls short.
+		FromBalance bool `json:"from_balance,omitempty"`
+		// Periods: how many of the plan's periods to buy at once (0 = one); a number the
+		// billing settings offer a discount for.
+		Periods int `json:"periods,omitempty"`
+		// Kind "topup" opens a balance top-up of AmountRub instead of a plan order
+		// (plan_id is then left out); "" or "plan" buys the plan. "change" moves the
+		// user's active plan to plan_id for the rest of its term; "devices" adds
+		// devices to the plan held; "traffic" adds traffic pack number pack.
+		Kind string `json:"kind,omitempty"`
+		// Devices: for a plan or a change, the extra devices it comes with (left out =
+		// the ones held); for "devices", how many to add.
+		Devices   *int `json:"devices,omitempty"`
+		Pack      int  `json:"pack,omitempty"`
+		AmountRub int  `json:"amount_rub,omitempty"`
+		// ExpectExpireAt, with from_balance, is the expiry the caller showed the user
+		// (expire_at from the user or their subscription view): a retried request finds
+		// it moved by the first and buys nothing. Left out, every request buys. For
+		// devices and traffic it is the stamp from GET /v1/users/{id}/extras.
+		ExpectExpireAt *int64 `json:"expect_expire_at,omitempty"`
+		// Lang words the manual-payment instructions: ru | en (default en).
+		Lang string `json:"lang,omitempty"`
+		// ReturnURL is where a hosted payment sends the payer back to (http/https);
+		// left out, they are sent to Telegram.
+		ReturnURL string `json:"return_url,omitempty"`
 	}
 )
 
@@ -208,6 +235,17 @@ func (rt *Router) apiMux() http.Handler {
 	id("POST /v1/users/{id}/devices/unbind", rt.apiUnbindDevice)
 	id("GET /v1/users/{id}/events", rt.apiUserEvents)
 	id("GET /v1/users/{id}/abuse", rt.apiUserAbuse)
+	id("GET /v1/users/{id}/wallet", rt.apiUserWallet)
+	id("POST /v1/users/{id}/balance", rt.apiAdjustBalance)
+	id("GET /v1/users/{id}/referrals", rt.apiUserReferrals)
+	id("POST /v1/users/{id}/autorenew", rt.apiSetAutoRenew)
+	id("POST /v1/users/{id}/promo", rt.apiRedeemPromo)
+	id("GET /v1/users/{id}/quotes", rt.apiUserQuotes)
+	id("GET /v1/users/{id}/extras", rt.apiUserExtras)
+	id("POST /v1/users/{id}/telegram", rt.apiLinkTelegram)
+	id("GET /v1/users/{id}/subscription", rt.apiUserSubscription)
+	id("POST /v1/users/{id}/referrer", rt.apiSetReferrer)
+	id("POST /v1/users/{id}/source", rt.apiSetSource)
 
 	hf("GET /v1/billing/providers", rt.apiListProviders)
 	hf("GET /v1/billing/plans", rt.apiListPlans)
@@ -239,6 +277,7 @@ func (rt *Router) apiMux() http.Handler {
 	hf("GET /v1/metrics", rt.apiMetrics)
 	hf("GET /v1/summary", rt.apiSummary)
 	hf("GET /v1/system", rt.apiSystem)
+	hf("GET /v1/system/auto-update", rt.apiGetAutoUpdate)
 	hf("GET /v1/health/report", rt.apiHealthReport)
 	hf("GET /v1/backup", rt.apiBackup)
 	hf("GET /v1/backup/info", rt.apiBackupInfo)
@@ -269,6 +308,7 @@ func (rt *Router) apiMux() http.Handler {
 	nodeAudit("POST /v1/nodes/{id}/regen-join", "apiNodeRejoin", idFn(rt.apiRegenNodeJoin))
 	nodeAudit("POST /v1/nodes/{id}/update", "apiNodeUpdate", idFn(rt.apiUpdateNode))
 	nodeAudit("POST /v1/nodes/update-all", "apiNodesUpdateAll", rt.apiUpdateAllNodes)
+	nodeAudit("POST /v1/system/auto-update", "apiAutoUpdate", rt.apiPostAutoUpdate)
 	nodeAudit("POST /v1/nodes/{id}/proxy", "apiSystemProxy", idFn(rt.apiSetServerProxy))
 	nodeAudit("POST /v1/nodes/{id}/placement", "apiPlacement", idFn(rt.apiSetServerPlacement))
 	id("GET /v1/nodes/{id}/health", rt.apiNodeHealth)
@@ -315,6 +355,13 @@ func (rt *Router) apiMux() http.Handler {
 	// Billing configuration and payment providers — the setup half of selling.
 	hf("GET /v1/billing/settings", rt.apiGetBillingSettings)
 	nodeAudit("POST /v1/billing/settings", "apiBillingSettings", rt.apiSaveBillingSettings)
+	hf("GET /v1/billing/promos", rt.apiListPromos)
+	id("GET /v1/billing/promos/{id}/uses", rt.apiPromoUses)
+	hf("GET /v1/billing/referrals", rt.apiReferralStats)
+	hf("GET /v1/billing/funnel", rt.apiFunnel)
+	id("POST /v1/billing/orders/{id}/refund", rt.apiRefundOrder)
+	nodeAudit("POST /v1/billing/promos", "apiPromoSaved", rt.apiSavePromo)
+	nodeAudit("DELETE /v1/billing/promos/{id}", "apiPromoDeleted", idFn(rt.apiDeletePromo))
 	hf("GET /v1/payments", rt.apiPaymentProviders)
 	nodeAudit("POST /v1/payments", "apiPaymentProvider", rt.apiSavePaymentProvider)
 
@@ -618,12 +665,20 @@ func userMatches(u model.User, q string) bool {
 // apiListUsers lists users with optional filtering (?status, ?search, ?tag) and
 // pagination (?limit, ?offset). The result carries a "meta" block with the total
 // count (after filtering, before the page window) so callers can paginate.
+//
+// ?telegram_id and ?sub_token find one user by an index instead — what an outside bot
+// asks on every message it gets, so it must not read the whole table each time.
 func (rt *Router) apiListUsers(w http.ResponseWriter, r *http.Request) {
 	set, err := rt.mgr.Store().GetSettings()
 	if err != nil {
 		writeAPIManagerErr(w, err)
 		return
 	}
+	users, ok := rt.apiLookupUser(w, r)
+	if !ok {
+		return
+	}
+	lookup := users != nil
 	rt.applyTLSHints(set)
 
 	q := r.URL.Query()
@@ -634,7 +689,7 @@ func (rt *Router) apiListUsers(w http.ResponseWriter, r *http.Request) {
 	var window []model.User
 	var meta PageMeta
 
-	if status == "" && search == "" && tag == "" {
+	if !lookup && status == "" && search == "" && tag == "" {
 		offset := clampNonNeg(atoiOr(q.Get("offset"), 0))
 		limit := atoiOr(q.Get("limit"), defaultPageLimit)
 		if limit > maxPageLimit {
@@ -648,10 +703,12 @@ func (rt *Router) apiListUsers(w http.ResponseWriter, r *http.Request) {
 		window = pagedUsers
 		meta = PageMeta{Total: total, Offset: offset, Limit: limit}
 	} else {
-		users, err := rt.mgr.Store().ListUsers()
-		if err != nil {
-			writeAPIManagerErr(w, err)
-			return
+		if !lookup {
+			users, err = rt.mgr.Store().ListUsers()
+			if err != nil {
+				writeAPIManagerErr(w, err)
+				return
+			}
 		}
 		filtered := users[:0:0]
 		for _, u := range users {
@@ -681,6 +738,44 @@ func (rt *Router) apiListUsers(w http.ResponseWriter, r *http.Request) {
 		views = append(views, makeUserView(u, set, "", custom, groupsMap[u.ID], model.AccessOf(accessMap, u.ID)))
 	}
 	writeJSON(w, http.StatusOK, PageEnvelope[userView]{Data: views, Meta: meta})
+}
+
+// apiLookupUser answers ?telegram_id / ?sub_token: the matching user as a list of
+// one (or none), or nil when neither is asked. ok is false when it wrote an error.
+func (rt *Router) apiLookupUser(w http.ResponseWriter, r *http.Request) ([]model.User, bool) {
+	q := r.URL.Query()
+	var u *model.User
+	var err error
+	if q.Has("telegram_id") && q.Has("sub_token") {
+		writeAPIErr(w, http.StatusBadRequest, "bad_request", "telegram_id or sub_token, not both")
+		return nil, false
+	}
+	switch {
+	case q.Has("telegram_id"):
+		chat, perr := strconv.ParseInt(q.Get("telegram_id"), 10, 64)
+		if perr != nil || chat <= 0 {
+			writeAPIErr(w, http.StatusBadRequest, "bad_request", "invalid telegram_id")
+			return nil, false
+		}
+		u, err = rt.mgr.Store().GetUserByTelegramChatID(chat)
+	case q.Has("sub_token"):
+		tok := strings.TrimSpace(q.Get("sub_token"))
+		if tok == "" {
+			writeAPIErr(w, http.StatusBadRequest, "bad_request", "invalid sub_token")
+			return nil, false
+		}
+		u, err = rt.mgr.Store().GetUserBySubToken(tok)
+	default:
+		return nil, true
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return []model.User{}, true
+	}
+	if err != nil {
+		writeAPIManagerErr(w, err)
+		return nil, false
+	}
+	return []model.User{*u}, true
 }
 
 // atoiOr parses s as an int, returning def on any failure (empty or malformed).
@@ -1082,7 +1177,18 @@ func (rt *Router) apiListPlans(w http.ResponseWriter, r *http.Request) {
 
 func (rt *Router) apiListOrders(w http.ResponseWriter, r *http.Request) {
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
-	orders, err := rt.mgr.ListPaymentOrders(status)
+	var orders []model.PaymentOrder
+	var err error
+	if s := r.URL.Query().Get("user_id"); s != "" {
+		userID, perr := strconv.ParseInt(s, 10, 64)
+		if perr != nil || userID <= 0 {
+			writeAPIErr(w, http.StatusBadRequest, "bad_request", "invalid user_id")
+			return
+		}
+		orders, err = rt.mgr.UserPaymentOrders(status, userID)
+	} else {
+		orders, err = rt.mgr.ListPaymentOrders(status)
+	}
 	if err != nil {
 		writeAPIManagerErr(w, err)
 		return
@@ -1122,8 +1228,55 @@ func (rt *Router) apiCreateOrder(w http.ResponseWriter, r *http.Request) {
 	if !apiDecode(w, r, &req) {
 		return
 	}
+	if req.ReturnURL != "" {
+		if u, err := url.Parse(req.ReturnURL); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			writeAPIErr(w, http.StatusBadRequest, "bad_request", "return_url must be an http(s) address")
+			return
+		}
+	}
+	lang := i18n.EN
+	if req.Lang != "" {
+		lang = i18n.Normalize(req.Lang)
+	}
+	p := core.Purchase{Kind: req.Kind, PlanID: req.PlanID, Periods: max(req.Periods, 1), Devices: core.KeepDevices, Pack: req.Pack}
+	if req.Devices != nil {
+		p.Devices = max(*req.Devices, 0)
+	}
+	switch req.Kind {
+	case "", model.OrderPlan:
+		p.Kind = model.OrderPlan
+	case model.OrderChange, model.OrderTraffic:
+	case model.OrderDevices:
+		if req.Devices == nil {
+			writeAPIErr(w, http.StatusBadRequest, "bad_request", "devices: how many to add")
+			return
+		}
+	case model.OrderTopup:
+		if req.PlanID != 0 || req.FromBalance || req.Periods != 0 {
+			writeAPIErr(w, http.StatusBadRequest, "bad_request", "a top-up takes amount_rub, not plan_id, from_balance or periods")
+			return
+		}
+		rt.apiCreateTopup(w, r, req, lang)
+		return
+	default:
+		writeAPIRejected(w, "err.orderKind", "kind: plan, topup, change, devices or traffic", nil)
+		return
+	}
+	if req.FromBalance {
+		expect := core.AnyExpiry
+		if req.ExpectExpireAt != nil {
+			expect = *req.ExpectExpireAt
+		}
+		order, err := rt.mgr.BuyFromBalance(r.Context(), req.UserID, p, expect)
+		if err != nil {
+			writeAPIManagerErr(w, err)
+			return
+		}
+		writeAPIData(w, http.StatusCreated, map[string]any{"order": order})
+		return
+	}
 	if req.Provider == "" || req.Provider == sub.ManualPayKey {
-		order, msg, err := rt.mgr.RequestPlanPayment(r.Context(), i18n.EN, req.UserID, req.PlanID)
+		order, msg, err := rt.mgr.RequestPurchaseManual(r.Context(), lang, req.UserID, p)
 		if err != nil {
 			writeAPIManagerErr(w, err)
 			return
@@ -1131,7 +1284,31 @@ func (rt *Router) apiCreateOrder(w http.ResponseWriter, r *http.Request) {
 		writeAPIData(w, http.StatusCreated, map[string]any{"order": toPaymentOrderDTO(order), "message": msg})
 		return
 	}
-	order, err := rt.mgr.StartPlanPayment(r.Context(), i18n.EN, req.UserID, req.PlanID, req.Provider)
+	returnURL := req.ReturnURL
+	if returnURL == "" {
+		returnURL = "https://t.me/"
+	}
+	order, err := rt.mgr.StartPurchase(r.Context(), lang, req.UserID, p, req.Provider, returnURL)
+	if err != nil {
+		writeAPIManagerErr(w, err)
+		return
+	}
+	writeAPIData(w, http.StatusCreated, map[string]any{"order": order, "pay_url": order.PayURL})
+}
+
+// apiCreateTopup opens a balance top-up: a manual one (instructions in the message,
+// an admin confirms it) or a hosted provider payment.
+func (rt *Router) apiCreateTopup(w http.ResponseWriter, r *http.Request, req apiCreateOrderReq, lang i18n.Lang) {
+	if req.Provider == "" || req.Provider == sub.ManualPayKey {
+		order, msg, err := rt.mgr.RequestTopupManual(r.Context(), lang, req.UserID, req.AmountRub)
+		if err != nil {
+			writeAPIManagerErr(w, err)
+			return
+		}
+		writeAPIData(w, http.StatusCreated, map[string]any{"order": order, "message": msg})
+		return
+	}
+	order, err := rt.mgr.StartTopup(r.Context(), lang, req.UserID, req.AmountRub, req.Provider, req.ReturnURL)
 	if err != nil {
 		writeAPIManagerErr(w, err)
 		return

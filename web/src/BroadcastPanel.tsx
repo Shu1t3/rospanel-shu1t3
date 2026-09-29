@@ -15,6 +15,7 @@ import {
   testBroadcast,
 } from "./api";
 import { HtmlEditor } from "./HtmlEditor";
+import { AutoRules } from "./AutoRules";
 import { useShowMore } from "./hooks";
 import { errMessage, notifyError, notifySuccess } from "./notify";
 import {
@@ -401,6 +402,8 @@ export function BroadcastPanel() {
           </div>
         </div>
       </Panel>
+
+      <AutoRules />
 
       <Panel title={t("bc.history")}>
         {list.length === 0 ? (

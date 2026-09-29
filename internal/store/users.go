@@ -15,7 +15,8 @@ const userCols = `id, name, uuid, password, sub_token, enabled,
 	reset_period, last_reset_at, last_seen, device_limit, speed_limit, tg_chat_id,
 	plan_id, trial_used, tg_link_code, tg_link_code_at, notified_status,
 	notified_expire_at, notified_quota_at, device_over_since, note, tags, wg_private_key,
-	abuse_action, abuse_until, abuse_prev_speed, abuse_warned_day, hold_seconds, awg_slot`
+	abuse_action, abuse_until, abuse_prev_speed, abuse_warned_day, hold_seconds, awg_slot,
+	extra_devices, pack_data`
 
 // Lookups by a column whose index is partial. SQLite uses a partial index only when
 // the query's own WHERE implies the index's, and to the planner "sub_token = ?" does
@@ -935,9 +936,10 @@ func (s *Store) SetUserLimits(id, dataLimit, expireAt int64, deviceLimit int) er
 func setUserLimitsOn(ex execer, id, dataLimit, expireAt int64, deviceLimit int) error {
 	_, err := ex.Exec(
 		`UPDATE users SET data_limit = ?, expire_at = ?, device_limit = ?,
+		   pack_data = CASE WHEN data_limit = ? THEN pack_data ELSE 0 END,
 		   hold_seconds = CASE WHEN ? > 0 THEN 0 ELSE hold_seconds END
 		 WHERE id = ?`,
-		dataLimit, expireAt, deviceLimit, expireAt, id,
+		dataLimit, expireAt, deviceLimit, dataLimit, expireAt, id,
 	)
 	return err
 }
@@ -946,8 +948,11 @@ func setUserLimitsOn(ex execer, id, dataLimit, expireAt int64, deviceLimit int) 
 // not part of the write, so a quota saved by a caller that last read the user before
 // their first connection cannot write back the term that connection replaced.
 func (s *Store) SetUserQuota(id, dataLimit int64, deviceLimit int) error {
-	_, err := s.db.Exec(`UPDATE users SET data_limit = ?, device_limit = ? WHERE id = ?`,
-		dataLimit, deviceLimit, id)
+	// Bought traffic is part of the limit: it stays while the limit does, and goes
+	// with a limit set anew.
+	_, err := s.db.Exec(`UPDATE users SET data_limit = ?, device_limit = ?,
+		pack_data = CASE WHEN data_limit = ? THEN pack_data ELSE 0 END WHERE id = ?`,
+		dataLimit, deviceLimit, dataLimit, id)
 	return err
 }
 
@@ -959,9 +964,10 @@ func (s *Store) SetUserQuota(id, dataLimit int64, deviceLimit int) error {
 // can land between them.
 func (s *Store) SetUserLimitsIfTerm(id, dataLimit, expireAt, holdSeconds int64, deviceLimit int, seenExpireAt, seenHoldSeconds int64) (bool, error) {
 	res, err := s.db.Exec(`
-		UPDATE users SET data_limit = ?, expire_at = ?, hold_seconds = ?, device_limit = ?
+		UPDATE users SET data_limit = ?, expire_at = ?, hold_seconds = ?, device_limit = ?,
+		  pack_data = CASE WHEN data_limit = ? THEN pack_data ELSE 0 END
 		WHERE id = ? AND expire_at = ? AND hold_seconds = ?`,
-		dataLimit, expireAt, holdSeconds, deviceLimit, id, seenExpireAt, seenHoldSeconds)
+		dataLimit, expireAt, holdSeconds, deviceLimit, dataLimit, id, seenExpireAt, seenHoldSeconds)
 	if err != nil {
 		return false, err
 	}
@@ -1499,6 +1505,9 @@ func (s *Store) DeleteUser(id int64) error {
 	if _, err := tx.Exec(`UPDATE tg_subscribers SET user_id = NULL WHERE user_id = ?`, id); err != nil {
 		return err
 	}
+	if err := forgetWalletOn(tx, "?", []any{id}); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`DELETE FROM users WHERE id = ?`, id); err != nil {
 		return err
 	}
@@ -1544,6 +1553,9 @@ func (s *Store) DeleteUsers(ids []int64) (int64, error) {
 			`UPDATE tg_subscribers SET user_id = NULL WHERE user_id IN (`+placeholders(len(ids))+`)`,
 			args...,
 		); err != nil {
+			return err
+		}
+		if err := forgetWalletOn(tx, placeholders(len(ids)), args); err != nil {
 			return err
 		}
 		res, err := tx.Exec(`DELETE FROM users WHERE id IN (`+placeholders(len(ids))+`)`, args...)
@@ -1611,6 +1623,7 @@ func (s *Store) queryUsersOn(db *sql.DB, query string, args ...any) ([]model.Use
 			&u.PlanID, &trialUsed, &u.TgLinkCode, &u.TgLinkCodeAt, &u.NotifiedStatus,
 			&u.NotifiedExpireAt, &u.NotifiedQuotaAt, &u.DeviceOverSince, &u.Note, &tags, &u.WGPrivateKey,
 			&u.AbuseAction, &u.AbuseUntil, &u.AbusePrevSpeed, &u.AbuseWarnedDay, &u.HoldSeconds, &u.AWGSlot,
+			&u.ExtraDevices, &u.PackData,
 		); err != nil {
 			return nil, err
 		}
@@ -1771,4 +1784,11 @@ func (s *Store) StampDeviceOverLimit(now int64) error {
 		}
 		return nil
 	})
+}
+
+// SetUserCreatedAt moves a user's join date — what the funnel counts by. For tests
+// and data brought over from elsewhere.
+func (s *Store) SetUserCreatedAt(id, at int64) error {
+	_, err := s.db.Exec(`UPDATE users SET created_at = ? WHERE id = ?`, at, id)
+	return err
 }

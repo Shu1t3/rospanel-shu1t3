@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+
+	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 )
 
 // The half of billing that was panel-only: which plan is the free/trial one, the
@@ -26,6 +28,16 @@ type (
 		PaymentNote string `json:"payment_note"`  // shown with manual payment instructions
 		Manual      bool   `json:"manual"`        // offer manual payment beside the providers
 		ManualLabel string `json:"manual_label"`  // its pay-button label ("" = the default wording)
+		Wallet      *bool  `json:"wallet"`        // users keep a balance: top-ups, paying and renewing from it
+		TopupMin    int    `json:"topup_min"`     // smallest top-up, roubles
+		RefMode     string `json:"ref_mode"`      // off | percent | days — what a referrer earns
+		RefPercent  int    `json:"ref_percent"`   // percent of an invited user's payment, onto the balance
+		RefDays     int    `json:"ref_days"`      // days onto the referrer's plan
+		RefFirst    *bool  `json:"ref_first"`     // reward only the invited user's first payment
+		// Periods are the discounts for buying several periods at once; left out keeps them.
+		Periods *[]model.PeriodOffer `json:"periods"`
+		// Winback sends a user whose paid term lapsed a personal discount code; left out keeps it.
+		Winback *model.WinbackSettings `json:"winback"`
 	}
 	apiMigratePlanReq struct {
 		ToPlanID int64 `json:"to_plan_id"`
@@ -53,6 +65,14 @@ func (rt *Router) apiGetBillingSettings(w http.ResponseWriter, _ *http.Request) 
 		PaymentNote: set.BillingPaymentNote,
 		Manual:      set.BillingManualEnabled,
 		ManualLabel: set.BillingManualLabel,
+		Wallet:      &set.WalletEnabled,
+		TopupMin:    set.WalletTopupMin,
+		RefMode:     set.RefMode,
+		RefPercent:  set.RefPercent,
+		RefDays:     set.RefDays,
+		RefFirst:    &set.RefFirstOnly,
+		Periods:     ptrTo(periodOffersOrEmpty(set.BillingPeriods)),
+		Winback:     &set.Winback,
 	})
 }
 
@@ -72,6 +92,32 @@ func (rt *Router) apiSaveBillingSettings(w http.ResponseWriter, r *http.Request)
 	set.BillingPaymentNote = strings.TrimSpace(req.PaymentNote)
 	set.BillingManualEnabled = req.Manual
 	set.BillingManualLabel = strings.TrimSpace(req.ManualLabel)
+	if req.Wallet != nil {
+		set.WalletEnabled = *req.Wallet
+	}
+	// A value left out (zero) keeps what is stored: a caller written before these
+	// fields existed must not have its save refused over them.
+	if req.TopupMin != 0 {
+		set.WalletTopupMin = req.TopupMin
+	}
+	if req.RefMode != "" {
+		set.RefMode = req.RefMode
+	}
+	if req.RefPercent != 0 {
+		set.RefPercent = req.RefPercent
+	}
+	if req.RefDays != 0 {
+		set.RefDays = req.RefDays
+	}
+	if req.RefFirst != nil {
+		set.RefFirstOnly = *req.RefFirst
+	}
+	if req.Periods != nil {
+		set.BillingPeriods = *req.Periods
+	}
+	if req.Winback != nil {
+		set.Winback = *req.Winback
+	}
 	// Designating a plan free/trial also makes it free and re-applies it to everyone
 	// already on it — see core.SaveBillingSettings.
 	if err := rt.mgr.SaveBillingSettings(set); err != nil {
@@ -181,3 +227,5 @@ func (rt *Router) apiCancelUserPlan(w http.ResponseWriter, r *http.Request, id i
 	}
 	rt.apiUserView(w, *after)
 }
+
+func ptrTo[T any](v T) *T { return &v }

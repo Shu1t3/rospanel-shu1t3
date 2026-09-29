@@ -42,13 +42,16 @@ type Panel interface {
 	ListTariffPlans(includeDisabled bool) ([]model.TariffPlan, error)
 	ApplyPlanToUser(ctx context.Context, userID, planID int64, extendFromCurrent bool) error
 	PlanName(planID int64) string
-	RequestPlanPayment(ctx context.Context, lang i18n.Lang, userID, planID int64) (*model.PaymentOrder, string, error)
+	RequestPlanPayment(ctx context.Context, lang i18n.Lang, userID, planID int64, periods int) (*model.PaymentOrder, string, error)
 	// CreateRegisteredUser signs a new user up (active, for the open/invite modes).
 	CreateRegisteredUser(ctx context.Context, name string) (*model.User, error)
 	// RequestRegistration records a moderated signup (no user yet); ApproveRegistration
 	// Request creates the user, RejectRegistrationRequest drops it.
 	RequestRegistration(ctx context.Context, chatID int64, name string) (bool, error)
 	RegistrationPending(chatID int64) bool
+	// RegistrationBlacklisted: the account is on the shared blacklist and the operator
+	// refuses such accounts a signup.
+	RegistrationBlacklisted(tgID int64) bool
 	ApproveRegistrationRequest(ctx context.Context, reqID int64) error
 	RejectRegistrationRequest(ctx context.Context, reqID int64) error
 	// ActivePaidPlan reports the user's active paid plan (nil = none), and
@@ -63,8 +66,36 @@ type Panel interface {
 	ManualPayment() bool
 	ManualPaymentLabel(lang i18n.Lang) string
 	ProviderLabel(key string) string
-	StartPlanPayment(ctx context.Context, lang i18n.Lang, userID, planID int64, provider string) (*model.PaymentOrder, error)
+	StartPlanPayment(ctx context.Context, lang i18n.Lang, userID, planID int64, provider string, periods int) (*model.PaymentOrder, error)
+
+	// Wallet, promo codes and referrals (no-op surface unless the operator turns them on).
+	QuotePlan(u model.User, plan *model.TariffPlan) core.PlanQuote
+	BuyPlanFromBalance(ctx context.Context, userID, planID, expectExpire int64, periods int) (*model.PaymentOrder, error)
+	QuotePlanFor(u model.User, plan *model.TariffPlan, periods int) core.PlanQuote
+	PeriodOffers(u model.User, plan *model.TariffPlan) []core.PlanQuote
+	// Purchases beyond a plain plan: extra devices, a plan change, add-ons.
+	QuotePurchase(u model.User, p core.Purchase) (core.PlanQuote, error)
+	StartPurchase(ctx context.Context, lang i18n.Lang, userID int64, p core.Purchase, provider, returnURL string) (*model.PaymentOrder, error)
+	RequestPurchaseManual(ctx context.Context, lang i18n.Lang, userID int64, p core.Purchase) (*model.PaymentOrder, string, error)
+	BuyFromBalance(ctx context.Context, userID int64, p core.Purchase, expectExpire int64) (*model.PaymentOrder, error)
+	ChangeOffers(u model.User) []core.ChangeOffer
+	Addons(u model.User) core.AddonOffers
+	StartTopup(ctx context.Context, lang i18n.Lang, userID int64, amountRub int, provider, returnURL string) (*model.PaymentOrder, error)
+	RequestTopupManual(ctx context.Context, lang i18n.Lang, userID int64, amountRub int) (*model.PaymentOrder, string, error)
+	Wallet(userID int64) (model.Wallet, error)
+	SetAutoRenew(ctx context.Context, userID int64, on bool) error
+	RedeemPromo(ctx context.Context, userID int64, code string) (*core.PromoResult, error)
+	PromosOfferedTo(userID int64) bool
+	RefCode(userID int64) (string, error)
+	TrackReferral(chatID int64, code string)
+	// Telegram Stars: approving a payment before it is taken, and applying it after.
+	StarsPreCheckout(payload, currency string, total int64) error
+	ConfirmStarsPayment(payload, currency string, total int64, raw []byte) error
+	// TrackSource remembers the tag any other /start payload carried (t.me/bot?start=vk_ads).
+	TrackSource(chatID int64, tag string)
+	AttachReferrer(ctx context.Context, userID, chatID int64)
 	SetUserNotifier(fn func(chatID int64, html string))
+	SetUserMessenger(fn func(chatID int64, html string, buttons []model.BroadcastButton) error)
 	SetAdminNotifier(fn func(html string))
 	SetAdminModerationNotifier(fn func(reqID int64, name, plan string))
 	// A sign-in from a new address, and the button under it: end every session of

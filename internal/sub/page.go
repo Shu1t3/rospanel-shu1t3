@@ -104,6 +104,26 @@ type pageText struct {
 	Renew          string
 	CancelSub      string
 	ChangePlanNote string
+	ChangeTitle    string
+	ChangeHint     string
+	AddHint        string
+	RenewTitle     string
+	WzOpen         string
+	WzStep1        string
+	WzStep1Hint    string
+	WzStep2        string
+	WzStep2Hint    string
+	WzStep3        string
+	WzStep3Hint    string
+	WzAdd          string
+	WzOther        string
+	WzBack         string
+	WzNext         string
+	WzDone         string
+	ChangeBtn      string
+	ChangeConfirm  string
+	AddTitle       string
+	AddBtn         string
 	ManualNote     string
 	ScanQR         string
 	CopyLink       string
@@ -134,6 +154,24 @@ type pageText struct {
 	PayFailed      string
 	Error          string
 
+	Balance          string
+	Topup            string
+	TopupAmount      string
+	AutoRenew        string
+	PayBalance       string
+	PromoTitle       string
+	PromoPlaceholder string
+	PromoApply       string
+	RefTitle         string
+	RefInvitees      string
+	PaidTitle        string
+	GetFree          string
+	History          string
+	Share            string
+	TabSub           string
+	TabPay           string
+	TabRef           string
+
 	Devices        string
 	DevicesHint    string
 	DevicesEmpty   string
@@ -159,6 +197,26 @@ func text(lang i18n.Lang) pageText {
 		Renew:          t("sub.renew"),
 		CancelSub:      t("sub.cancelSub"),
 		ChangePlanNote: t("sub.changePlanNote"),
+		ChangeTitle:    t("sub.changeTitle"),
+		ChangeHint:     t("sub.changeHint"),
+		AddHint:        t("sub.addHint"),
+		RenewTitle:     t("sub.renewTitle"),
+		WzOpen:         t("sub.wzOpen"),
+		WzStep1:        t("sub.wzStep1"),
+		WzStep1Hint:    t("sub.wzStep1Hint"),
+		WzStep2:        t("sub.wzStep2"),
+		WzStep2Hint:    t("sub.wzStep2Hint"),
+		WzStep3:        t("sub.wzStep3"),
+		WzStep3Hint:    t("sub.wzStep3Hint"),
+		WzAdd:          t("sub.wzAdd"),
+		WzOther:        t("sub.wzOther"),
+		WzBack:         t("sub.wzBack"),
+		WzNext:         t("sub.wzNext"),
+		WzDone:         t("sub.wzDone"),
+		ChangeBtn:      t("sub.changeBtn"),
+		ChangeConfirm:  t("sub.changeConfirm"),
+		AddTitle:       t("sub.addTitle"),
+		AddBtn:         t("sub.addBtn"),
 		ManualNote:     t("sub.manualNote"),
 		ScanQR:         t("sub.scanQR"),
 		CopyLink:       t("sub.copyLink"),
@@ -188,6 +246,24 @@ func text(lang i18n.Lang) pageText {
 		OrderTitle:     t("sub.orderTitle"),
 		PayFailed:      t("sub.payFailed"),
 		Error:          t("sub.error"),
+
+		Balance:          t("sub.balance"),
+		Topup:            t("sub.topup"),
+		TopupAmount:      t("sub.topupAmount"),
+		AutoRenew:        t("sub.autoRenew"),
+		PayBalance:       t("sub.payBalance"),
+		PromoTitle:       t("sub.promoTitle"),
+		PromoPlaceholder: t("sub.promoPlaceholder"),
+		PromoApply:       t("sub.promoApply"),
+		RefTitle:         t("sub.refTitle"),
+		RefInvitees:      t("sub.refInvitees"),
+		PaidTitle:        t("sub.paidTitle"),
+		GetFree:          t("sub.getFree"),
+		History:          t("sub.history"),
+		Share:            t("sub.share"),
+		TabSub:           t("sub.tabSub"),
+		TabPay:           t("sub.tabPay"),
+		TabRef:           t("sub.tabRef"),
 
 		Devices:        t("sub.devices"),
 		DevicesHint:    t("sub.devicesHint"),
@@ -256,6 +332,7 @@ type pageData struct {
 	SubURL    string
 	Links     []protoLink
 	DeepLinks []DeepLink
+	Wizard    []WizardPlatform
 	// AWG lists one card per server whose AmneziaWG lane the user may use: the
 	// config file to import and its QR.
 	AWG []awgCard
@@ -289,60 +366,169 @@ type pageData struct {
 // from turning into a support queue: the alternative is every replaced device
 // becoming a message to the operator.
 type Devices struct {
-	Show       bool
-	List       []DeviceRow
-	Count      int
-	Limit      int    // 0 = unlimited
-	CountText  string // "2 / 3", or just the count when unlimited
-	UnbindPath string // POST target that releases one device (<SubURL>/devices/unbind)
+	Show       bool        `json:"show"`
+	List       []DeviceRow `json:"list"`
+	Count      int         `json:"count"`
+	Limit      int         `json:"limit"`      // 0 = unlimited
+	CountText  string      `json:"count_text"` // "2 / 3", or just the count when unlimited
+	UnbindPath string      `json:"-"`          // POST target that releases one device (<SubURL>/devices/unbind)
 }
 
 // DeviceRow is one bound install as the page shows it.
 type DeviceRow struct {
-	HWID     string
-	Title    string // model, OS, or the raw id — whatever the client told us
-	Sub      string // OS + version, when known
-	LastSeen string // humanised "3 h ago"
+	HWID     string `json:"hwid"`
+	Title    string `json:"title"`     // model, OS, or the raw id — whatever the client told us
+	Sub      string `json:"sub"`       // OS + version, when known
+	LastSeen string `json:"last_seen"` // humanised "3 h ago"
 }
 
 // Billing is the optional "renew / pay" block on the subscription page. It's built
 // by the server (which has plan + payment-provider access) and left zero (Show
 // false) when billing is off or no paid plans exist.
 type Billing struct {
-	Show        bool
-	CurrentPlan string        // active plan name ("" = none / manual)
-	ExpireText  string        // "until DD.MM.YYYY" for a paid expiry, else ""
-	Plans       []BillingPlan // paid plans offered for purchase/renewal
+	Show        bool          `json:"show"`
+	CurrentPlan string        `json:"current_plan"` // active plan name ("" = none / manual)
+	ExpireText  string        `json:"expire_text"`  // "until DD.MM.YYYY" for a paid expiry, else ""
+	Plans       []BillingPlan `json:"plans"`        // paid plans offered for purchase/renewal
 	// Providers are the payment methods offered, in the order they are shown. Manual
 	// payment, when the operator has it on, is one of them under ManualPayKey.
-	Providers []BillingPay
-	Manual    bool // manual payment is offered
+	Providers []BillingPay `json:"providers"`
+	Manual    bool         `json:"manual"` // manual payment is offered
 	// ManualOnly is manual payment with nothing else beside it: only then does the
 	// page carry the operator's details and say that an admin confirms the transfer.
 	// With a provider on the list too, both arrive with the order the user opens.
-	ManualOnly bool
-	Note       string // the operator's own manual-payment instructions
-	PayPath    string // POST target that starts a payment (<SubURL>/pay)
-	OrderPath  string // GET target that reports a pending provider payment (<SubURL>/order)
+	ManualOnly bool   `json:"manual_only"`
+	Note       string `json:"note"` // the operator's own manual-payment instructions
+	PayPath    string `json:"-"`    // POST target that starts a payment (<SubURL>/pay)
+	OrderPath  string `json:"-"`    // GET target that reports a pending provider payment (<SubURL>/order)
 	// Locked is true while a paid plan is active: only that plan (renewal) is shown,
 	// switching to another is blocked, and Cancelable offers cancellation instead.
-	Locked     bool
-	Cancelable bool
-	CancelPath string // POST target that cancels the active plan (<SubURL>/cancel)
+	Locked     bool   `json:"locked"`
+	Cancelable bool   `json:"cancelable"`
+	CancelPath string `json:"-"` // POST target that cancels the active plan (<SubURL>/cancel)
+
+	// ExpireAt is the user's expiry as rendered; a purchase from the balance sends it
+	// back so a repeated click cannot buy a second period.
+	ExpireAt int64 `json:"-"`
+
+	// The wallet. WalletPath is the base the page posts its actions to
+	// (<WalletPath>/topup, /promo, /autorenew).
+	WalletPath string `json:"-"`
+	Wallet     bool   `json:"wallet"`  // the balance block is shown
+	Topup      bool   `json:"topup"`   // the balance can be topped up (some payment method exists)
+	Balance    string `json:"balance"` // "150" or "19.90", in roubles
+	AutoRenew  bool   `json:"auto_renew"`
+	// RenewSwitch: the user's plan is one renewal can extend (paid, with a term).
+	RenewSwitch bool `json:"renew_switch"`
+	// RenewNote says what the renewal will do (hidden while renewal is off, and the
+	// switch shows it); RenewShort marks a balance that falls short of it.
+	RenewNote  string `json:"renew_note"`
+	RenewShort bool   `json:"renew_short"`
+	TopupMin   int    `json:"topup_min"`
+	TopupHint  string `json:"topup_hint"` // "from 100 ₽"
+	BonusDays  string `json:"bonus_days"` // banked referral days, "" when none
+	Promo      bool   `json:"promo"`      // a promo field is offered
+	RefLink    string `json:"ref_link"`   // the user's invite link, "" when the programme is off
+	RefHint    string `json:"ref_hint"`   // what one paying invitee earns
+	RefStats   string `json:"ref_stats"`  // "invited 3 · paid 1 · earned 40 ₽"
+	// Invitees are the users who came by the link, newest first: when they joined,
+	// and what they earned the inviter (or whether they paid).
+	Invitees     []HistoryLine `json:"invitees"`
+	InviteesMore string        `json:"invitees_more"` // "and 12 more", "" when the list is whole
+	RefShare     string        `json:"ref_share"`     // a t.me/share link that hands RefLink to a chat
+
+	// History is what came into and went out of the user's money, newest first.
+	History []HistoryLine `json:"history"`
+
+	// Changes are the plans the user may move to now; Addons what they can add to the
+	// plan they hold.
+	Changes []Extra `json:"changes"`
+	Addons  []Extra `json:"addons"`
+	// Stamp is what an add-on bought from the balance is held to (core.PurchaseStamp).
+	Stamp int64 `json:"-"`
+}
+
+// HistoryLine is one line of the payment tab's history.
+type HistoryLine struct {
+	Title  string `json:"title"` // "Balance top-up", "“Standard” plan"
+	When   string `json:"when"`
+	Amount string `json:"amount"` // signed: "+50 ₽", "−199 ₽"
+	In     bool   `json:"in"`     // money in
+	Muted  bool   `json:"muted"`  // not an amount but a quiet status ("no payment yet")
 }
 
 // BillingPlan is one purchasable paid tariff shown on the page.
 type BillingPlan struct {
-	ID      int64
-	Name    string
-	Label   string // price + period, e.g. "199 ₽ / 30 d"
-	Current bool   // the user's currently active plan
+	ID      int64  `json:"id"`
+	Name    string `json:"name"`
+	Label   string `json:"label"`   // price + period, e.g. "199 ₽ / 30 d"
+	Current bool   `json:"current"` // the user's currently active plan
+	// OldPrice is the price before a discount code, shown struck through ("" = none).
+	OldPrice string `json:"old_price"`
+	// FromBalance: the balance covers the price, so the button pays from it.
+	FromBalance bool `json:"from_balance"`
+	// Promo names the discount code in the price ("Promo code X: −40 ₽"), "" = none.
+	Promo string `json:"promo"`
+	// Free: the discount takes the whole price — nothing is paid, from the balance or
+	// otherwise.
+	Free bool `json:"free"`
+	// Button is the pay button's label for the first option.
+	Button string `json:"button"`
+	// Options are the terms on offer — one period, and each multi-period discount —
+	// empty when there is only one.
+	Options []PlanOption `json:"options"`
+	// Devices are the device counts a new plan can be bought with (the first is the
+	// plan's own), empty when it sells no extra devices.
+	Devices []DeviceOption `json:"devices"`
+}
+
+// DeviceOption is one device count a plan can be bought with.
+type DeviceOption struct {
+	Extra int    `json:"extra"` // devices beyond the plan's own
+	Label string `json:"label"` // "3 devices (+100 ₽ per period)"
+}
+
+// Extra is a purchase on top of the plan held, or a move to another plan: its kind
+// (change, devices, traffic), the plan (a change) or the count or pack index, what it
+// is and costs, and whether the balance covers it (or it is free).
+type Extra struct {
+	Kind        string `json:"kind"`
+	PlanID      int64  `json:"plan_id"`
+	N           int    `json:"n"`
+	Label       string `json:"label"` // the whole offer in one line (the confirmation)
+	FromBalance bool   `json:"from_balance"`
+	// Name, Sub and Badge are the offer as a card: the plan or the add-on, its price
+	// per period or what it lasts, and what taking it costs or gives now. Up marks a
+	// change that is paid for.
+	Name  string `json:"name"`
+	Sub   string `json:"sub"`
+	Badge string `json:"badge"`
+	Up    bool   `json:"up"`
+	// Counts are the numbers of devices on offer (a devices add-on): each with its
+	// price and button label.
+	Counts []ExtraCount `json:"counts,omitempty"`
+}
+
+// ExtraCount is one count of an add-on in its picker.
+type ExtraCount struct {
+	N           int    `json:"n"`
+	Label       string `json:"label"`
+	Button      string `json:"button"`
+	FromBalance bool   `json:"from_balance"`
+}
+
+// PlanOption is one term a plan can be bought for.
+type PlanOption struct {
+	Periods     int    `json:"periods"`
+	Label       string `json:"label"` // "3 × 30 d — 537 ₽ (−10%)"
+	FromBalance bool   `json:"from_balance"`
+	Button      string `json:"button"` // the pay button's label for this term
 }
 
 // BillingPay is one payment method the user can choose.
 type BillingPay struct {
-	Key   string
-	Label string
+	Key   string `json:"key"`
+	Label string `json:"label"`
 }
 
 // ManualPayKey is the method key that stands for manual payment, so the page offers
@@ -385,8 +571,21 @@ func subStatus(s string, lang i18n.Lang) (label, class string) {
 // those would have addressed the panel's own links at a node, which serves none of
 // them.
 func Page(u model.User, local *model.Settings, servers []Server, billing Billing, devices Devices, showDownload bool, lang i18n.Lang) ([]byte, error) {
+	data, err := buildPageData(u, local, servers, billing, devices, showDownload, lang)
+	if err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	if err := pageTmpl.Execute(&buf, data); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// buildPageData gathers what the page shows; Page renders it and View hands it out.
+func buildPageData(u model.User, local *model.Settings, servers []Server, billing Billing, devices Devices, showDownload bool, lang i18n.Lang) (pageData, error) {
 	if len(servers) == 0 {
-		return nil, fmt.Errorf("no settings for subscription page")
+		return pageData{}, fmt.Errorf("no settings for subscription page")
 	}
 	subURL := URL(local, u.SubToken)
 	used := u.UsedUp + u.UsedDown
@@ -499,6 +698,7 @@ func Page(u model.User, local *model.Settings, servers []Server, billing Billing
 		AWG:         awgCards,
 		Turn:        turnCards,
 		DeepLinks:   DeepLinks(subURL, lang, local.SubHappCrypt),
+		Wizard:      Wizard(lang),
 		StatusLabel: statusLabel,
 		StatusClass: statusClass,
 		Used:        fmtBytes(used),
@@ -538,12 +738,7 @@ func Page(u model.User, local *model.Settings, servers []Server, billing Billing
 	if !data.Online && u.LastSeen > 0 {
 		data.LastSeen = relTime(time.Now().Unix()-u.LastSeen, lang)
 	}
-
-	var buf bytes.Buffer
-	if err := pageTmpl.Execute(&buf, data); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
+	return data, nil
 }
 
 // nextResetTime returns when the automatic traffic-quota reset next fires, given

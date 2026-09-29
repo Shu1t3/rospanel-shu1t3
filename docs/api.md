@@ -177,7 +177,7 @@ monitor pointed here keeps working.
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/v1/users` | List users (filter + paginate). |
+| `GET` | `/v1/users` | List users (filter + paginate); `?telegram_id=` or `?sub_token=` finds one. |
 | `POST` | `/v1/users` | Create a user. |
 | `POST` | `/v1/users/bulk` | Apply one action to many users at once. |
 | `GET` | `/v1/users/{id}` | Get one user. |
@@ -294,14 +294,30 @@ client will display.
 | `POST` | `/v1/billing/plans` | Create (no `id`) or update (`id` set) a plan. |
 | `DELETE` | `/v1/billing/plans/{id}` | Delete a plan (refused while users are on it). |
 | `POST` | `/v1/billing/plans/{id}/migrate` | Move every user on this plan to another one. |
-| `GET` | `/v1/billing/orders?status=pending` | List payment orders (`status` optional). |
-| `POST` | `/v1/billing/orders` | Open an order for a user+plan. |
+| `GET` | `/v1/billing/orders?status=pending&user_id=5` | List payment orders (`status` and `user_id` optional). |
+| `POST` | `/v1/billing/orders` | Open an order for a user+plan, or a balance top-up (`"kind": "topup"`). |
 | `GET` | `/v1/billing/orders/{id}` | Get one order (poll a payment's status). |
 | `POST` | `/v1/billing/orders/{id}/confirm` | Mark an order paid (activates the plan). |
 | `POST` | `/v1/billing/orders/{id}/cancel` | Cancel an order. |
 | `GET` | `/v1/billing/settings` | Billing configuration. |
 | `POST` | `/v1/billing/settings` | Replace it (whole object). |
 | `GET` | `/v1/billing/stats` | Revenue totals, per-provider split, pending backlog. |
+| `GET` | `/v1/billing/promos` | List promo codes. |
+| `POST` | `/v1/billing/promos` | Create (no `id`) or update (`id` set) a promo code. |
+| `DELETE` | `/v1/billing/promos/{id}` | Delete a promo code. |
+| `GET` | `/v1/users/{id}/wallet` | A user's balance, referral standing and newest ledger lines. |
+| `GET` | `/v1/users/{id}/referrals` | The users this user invited, with what they paid. |
+| `GET` | `/v1/billing/promos/{id}/uses` | Who used a promo code, and the money its orders brought. |
+| `GET` | `/v1/billing/referrals` | Referral totals and the top inviters. |
+| `GET` | `/v1/billing/funnel?days=30` | Of the users who joined in the last N days (0 = all time): how many took a trial, paid, paid again; plus what win-back codes did. |
+| `POST` | `/v1/billing/orders/{id}/refund` | Return a paid plan order's price to the balance (once). |
+| `POST` | `/v1/users/{id}/balance` | Correct a user's balance. |
+| `POST` | `/v1/users/{id}/autorenew` | Turn renewal from the balance on or off (`{"on": true}`). |
+| `POST` | `/v1/users/{id}/promo` | Enter a promo code for the user (`{"code": "SPRING"}`). |
+| `GET` | `/v1/users/{id}/quotes` | What the user can buy now, priced with their discount code and balance, per term. |
+| `GET` | `/v1/users/{id}/subscription?lang=ru` | The subscription page as data, to draw it yourself. |
+| `POST` | `/v1/users/{id}/telegram` | Link the user's Telegram ID (`{"chat_id": 123}`; 0 unlinks). |
+| `POST` | `/v1/users/{id}/referrer` | Record who invited the user (`{"ref_code": "..."}` or `{"referrer_id": 5}`). |
 | `GET` | `/v1/payments` | Every payment provider with its settings form. |
 | `POST` | `/v1/payments` | Configure one provider. |
 
@@ -330,13 +346,88 @@ update: "no free plan" is a real state and must be distinguishable from "unspeci
 
 ```json
 { "enabled": true, "free_plan_id": 1, "trial_plan_id": 2, "payment_note": "card 1234",
-  "manual": true, "manual_label": "" }
+  "manual": true, "manual_label": "", "wallet": true, "topup_min": 100,
+  "ref_mode": "percent", "ref_percent": 10, "ref_days": 7, "ref_first": false }
 ```
 
 Designating a plan as the free or trial one also makes it free and re-applies it to
 everyone already on it — the same rule the panel enforces. `manual` offers manual payment
 beside the providers, `manual_label` is its pay-button label (empty = the default
 wording), and `payment_note` is the text a user paying by hand is shown.
+
+`wallet` lets users keep a balance (top-ups, paying for plans from it, renewal from it);
+`topup_min` is the smallest top-up in roubles. `ref_mode` is what a referrer earns when
+someone they invited pays money: `off`, `percent` (`ref_percent` % of the payment, top-ups
+included, onto the referrer's balance — needs `wallet`) or `days` (`ref_days` days onto their
+plan, for a plan bought with money); `ref_first` pays only for the first such payment. Left
+out, `wallet`, `topup_min`, `ref_mode`, `ref_percent`, `ref_days` and `ref_first` keep their
+stored values.
+
+**Orders and the balance** — an order's `amount_rub` is always the money to be paid in.
+When the user's balance covers part of the price, `balance_kop` is that part (kopecks) and
+`amount_rub` the rest; confirming the order puts the money on the balance and takes the whole
+price off it with the plan. `kind` is `plan` or `topup` (a top-up has `plan_id` 0). A plan
+bought from the balance alone appears as a paid order with `provider` `balance` and
+`amount_rub` 0 — it is not revenue. `discount_rub` and `promo_code` show a discount code.
+When the balance covers the whole price, `POST /v1/billing/orders` answers
+`err.payFromBalance`; send `"from_balance": true` instead to buy the plan from the balance.
+Money that arrives for an order already cancelled (superseded by a newer checkout with the
+same promo code, swept as abandoned, cancelled by hand) counts like any other payment — and
+`POST /v1/billing/orders/{id}/confirm` accepts a cancelled order too: the plan is granted, or,
+with the wallet on, the money goes onto the balance when the plan can no longer be given
+(another plan bought meanwhile, a lifetime plan already held) and the order becomes a `topup`. A user may have at most 3 unpaid top-ups opened within the last hour.
+
+**Promo codes** — `kind` is `percent` / `amount` (a discount on the user's next payment,
+`value` percent or roubles; `plan_ids` limits it to those plans, `first_only` to someone who
+never bought a plan), `days` (`value` days on `plan_id`, or on the user's active paid plan
+when `plan_id` is 0) or `balance` (`value` roubles onto the balance). `max_uses` 0 is
+unlimited, `expires_at` 0 is never; each user may use a code once. Codes are
+case-insensitive.
+
+**Several periods** — `"periods": 3` on `POST /v1/billing/orders` buys three of the plan's
+periods at once, at the discount `periods` in the billing settings names
+(`[{"periods": 3, "percent": 10}]`); a number with no offer is refused. The term is that many
+periods, and a quota the plan does not refill on its own cycle refills every period.
+
+**Refund** — `POST /v1/billing/orders/{id}/refund` with `{ "cancel_plan": false }` puts the
+order's price (money and balance part) back on the user's balance, once; `cancel_plan` also
+takes the days the order paid for off the term (the plan ends only when none is left). Needs the wallet on. A refund or a
+chargeback the payment system reports marks the order `refund_source: "provider"` by itself: it
+leaves revenue, takes back what it bought, and can no longer be refunded to the balance.
+
+**Win-back** — `"winback": {"enabled": true, "after_days": 7, "percent": 20, "valid_days": 7}` in
+the billing settings: that many days after a paid term lapses, the user gets a one-use code for
+that discount, attached to their next payment and sent in the bot.
+
+**Balance** — `POST /v1/users/{id}/balance` takes `{ "amount_kop": 10000, "note": "..." }`
+(either sign; the balance cannot go below zero) and answers `{ "balance_kop": ... }`.
+`GET /v1/users/{id}/wallet` answers `{ "wallet": {...}, "history": [...], "ref_link": "..." }` —
+`ref_link` is the user's invite link, while the referral programme and the user bot are on.
+
+**Selling from your own bot** — `GET /v1/users/{id}/quotes` lists what the user can buy now
+(only their current plan while a paid one runs) with, per term: `total_rub` after their discount
+code, `balance_kop` the balance covers and `money_rub` left to pay. Then `POST /v1/billing/orders`
+with `from_balance` when `money_rub` is 0 (add `expect_expire_at` — the `expire_at` you showed
+— so a retried request does not buy a second period), or with a `provider` for the rest. A
+top-up is `{"user_id": 5, "kind": "topup", "amount_rub": 300}` (plus `provider`, or none for a
+manual one). Both take `lang` (`ru`/`en`, for the manual-payment instructions) and
+`return_url` (where a hosted payment sends the payer back; Telegram when left out).
+
+**Your own bot or user cabinet** — the key stays on your server, never in a browser. Give it a
+role with `users.manage` (create users, link Telegram) and `billing.sell` (orders, promo codes,
+referrers, renewal) — not `billing.manage`, which also confirms orders without payment, credits
+balances and refunds. On each message find the user: `GET /v1/users?telegram_id=<id>` (an
+indexed lookup; an empty list means a newcomer). A newcomer is `POST /v1/users` with a
+`plan_id` (the trial or free plan — a user with no plan gets no payment block), then
+`POST /v1/users/{id}/telegram` with `{"chat_id": <id>}` and, when their `/start` carried an
+invite code, `POST /v1/users/{id}/referrer` with `{"ref_code": "r_…"}` (with or without the
+`r_`) — once, before their first payment. A user's own invite code is `ref_code` in
+`GET /v1/users/{id}/wallet` (`ref_link` too, while the panel's user bot is on). A cabinet
+that signs people in by their subscription link finds them with `?sub_token=`.
+`GET /v1/users/{id}/subscription` has everything the subscription page shows — status,
+traffic, term, `sub_url`, one-tap imports per app (`apps`), every config (`links`; list them
+only when `show_configs`), devices, the payment block (`billing`) and the operator's colours
+(`brand`) — worded in `?lang`; the actions go through the endpoints above.
 
 **Migrate** — body `{ "to_plan_id": 3 }`, response `{ "data": { "migrated": 12 } }`.
 Applies the target plan's limits, period and access groups to every user on the source
@@ -782,6 +873,8 @@ The moderated signup queue (only meaningful while the user bot is in moderation 
 ```
 GET $BASE/v1/summary          → users / online / traffic totals / xray + cert status
 GET $BASE/v1/system           → live CPU / RAM / disk / network / VPN throughput
+GET $BASE/v1/system/auto-update       → {"cron": "0 4 * * *", "nodes": true, "last_at": …, "last": "latest"}
+POST $BASE/v1/system/auto-update {"cron": "0 4 * * *", "nodes": true}  ("" turns it off)
 GET $BASE/v1/health/report    → full self-diagnostics (xray, config, TLS, geo, egress lanes)
 GET $BASE/v1/nodes/{id}/health → one server's diagnostics (id 0 = the master)
 GET $BASE/v1/nodes/{id}/logs   → a node's recent log lines
@@ -936,6 +1029,7 @@ body is never read).
 | `payment.created` | a payment order is opened |
 | `payment.paid` | an order is paid and the plan applied |
 | `payment.cancelled` | an order is cancelled |
+| `payment.refunded` | an order's money went back — to the balance by an operator, or by the payment system (`refund_source`) |
 
 ## Delivery format
 

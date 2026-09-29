@@ -3,7 +3,9 @@ package core
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -16,6 +18,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/i18n"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/payments"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
 )
 
 // escHTML escapes a dynamic value for the bots' HTML parse mode.
@@ -69,7 +72,7 @@ func (m *Manager) notifyModeration(reqID int64, name, plan string) {
 // travel as-is; the one that needs wording is the manual path, which is a word and
 // not a brand — so it comes from the dictionary.
 func (m *Manager) methodLabel(lang i18n.Lang, key string) string {
-	if key == "" {
+	if key == "" || key == "manual" {
 		return i18n.T(lang, "pay.manual")
 	}
 	return m.ProviderLabel(key)
@@ -99,7 +102,7 @@ func (m *Manager) PaymentMethods() []string {
 	var out []string
 	for _, d := range payments.All() {
 		p, ok := saved[d.Key]
-		if ok && p.Enabled && d.Configured(p.Config) {
+		if ok && p.Enabled && d.Configured(p.Config) && (d.Key != payments.ProviderStars || m.userBotOn()) {
 			out = append(out, d.Key)
 		}
 	}
@@ -205,7 +208,91 @@ func (m *Manager) providerClient(key string) (payments.Client, error) {
 	if !d.Configured(p.Config) {
 		return nil, invalidCode("err.providerUnconfigured", "{{provider}}: не заполнены настройки", map[string]any{"provider": d.Label})
 	}
+	if key == payments.ProviderStars {
+		// Stars are invoiced by the user bot, with its token and the Telegram route.
+		set, err := m.Settings()
+		if err != nil {
+			return nil, err
+		}
+		if !set.TGUserBotEnabled || strings.TrimSpace(set.TGUserBotToken) == "" {
+			return nil, invalidCode("err.starsNeedBot", "Telegram Stars принимает пользовательский бот — включите его")
+		}
+		cfg := payments.Config{}
+		for k, v := range p.Config {
+			cfg[k] = v
+		}
+		cfg[payments.StarsBotToken] = strings.TrimSpace(set.TGUserBotToken)
+		cfg[payments.StarsProxy] = set.TelegramProxyURL()
+		return d.New(cfg), nil
+	}
 	return d.New(p.Config), nil
+}
+
+// userBotOn reports whether the user bot runs — what Stars payments need.
+func (m *Manager) userBotOn() bool {
+	set, err := m.Settings()
+	return err == nil && set.TGUserBotEnabled && strings.TrimSpace(set.TGUserBotToken) != ""
+}
+
+// StarsPreCheckout answers Telegram's "may this payment go ahead": the invoice must
+// be one of ours, for an order not paid yet, asking the star count it is paid with.
+func (m *Manager) StarsPreCheckout(payload, currency string, total int64) error {
+	o, err := m.store.GetPaymentOrderByProvider(payments.ProviderStars, payload)
+	if err != nil {
+		return invalidCode("err.orderNotFound", "заказ не найден")
+	}
+	if o.Status == "paid" {
+		return invalidCode("err.orderAlreadyPaid", "заказ уже оплачен")
+	}
+	if want, ok := payments.StarsPayloadAmount(payload); !ok || currency != "XTR" || total != want {
+		return invalidCode("err.orderAmountChanged", "сумма заказа изменилась — начните оплату заново")
+	}
+	return nil
+}
+
+// ConfirmStarsPayment applies a Stars payment the user bot received. raw is the
+// update as Telegram sent it — it lands in the callback journal, and its
+// telegram_payment_charge_id is what a refund of the stars needs.
+func (m *Manager) ConfirmStarsPayment(payload, currency string, total int64, raw []byte) error {
+	rec := model.PaymentWebhook{
+		At: time.Now().Unix(), Provider: payments.ProviderStars, RemoteIP: "telegram",
+		ProviderID: payload, Status: string(payments.StatusPaid), Body: string(raw),
+	}
+	err := func() error {
+		if want, ok := payments.StarsPayloadAmount(payload); !ok || currency != "XTR" || total != want {
+			rec.Outcome = model.WebhookOutcomeMismatch
+			if o, e := m.store.GetPaymentOrderByProvider(payments.ProviderStars, payload); e == nil {
+				rec.OrderID = o.ID
+			}
+			return fmt.Errorf("stars payment %q: paid %d %s", payload, total, currency)
+		}
+		var err error
+		// The star count was checked against the invoice above; the order's rouble
+		// amount has no star figure to compare with, so none is passed on.
+		rec.Outcome, rec.OrderID, err = m.confirmProviderOrderOutcome(payments.ProviderStars, payload,
+			payments.Result{Status: payments.StatusPaid})
+		// The same charge again (Telegram re-sends an update the bot did not get past
+		// before a restart) is nothing; another charge of a paid invoice is stars
+		// taken for nothing.
+		if err == nil && rec.Outcome == model.WebhookOutcomeDuplicate && !m.store.StarsChargeSeen(payload, starsCharge(raw)) {
+			rec.Outcome = model.WebhookOutcomeError
+			err = fmt.Errorf("stars: invoice %q paid again after the order was already paid", payload)
+		}
+		return err
+	}()
+	if err != nil {
+		rec.Error = err.Error()
+	}
+	if e := m.store.RecordPaymentWebhook(rec); e != nil {
+		logErr("stars: journal write failed", "err", e)
+	}
+	if err != nil {
+		// Every failure here is stars the user paid and did not get what they paid
+		// for: nothing retries it and nothing else will tell the operator.
+		m.notifyAdminEvent(model.AdminEventPayment, i18n.T(m.botLang(), "notify.starsNotApplied",
+			rec.OrderID, total, escHTML(payload), escHTML(rec.Error)))
+	}
+	return err
 }
 
 func (m *Manager) ensureWebhookSecret() error {
@@ -236,6 +323,9 @@ func (m *Manager) PaymentWebhookSecret() string {
 // dashboard: /<random secret>/<provider key>. Empty when the panel doesn't know
 // its own host yet, or before the secret has been generated.
 func (m *Manager) PaymentWebhookURL(key string) string {
+	if key == payments.ProviderStars {
+		return "" // the bot hears about Stars payments; there is no callback to point
+	}
 	set, _ := m.Settings()
 	if set == nil || set.PaymentWebhookSecret == "" || set.Host == "" {
 		return ""
@@ -246,48 +336,49 @@ func (m *Manager) PaymentWebhookURL(key string) string {
 // StartPlanPayment creates an order plus a provider payment and returns the order
 // with its hosted pay URL. provider may be "" when exactly one method is enabled.
 // The payer is returned to Telegram after paying (the bot flow).
-func (m *Manager) StartPlanPayment(ctx context.Context, lang i18n.Lang, userID, planID int64, provider string) (*model.PaymentOrder, error) {
-	return m.startPlanPayment(ctx, lang, userID, planID, provider, "https://t.me/")
+func (m *Manager) StartPlanPayment(ctx context.Context, lang i18n.Lang, userID, planID int64, provider string, periods int) (*model.PaymentOrder, error) {
+	return m.startPlanPayment(ctx, lang, userID, planID, provider, "https://t.me/", periods)
 }
 
 // StartPlanPaymentReturn is StartPlanPayment for the web subscription page: it
 // sends the payer back to returnURL (the sub page) after a card payment instead of
 // to Telegram. returnURL is used by hosted-form providers (YooKassa); CryptoBot
 // ignores it.
-func (m *Manager) StartPlanPaymentReturn(ctx context.Context, lang i18n.Lang, userID, planID int64, provider, returnURL string) (*model.PaymentOrder, error) {
-	return m.startPlanPayment(ctx, lang, userID, planID, provider, returnURL)
+func (m *Manager) StartPlanPaymentReturn(ctx context.Context, lang i18n.Lang, userID, planID int64, provider, returnURL string, periods int) (*model.PaymentOrder, error) {
+	return m.startPlanPayment(ctx, lang, userID, planID, provider, returnURL, periods)
 }
 
 // lang is the language the PAYER is being served in, and it comes from the caller
 // rather than from the user record: someone paying from an English subscription page
 // may have no Telegram chat at all, and the invoice description they are about to
 // read is on the provider's page, not in the bot.
-func (m *Manager) startPlanPayment(ctx context.Context, lang i18n.Lang, userID, planID int64, provider, returnURL string) (*model.PaymentOrder, error) {
-	plan, err := m.store.GetTariffPlan(planID)
-	if err != nil {
-		return nil, invalidCode("err.planNotFound", "тариф не найден")
+func (m *Manager) startPlanPayment(ctx context.Context, lang i18n.Lang, userID, planID int64, provider, returnURL string, periods int) (*model.PaymentOrder, error) {
+	return m.StartPurchase(ctx, lang, userID, PlanPurchase(planID, periods), provider, returnURL)
+}
+
+// OrderSubject names what an order bought, in lang: the plan, a balance top-up, a
+// change or an add-on — for the operator's alerts and the payment instructions.
+func OrderSubject(lang i18n.Lang, o *model.PaymentOrder) string { return orderSubject(lang, o) }
+
+func orderSubject(lang i18n.Lang, o *model.PaymentOrder) string {
+	if o.Kind == model.OrderTopup {
+		return i18n.T(lang, "order.topupSubject")
 	}
-	if plan.IsFree() {
-		return nil, invalidCode("err.planIsFree", "этот тариф бесплатный")
+	return purchaseSubject(lang, o.Kind, o.PlanName, o.Periods, o.Devices, int(o.PackBytes>>30))
+}
+
+// planSubject names a plan purchase: "“Standard” plan", or "“Standard” plan × 3" for
+// several periods.
+func planSubject(lang i18n.Lang, plan string, periods int) string {
+	if periods > 1 {
+		return i18n.T(lang, "order.planSubjectN", plan, periods)
 	}
-	// No switching between plans while a paid one is active: the user must cancel
-	// the current subscription first. Paying for the SAME plan (renewal/extension)
-	// is always allowed. A trial or free plan never blocks buying a paid one. Fail
-	// closed on a user-read error so the guard can't be bypassed.
-	u, err := m.store.GetUser(userID)
-	if err != nil {
-		return nil, err
-	}
-	if u.PlanID != planID {
-		// A disabled plan can't be bought as a new purchase/switch, but an existing
-		// subscriber may still renew the plan they're already on (grandfathering).
-		if !plan.Enabled {
-			return nil, invalidCode("err.planUnavailable", "тариф недоступен")
-		}
-		if cur := m.ActivePaidPlan(*u); cur != nil {
-			return nil, invalidCode("err.activeSubscription", "у вас активна подписка «{{plan}}» — сначала отмените её, чтобы сменить тариф", map[string]any{"plan": cur.Name})
-		}
-	}
+	return i18n.T(lang, "order.planSubject", plan)
+}
+
+// startProviderOrder creates an order and the provider payment that collects it.
+// describe renders the invoice description once the order has its number.
+func (m *Manager) startProviderOrder(ctx context.Context, lang i18n.Lang, d store.OrderDraft, provider, returnURL string, describe func(orderID int64) string) (*model.PaymentOrder, error) {
 	methods := m.PaymentMethods()
 	if len(methods) == 0 {
 		return nil, invalidCode("err.autoPayNotConfigured", "автоматическая оплата не настроена")
@@ -299,11 +390,16 @@ func (m *Manager) startPlanPayment(ctx context.Context, lang i18n.Lang, userID, 
 		return nil, invalidCode("err.payMethodUnavailable", "способ оплаты недоступен")
 	}
 
-	// Reuse a fresh pending order for the same plan+provider instead of minting a new
-	// one on every tap — stops a spammed "Pay" button from flooding provider API calls
-	// and admin pings. Only within the reuse window, so the hosted pay URL is still live.
-	if existing, err := m.store.LatestPendingProviderOrderForPlan(userID, planID, provider); err == nil &&
+	// Reuse a fresh pending order for the same purchase instead of minting a new one
+	// on every tap — stops a spammed "Pay" button from flooding provider API calls
+	// and admin pings. Only within the reuse window, so the hosted pay URL is still
+	// live, and only while it asks for the same money: a balance or discount that
+	// changed since makes it a different order.
+	if existing, err := m.store.LatestPendingProviderOrderForPlan(d.UserID, d.PlanID, provider); err == nil &&
 		existing != nil && existing.PayURL != "" &&
+		existing.Kind == d.Kind && existing.AmountRub == d.AmountRub &&
+		existing.BalanceKop == d.BalanceKop && existing.PromoID == d.PromoID &&
+		max(existing.Periods, 1) == max(d.Periods, 1) && sameExtras(existing, d) &&
 		time.Now().Unix()-existing.CreatedAt < int64(providerOrderReuseWindow.Seconds()) {
 		return existing, nil
 	}
@@ -312,9 +408,9 @@ func (m *Manager) startPlanPayment(ctx context.Context, lang i18n.Lang, userID, 
 	if err != nil {
 		return nil, err
 	}
-	order, err := m.store.CreatePaymentOrder(userID, planID, plan.PriceRub)
+	order, err := m.store.CreateOrder(d, time.Now().Unix())
 	if err != nil {
-		return nil, err
+		return nil, orderCreateErr(err)
 	}
 	// The alerts below are read by the operator, the invoice description by the
 	// payer — two audiences, two languages.
@@ -327,9 +423,9 @@ func (m *Manager) startPlanPayment(ctx context.Context, lang i18n.Lang, userID, 
 		returnURL = "https://t.me/"
 	}
 	providerID, payURL, err := client.Create(callCtx, payments.CreateReq{
-		AmountRub:   plan.PriceRub,
+		AmountRub:   order.AmountRub,
 		OrderID:     order.ID,
-		Description: i18n.T(lang, "order.description", plan.Name, order.ID),
+		Description: describe(order.ID),
 		ReturnURL:   returnURL,
 		WebhookURL:  m.PaymentWebhookURL(provider),
 	})
@@ -347,13 +443,33 @@ func (m *Manager) startPlanPayment(ctx context.Context, lang i18n.Lang, userID, 
 		return nil, err
 	}
 	order.Provider, order.ProviderID, order.PayURL = provider, providerID, payURL
+	m.supersedePromoOrders(ctx, d.UserID, d.PromoID, order.ID)
 	m.notifyAdminEvent(model.AdminEventPayment, i18n.T(adminLang, "notify.payStarted",
-		order.ID, escHTML(order.UserName), escHTML(plan.Name), plan.PriceRub, escHTML(m.methodLabel(adminLang, provider))))
-	m.audit(ctx, userID, model.EventPaymentCreated, map[string]any{
-		"order_id": order.ID, "plan": plan.Name, "amount_rub": plan.PriceRub, "provider": provider,
-	})
+		order.ID, escHTML(order.UserName), escHTML(orderSubject(adminLang, order)), order.AmountRub,
+		escHTML(m.methodLabel(adminLang, provider))))
+	m.audit(ctx, d.UserID, model.EventPaymentCreated, orderAudit(order, provider))
 	m.EmitWebhook(model.WebhookPaymentCreated, order)
 	return order, nil
+}
+
+// orderAudit is the journal payload for an order event.
+func orderAudit(o *model.PaymentOrder, provider string) map[string]any {
+	d := map[string]any{
+		"order_id": o.ID, "amount_rub": o.AmountRub, "provider": provider,
+	}
+	if o.Kind == model.OrderTopup {
+		d["kind"] = model.OrderTopup
+	} else {
+		d["plan"] = o.PlanName
+	}
+	if o.BalanceKop > 0 {
+		d["balance_kop"] = o.BalanceKop
+	}
+	if o.PromoCode != "" {
+		d["promo"] = o.PromoCode
+		d["discount_rub"] = o.DiscountRub
+	}
+	return d
 }
 
 // amountMatches reports whether the charge the provider recorded is the one this
@@ -374,20 +490,28 @@ func amountMatches(order *model.PaymentOrder, paid payments.Result) bool {
 // paid carries the provider's view of the charge; it is verified against the order
 // before any plan is granted.
 func (m *Manager) confirmProviderOrder(provider, providerID string, paid payments.Result) error {
+	_, _, err := m.confirmProviderOrderOutcome(provider, providerID, paid)
+	return err
+}
+
+// confirmProviderOrderOutcome is confirmProviderOrder that also says what happened
+// (a model.WebhookOutcome*) and which order it was, for the callback journal.
+func (m *Manager) confirmProviderOrderOutcome(provider, providerID string, paid payments.Result) (string, int64, error) {
 	order, err := m.store.GetPaymentOrderByProvider(provider, providerID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.WebhookOutcomeNoOrder, 0, err
+	}
 	if err != nil {
-		return err
+		return model.WebhookOutcomeError, 0, err
 	}
-	if order.Status != "pending" {
-		// A payment that lands after the order was auto-cancelled (e.g. YooKassa has no
-		// invoice TTL and the 24h sweep already fired): money was captured but no plan
-		// applied — flag it so the operator can apply the tariff by hand.
-		if order.Status == "cancelled" {
-			m.notifyAdminEvent(model.AdminEventPayment, i18n.T(m.botLang(), "notify.payOnCancelled",
-				order.ID, escHTML(order.UserName), escHTML(order.PlanName), order.AmountRub))
-		}
-		return nil
+	if order.Status == "paid" {
+		return model.WebhookOutcomeDuplicate, order.ID, nil // a re-delivered webhook or an overlapping poll
 	}
+	// A cancelled order goes on like a pending one: the money was captured (YooKassa
+	// has no invoice TTL and the 24h sweep fired; a newer checkout with the same promo
+	// code superseded it; it was cancelled by hand), and it still buys what the order
+	// was for — or lands on the balance when that can no longer be given.
+	//
 	// The charge must be the one this order was created for. Refuse to grant a plan
 	// on a mismatch — the money situation then needs a human, so alert the operator
 	// rather than silently applying (or silently dropping) it.
@@ -406,7 +530,7 @@ func (m *Manager) confirmProviderOrder(provider, providerID string, paid payment
 				order.ID, escHTML(order.UserName), order.AmountRub,
 				paid.AmountKopecks/100, paid.AmountKopecks%100, escHTML(paid.Currency)))
 		}
-		return fmt.Errorf("payment amount does not match order %d", order.ID)
+		return model.WebhookOutcomeMismatch, order.ID, fmt.Errorf("payment amount does not match order %d", order.ID)
 	}
 	// Claim the pending→paid transition and grant the plan in one transaction. A
 	// provider webhook and the polling fallback (or a re-delivered webhook) can reach
@@ -414,34 +538,64 @@ func (m *Manager) confirmProviderOrder(provider, providerID string, paid payment
 	// applies the plan, so one payment can't extend the user twice. And because the
 	// claim commits with the plan rather than before it, a crash mid-way cannot leave
 	// the order paid with nothing delivered — see confirmOrderPaid.
-	claimed, err := m.confirmOrderPaid(order, time.Now().Unix())
+	res, err := m.confirmOrderPaid(order, time.Now().Unix())
 	if err != nil {
-		return err
+		return model.WebhookOutcomeError, order.ID, err
 	}
-	if !claimed {
-		return nil // another confirmer already handled this order
+	if !res.Claimed {
+		return model.WebhookOutcomeDuplicate, order.ID, nil // another confirmer already handled this order
 	}
 	// The provider (or the polling fallback) confirmed this, not a person — so the
 	// payment lands in the audit log as a system action.
-	ctx := context.Background()
 	logInfo("payment: order paid", "order", order.ID, "provider", provider, "user", order.UserID, "plan", order.PlanID)
-	if u, e := m.store.GetUser(order.UserID); e == nil {
+	m.afterOrderPaid(context.Background(), order, provider, res)
+	return model.WebhookOutcomePaid, order.ID, nil
+}
+
+// afterOrderPaid tells everyone what a confirmed order did: the payer, the operator,
+// the referrer, the journal and the webhooks.
+func (m *Manager) afterOrderPaid(ctx context.Context, order *model.PaymentOrder, provider string, res store.ConfirmResult) {
+	// An operator's own confirmation needs no alert back to the operators — only
+	// when something did not go as the order said.
+	byHand := provider == "manual"
+	// A plan order whose plan could not be delivered: the store turned it into a
+	// top-up, the money is on the balance.
+	undelivered := (order.Kind == model.OrderPlan || isAddonKind(order.Kind)) && !res.PlanApplied
+	set, _ := m.store.GetSettings()
+	if u, e := m.store.GetUser(order.UserID); e == nil && set != nil {
 		// Gated like the other user-facing notices, so an operator who turns them all
 		// off does not still have the bot writing to people.
-		if set, err := m.store.GetSettings(); err == nil {
-			m.notifyUserEvent(set, *u, model.UserNotifyPayment,
-				i18n.T(m.userLang(u.TgChatID), "notify.userPaid", escHTML(m.PlanName(order.PlanID))))
+		lang := m.userLang(u.TgChatID)
+		var msg string
+		switch {
+		case undelivered:
+			msg = i18n.T(lang, "notify.userPaidToBalance", order.AmountRub, escHTML(order.PlanName))
+		case order.Kind == model.OrderTopup:
+			wal, _ := m.store.GetWalletLite(u.ID)
+			msg = i18n.T(lang, "notify.userToppedUp", order.AmountRub, kopText(wal.BalanceKop))
+		case isAddonKind(order.Kind):
+			msg = i18n.T(lang, "notify.userPaidAddon", escHTML(orderSubject(lang, order)))
+		default:
+			msg = i18n.T(lang, "notify.userPaid", escHTML(m.PlanName(order.PlanID)))
 		}
+		m.notifyUserEvent(set, *u, model.UserNotifyPayment, msg)
 	}
 	adminLang := m.botLang()
-	m.notifyAdminEvent(model.AdminEventPayment, i18n.T(adminLang, "notify.paid",
-		order.ID, escHTML(order.UserName), escHTML(order.PlanName), order.AmountRub, escHTML(m.methodLabel(adminLang, provider))))
+	if !byHand {
+		m.notifyAdminEvent(model.AdminEventPayment, i18n.T(adminLang, "notify.paid",
+			order.ID, escHTML(order.UserName), escHTML(orderSubject(adminLang, order)), order.AmountRub,
+			escHTML(m.methodLabel(adminLang, provider))))
+	}
+	if undelivered {
+		m.notifyAdminEvent(model.AdminEventPayment, i18n.T(adminLang, "notify.payToBalance",
+			order.ID, escHTML(order.UserName), escHTML(order.PlanName)))
+		// The journal and the webhook report what the order is now, not a plan bought.
+		order.Kind = model.OrderTopup
+	}
+	m.notifyReferral(set, res)
 	order.Status = "paid"
-	m.audit(ctx, order.UserID, model.EventPaymentPaid, map[string]any{
-		"order_id": order.ID, "plan": order.PlanName, "amount_rub": order.AmountRub, "provider": provider,
-	})
+	m.audit(ctx, order.UserID, model.EventPaymentPaid, orderAudit(order, provider))
 	m.EmitWebhook(model.WebhookPaymentPaid, order)
-	return nil
 }
 
 // paymentOrderMaxAge bounds how long a pending provider order is polled before
@@ -517,7 +671,7 @@ func (m *Manager) PollPendingPayments() {
 			if err := m.confirmProviderOrder(o.Provider, o.ProviderID, res); err != nil {
 				logErr("payment poll: confirm failed", "order", o.ID, "err", err)
 			}
-		case payments.StatusCanceled:
+		case payments.StatusCanceled, payments.StatusRefunded:
 			m.cancelPendingOrder(o, "provider_cancelled")
 		default:
 			// Still unpaid at the provider, and too old to keep asking about.
@@ -548,7 +702,7 @@ func (m *Manager) cancelPendingOrder(o model.PaymentOrder, reason string) {
 			})
 			m.notifyAdminEvent(model.AdminEventPayment, fmt.Sprintf(
 				i18n.T(m.botLang(), "notify.payRefundedAfterDelivery"),
-				o.ID, escHTML(o.PlanName), o.AmountRub, escHTML(reason)))
+				o.ID, escHTML(orderSubject(m.botLang(), &o)), o.AmountRub, escHTML(reason)))
 		}
 		return
 	}
@@ -561,28 +715,293 @@ func (m *Manager) cancelPendingOrder(o model.PaymentOrder, reason string) {
 // client authenticates it (signature, or a re-fetch over the API for providers that
 // sign nothing) and reports what it says about the payment; nothing here trusts the
 // POST body. A callback for a provider that is off or unconfigured is refused —
-// otherwise a stale/forged callback could still move an order.
-func (m *Manager) HandleProviderWebhook(key string, body []byte, h http.Header) error {
+// otherwise a stale/forged callback could still move an order. Every callback lands
+// in the journal with what came of it.
+func (m *Manager) HandleProviderWebhook(key string, body []byte, h http.Header, remoteIP string) error {
+	rec := model.PaymentWebhook{
+		At: time.Now().Unix(), Provider: key, RemoteIP: remoteIP,
+		Headers: webhookHeaders(h), Body: string(body),
+	}
+	err := m.handleProviderWebhook(key, body, h, &rec)
+	if err != nil {
+		rec.Error = err.Error()
+		if rec.Outcome == "" {
+			rec.Outcome = model.WebhookOutcomeError
+		}
+	}
+	if e := m.store.RecordPaymentWebhook(rec); e != nil {
+		logErr("payment webhook: journal write failed", "provider", key, "err", e)
+	}
+	return err
+}
+
+func (m *Manager) handleProviderWebhook(key string, body []byte, h http.Header, rec *model.PaymentWebhook) error {
 	client, err := m.providerClient(key)
 	if err != nil {
+		rec.Outcome = model.WebhookOutcomeRejected
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	providerID, res, err := client.Webhook(ctx, body, h)
+	rec.ProviderID, rec.Status = providerID, string(res.Status)
 	if err != nil {
+		rec.Outcome = model.WebhookOutcomeRejected
 		return err
 	}
 	if providerID == "" {
+		rec.Outcome = model.WebhookOutcomeRejected
 		return invalidCode("err.webhookNoPaymentID", "{{provider}}: в уведомлении нет идентификатора платежа", map[string]any{"provider": payments.Label(key)})
 	}
 	switch res.Status {
 	case payments.StatusPaid:
-		return m.confirmProviderOrder(key, providerID, res)
+		rec.Outcome, rec.OrderID, err = m.confirmProviderOrderOutcome(key, providerID, res)
+		return err
 	case payments.StatusCanceled:
+		rec.Outcome = model.WebhookOutcomeCancelled
+		o, e := m.store.GetPaymentOrderByProvider(key, providerID)
+		if e != nil {
+			rec.Outcome = model.WebhookOutcomeNoOrder
+			return nil
+		}
+		rec.OrderID = o.ID
+		m.cancelPendingOrder(*o, "provider_cancelled") // won't clobber an already-paid order
+	case payments.StatusRefunded:
+		rec.Outcome = model.WebhookOutcomeRefunded
+		o, e := m.store.GetPaymentOrderByProvider(key, providerID)
+		if e != nil {
+			rec.Outcome = model.WebhookOutcomeNoOrder
+			return nil
+		}
+		rec.OrderID = o.ID
+		if o.Status == "paid" {
+			m.providerRefunded(context.Background(), o)
+		} else {
+			m.cancelPendingOrder(*o, "provider_cancelled")
+		}
+	default:
+		rec.Outcome = model.WebhookOutcomePending
 		if o, e := m.store.GetPaymentOrderByProvider(key, providerID); e == nil {
-			m.cancelPendingOrder(*o, "provider_cancelled") // won't clobber an already-paid order
+			rec.OrderID = o.ID
+			// A held transfer (protected, or awaiting the payer's acceptance) is not
+			// reported again once released, and there is no status to poll: the
+			// operator has to settle it.
+			if key == payments.ProviderYooMoney {
+				m.notifyAdminEvent(model.AdminEventPayment, i18n.T(m.botLang(), "notify.yoomoneyHeld",
+					o.ID, escHTML(o.UserName), o.AmountRub))
+			}
 		}
 	}
 	return nil
+}
+
+// webhookHeaders keeps the headers that explain a callback — its type and the
+// provider's signature — as "Name: value" lines, at most webhookHeadersMax bytes.
+// Anything that can carry a credential is masked: some providers send their API key
+// in a header (Platega's X-Secret), and the journal is read by more people than the
+// provider settings are. Cookies and proxy hop headers stay out altogether.
+func webhookHeaders(h http.Header) string {
+	names := make([]string, 0, len(h))
+	for k := range h {
+		switch strings.ToLower(k) {
+		case "cookie", "x-forwarded-for", "x-real-ip", "forwarded":
+			continue
+		}
+		names = append(names, k)
+	}
+	slices.Sort(names)
+	var b strings.Builder
+	for _, k := range names {
+		for _, v := range h[k] {
+			if secretHeader(k) {
+				v = "***"
+			}
+			if b.Len()+len(k)+len(v)+3 > webhookHeadersMax {
+				return b.String()
+			}
+			b.WriteString(k)
+			b.WriteString(": ")
+			b.WriteString(v)
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+// webhookHeadersMax bounds the headers a journal row keeps.
+const webhookHeadersMax = 4 << 10
+
+// secretHeader reports whether a header's name says it may carry a credential. A
+// signature is kept: it is derived from the body, and it is what a failed check is
+// debugged by.
+func secretHeader(name string) bool {
+	n := strings.ToLower(name)
+	if strings.Contains(n, "signature") || n == "sign" || strings.HasSuffix(n, "-sign") {
+		return false
+	}
+	for _, w := range []string{"secret", "token", "key", "auth", "pass", "cred"} {
+		if strings.Contains(n, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// PaymentWebhooks lists the callback journal.
+func (m *Manager) PaymentWebhooks(f store.PaymentWebhookFilter) ([]model.PaymentWebhook, error) {
+	return m.store.ListPaymentWebhooks(f)
+}
+
+// PurgeOldPaymentWebhooks drops callbacks past their retention window.
+func (m *Manager) PurgeOldPaymentWebhooks() {
+	cutoff := time.Now().AddDate(0, 0, -model.PaymentWebhookRetentionDays).Unix()
+	if n, err := m.store.PurgePaymentWebhooks(cutoff); err != nil {
+		logErr("payment webhooks: retention sweep failed", "err", err)
+	} else if n > 0 {
+		logInfo("payment webhooks: old rows purged", "count", n)
+	}
+}
+
+// providerRefunded settles a paid order whose money the payment system returned —
+// a refund made in its dashboard, or a chargeback: the order leaves revenue and can
+// no longer be refunded to the balance (the user would get the money twice), what
+// it put on a balance comes off, and a plan it bought loses the time it paid for.
+// A repeated notification changes nothing.
+func (m *Manager) providerRefunded(ctx context.Context, o *model.PaymentOrder) {
+	r, err := m.store.ProviderRefundOrder(o.ID, time.Now().Unix())
+	if errors.Is(err, store.ErrNotRefundable) {
+		return
+	}
+	if err != nil {
+		logErr("payment: provider refund not recorded", "order", o.ID, "err", err)
+		return
+	}
+	cut := false
+	// Devices or traffic the money bought go with it, while the user still holds them.
+	if (r.Kind == model.OrderDevices || r.Kind == model.OrderTraffic) && r.Earlier == "" {
+		taken, err := m.store.TakeBackAddon(o.UserID, o.PlanID, o.Devices*boolInt(r.Kind == model.OrderDevices), o.PackBytes)
+		if err != nil {
+			logErr("payment: provider refund did not take the add-on back", "order", o.ID, "err", err)
+		} else if taken {
+			cut = true
+			m.TriggerUserSync()
+		}
+	}
+	// A change goes back to the plan it left, on the same term, while the user is
+	// still on the plan it bought.
+	if r.Kind == model.OrderChange && r.Earlier == "" {
+		cut = m.revertChange(ctx, o)
+	}
+	if r.Kind == model.OrderPlan && r.Earlier == "" {
+		if u, err := m.store.GetUser(r.UserID); err == nil {
+			if active := m.ActivePaidPlan(*u); active != nil && active.ID == o.PlanID {
+				if err := m.takeBackTerm(ctx, *u, o); err != nil {
+					logErr("payment: provider refund did not take the plan back", "order", o.ID, "err", err)
+				} else {
+					cut = true
+				}
+			}
+		}
+	}
+	m.audit(ctx, r.UserID, model.EventPaymentRefunded, map[string]any{
+		"order_id": o.ID, "plan": o.PlanName, "amount_rub": o.AmountRub, "source": model.RefundByProvider,
+		"taken_kop": r.TakenKop, "returned_kop": r.ReturnedKop, "ref_taken_kop": r.RefTakenKop,
+		"short_kop": r.ShortKop, "ref_short_kop": r.RefShortKop, "ref_days": r.RefDays,
+		"plan_cut": cut,
+	})
+	lang := m.botLang()
+	var done []string
+	if r.Earlier == model.RefundToBalance {
+		done = append(done, i18n.T(lang, "notify.refundWasBalance"))
+	}
+	if cut {
+		done = append(done, i18n.T(lang, "notify.refundPlanCut"))
+	}
+	if r.TakenKop > 0 {
+		done = append(done, i18n.T(lang, "notify.refundTaken", kopText(r.TakenKop)))
+	}
+	if r.ReturnedKop > 0 {
+		done = append(done, i18n.T(lang, "notify.refundReturned", kopText(r.ReturnedKop)))
+	}
+	if r.RefTakenKop > 0 {
+		done = append(done, i18n.T(lang, "notify.refundRefTaken", kopText(r.RefTakenKop)))
+	}
+	if r.RefDays > 0 {
+		done = append(done, i18n.T(lang, "notify.refundRefDays", r.RefDays))
+	}
+	if r.ShortKop > 0 {
+		done = append(done, i18n.T(lang, "notify.refundShort", kopText(r.ShortKop)))
+	}
+	if r.RefShortKop > 0 {
+		done = append(done, i18n.T(lang, "notify.refundRefShort", kopText(r.RefShortKop)))
+	}
+	if after, err := m.store.GetPaymentOrder(o.ID); err == nil {
+		m.EmitWebhook(model.WebhookPaymentRefunded, after)
+	}
+	msg := i18n.T(lang, "notify.providerRefund", o.ID, escHTML(o.UserName),
+		escHTML(orderSubject(lang, o)), o.AmountRub, escHTML(payments.Label(o.Provider)))
+	if len(done) > 0 {
+		msg += "\n" + strings.Join(done, "\n")
+	}
+	m.notifyAdminEvent(model.AdminEventPayment, msg)
+}
+
+// sameExtras reports whether a pending order buys the same add-ons as a draft.
+func sameExtras(o *model.PaymentOrder, d store.OrderDraft) bool {
+	return o.Devices == d.Devices && o.ChangeFrom == d.ChangeFrom &&
+		o.ExpectExpire == d.ExpectExpire && o.PackBytes == d.PackBytes
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// revertChange moves a user back to the plan a refunded change left, keeping the
+// term, and reports whether it did.
+func (m *Manager) revertChange(ctx context.Context, o *model.PaymentOrder) bool {
+	m.applyPlanMu.Lock()
+	u, err := m.store.GetUser(o.UserID)
+	// Only the term the change bought: renewed since, the days are the new plan's own.
+	if err != nil || u.PlanID != o.PlanID || o.ChangeFrom == 0 || u.ExpireAt != o.ExpectExpire {
+		m.applyPlanMu.Unlock()
+		return false
+	}
+	from, err := m.store.GetTariffPlan(o.ChangeFrom)
+	if err != nil {
+		m.applyPlanMu.Unlock()
+		return false
+	}
+	back := 0
+	if from.SellsDevices() {
+		back = min(o.DevicesBefore, from.DeviceMax)
+	}
+	w, err := m.changeWrite(*u, from.ID, back, u.ExpireAt)
+	if err != nil {
+		m.applyPlanMu.Unlock()
+		return false
+	}
+	groupsChanged := m.planGroupsChanged(w)
+	err = m.store.ApplyUserPlan(w)
+	m.applyPlanMu.Unlock()
+	if err != nil {
+		logErr("payment: refunded change not reverted", "order", o.ID, "err", err)
+		return false
+	}
+	m.afterPlanWrite(groupsChanged)
+	m.auditPlan(ctx, u.ID, u.Name, model.EventPlanChanged, m.PlanName(o.PlanID), from.Name, w.ExpireAt)
+	return true
+}
+
+// starsCharge reads telegram_payment_charge_id out of a successful_payment message.
+func starsCharge(raw []byte) string {
+	var m struct {
+		SuccessfulPayment struct {
+			ChargeID string `json:"telegram_payment_charge_id"`
+		} `json:"successful_payment"`
+	}
+	_ = json.Unmarshal(raw, &m)
+	return m.SuccessfulPayment.ChargeID
 }

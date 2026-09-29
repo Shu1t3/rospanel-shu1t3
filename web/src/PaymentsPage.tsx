@@ -4,14 +4,24 @@ import { currentLang, td } from "./i18n";
 import {
   cancelPaymentOrder,
   confirmPaymentOrder,
+  refundOrder,
   getPaymentStats,
+  getPaymentFunnel,
+  getReferralStats,
+  getUser,
   listPaymentOrders,
+  type PaymentFunnel,
   type PaymentOrder,
   type PaymentStats,
+  type ReferralStats,
+  type User,
 } from "./api";
+import { UserDetail } from "./UserDetail";
+import { PaymentCallbacks } from "./PaymentCallbacks";
+import { FraudPanel } from "./FraudPanel";
 import { useShowMore } from "./hooks";
 import { errMessage, notifyError, notifySuccess } from "./notify";
-import { useStepUpDialog } from "./stepup";
+import { EMPTY_STEP_UP, StepUpFields, stepUpReady, useStepUpDialog, type StepUp } from "./stepup";
 import {
   Badge,
   Button,
@@ -25,8 +35,12 @@ import {
   Skeleton,
   Skeletons,
   useWideBox,
+  Modal,
+  Checkbox,
+  SegmentedControl,
 } from "./ui";
 import { useCan } from "./role";
+import { fmtKop } from "./events";
 
 const PROVIDER_META: Record<
   string,
@@ -42,6 +56,9 @@ const PROVIDER_META: Record<
   paypear: { label: "paypear", color: "brand" },
   aurapay: { label: "aurapay", color: "brand" },
   heleket: { label: "heleket", color: "teal" },
+  yoomoney: { label: "yoomoney", color: "brand" },
+  stars: { label: "stars", color: "teal" },
+  balance: { label: "balance", color: "teal" },
   "": { label: "manual", color: "gray" },
 };
 
@@ -94,6 +111,36 @@ const TPL =
 const TPL_NARROW = "minmax(0,1fr) auto";
 const WIDE_MIN = 620;
 
+// orderWhat names what an order buys — the plan, or a balance top-up — with the part
+// the balance paid and the promo code, when there are any.
+function orderWhat(o: PaymentOrder): string {
+  let what = o.plan_name ?? "";
+  if (o.kind === "topup") what = td("pay.topup");
+  else if (o.kind === "change") what = td("pay.changeTo", { plan: what });
+  else if (o.kind === "devices") what = td("pay.addDevices", { count: o.devices ?? 0 });
+  else if (o.kind === "traffic") what = td("pay.addTraffic", { gb: Math.round((o.pack_bytes ?? 0) / 2 ** 30) });
+  else if ((o.periods ?? 1) > 1) what = `${what} × ${o.periods}`;
+  if (o.kind === "plan" && (o.devices ?? 0) > 0) what += ` + ${td("pay.addDevices", { count: o.devices ?? 0 })}`;
+  const parts = [what];
+  if (o.balance_kop && o.provider !== "balance")
+    parts.push(td("pay.plusBalance", { sum: fmtKop(o.balance_kop) }));
+  if (o.promo_code) parts.push(o.promo_code);
+  if (o.refunded_at) parts.push(td(o.refund_source === "provider" ? "pay.refundedProvider" : "pay.refunded"));
+  return parts.filter(Boolean).join(" · ");
+}
+
+// refundable: a paid plan order whose money has not gone back yet.
+function refundable(o: PaymentOrder): boolean {
+  return o.status === "paid" && (o.kind ?? "plan") === "plan" && !o.refunded_at;
+}
+
+// orderAmount is what the row shows as the sum: the money, or for a purchase from
+// the balance, what the balance paid.
+function orderAmount(o: PaymentOrder): string {
+  if (o.provider === "balance") return `${fmtKop(o.balance_kop ?? 0)} ₽`;
+  return fmtRub(o.amount_rub);
+}
+
 // orderWho is the account an order belongs to, by name when the row still has one.
 function orderWho(o: PaymentOrder): string {
   return o.user_name ?? `user ${o.user_id}`;
@@ -103,8 +150,30 @@ function orderWho(o: PaymentOrder): string {
 // onPending reports the number of orders still waiting for an admin after every
 // read: the tab above this page carries that count, and a confirmed or cancelled
 // order must change it at once rather than at the next poll.
-export function PaymentsPage({ onPending }: { onPending?: (n: number) => void }) {
+export function PaymentsPage({
+  onPending,
+  userBotEnabled = false,
+}: {
+  onPending?: (n: number) => void;
+  userBotEnabled?: boolean;
+}) {
   const { t } = useTranslation();
+  // A referrer's name opens their card — for whoever may read users.
+  const canUsers = useCan("users.view");
+  const [detail, setDetail] = useState<User | null>(null);
+  const openUser = (id: number) => {
+    getUser(id)
+      .then(setDetail)
+      .catch((e) => notifyError(errMessage(e)));
+  };
+  // The funnel follows the users who joined in the last funnelDays (0 = all time).
+  const [funnelDays, setFunnelDays] = useState(30);
+  const [funnel, setFunnel] = useState<PaymentFunnel | null>(null);
+  useEffect(() => {
+    getPaymentFunnel(funnelDays)
+      .then(setFunnel)
+      .catch(() => setFunnel(null));
+  }, [funnelDays]);
   // Crediting or cancelling an order needs billing.manage; the list is billing.view.
   const canManage = useCan("billing.manage");
   const [stats, setStats] = useState<PaymentStats | null>(null);
@@ -112,14 +181,41 @@ export function PaymentsPage({ onPending }: { onPending?: (n: number) => void })
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [boxRef, wide] = useWideBox(WIDE_MIN);
+  const [refStats, setRefStats] = useState<ReferralStats | null>(null);
+  const canRefund = canManage && !!stats?.wallet;
 
   const { ask, stepUpNode } = useStepUpDialog();
+  // The order whose money is being returned to the balance.
+  const [refund, setRefund] = useState<PaymentOrder | null>(null);
+  const [refundCancel, setRefundCancel] = useState(false);
+  const [refundCreds, setRefundCreds] = useState<StepUp>(EMPTY_STEP_UP);
+  const openRefund = (o: PaymentOrder | null) => {
+    setRefund(o);
+    setRefundCancel(false);
+    setRefundCreds(EMPTY_STEP_UP);
+  };
+  const doRefund = async () => {
+    if (!refund) return;
+    setBusy(true);
+    try {
+      const r = await refundOrder(refund.id, refundCancel, refundCreds.password);
+      notifySuccess(t("pay.refundedTo", { sum: fmtKop(r.refund_kop) }));
+      openRefund(null);
+      await refresh();
+    } catch (e) {
+      notifyError(errMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
 
   const refresh = () =>
-    Promise.all([getPaymentStats(), listPaymentOrders()])
-      .then(([s, o]) => {
+    Promise.all([getPaymentStats(), listPaymentOrders(), getReferralStats().catch(() => null)])
+      .then(([s, o, r]) => {
         setStats(s);
         setOrders(o);
+        setRefStats(r);
         onPending?.(s.pending_count ?? 0);
       })
       .catch((e) => notifyError(errMessage(e)))
@@ -133,7 +229,7 @@ export function PaymentsPage({ onPending }: { onPending?: (n: number) => void })
   const creditOrder = async (o: PaymentOrder) => {
     const creds = await ask({
       title: t("pay.confirmTitle"),
-      body: `${orderWho(o)} · ${o.plan_name ?? ""} · ${fmtRub(o.amount_rub)}`,
+      body: `${orderWho(o)} · ${orderWhat(o)} · ${orderAmount(o)}`,
       confirmLabel: t("pay.confirmPayment"),
     });
     if (!creds) return;
@@ -152,7 +248,7 @@ export function PaymentsPage({ onPending }: { onPending?: (n: number) => void })
   const cancelOrder = async (o: PaymentOrder) => {
     const creds = await ask({
       title: t("pay.cancelTitle"),
-      body: `${orderWho(o)} · ${o.plan_name ?? ""} · ${fmtRub(o.amount_rub)}`,
+      body: `${orderWho(o)} · ${orderWhat(o)} · ${orderAmount(o)}`,
       confirmLabel: t("pay.cancelOrder"),
       danger: true,
     });
@@ -253,8 +349,8 @@ export function PaymentsPage({ onPending }: { onPending?: (n: number) => void })
                   <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">
                     {orderWho(o)}
                   </span>
-                  <span className="truncate text-xs text-ink-muted">{o.plan_name}</span>
-                  <Mono className="shrink-0 text-xs text-ink">{fmtRub(o.amount_rub)}</Mono>
+                  <span className="truncate text-xs text-ink-muted">{orderWhat(o)}</span>
+                  <Mono className="shrink-0 text-xs text-ink">{orderAmount(o)}</Mono>
                   {canManage && (
                   <span className="flex shrink-0 gap-2">
                     <Button size="xs" disabled={busy} onClick={() => creditOrder(o)}>
@@ -277,6 +373,141 @@ export function PaymentsPage({ onPending }: { onPending?: (n: number) => void })
             </>
           )}
         </Panel>
+      </div>
+
+      <div className="grid gap-3.5 lg:grid-cols-2">
+        {/* Of the users who joined in the period: how far they got. */}
+        <Panel
+          title={t("funnel.title")}
+          aside={
+            <SegmentedControl
+              size="xs"
+              nav
+              value={String(funnelDays)}
+              onChange={(v) => setFunnelDays(Number(v))}
+              data={[
+                { value: "30", label: t("funnel.days30") },
+                { value: "90", label: t("funnel.days90") },
+                { value: "0", label: t("funnel.all") },
+              ]}
+            />
+          }
+        >
+          {funnel && (
+            <>
+              {(
+                [
+                  ["funnel.joined", funnel.funnel.joined, funnel.funnel.joined],
+                  ["funnel.trial", funnel.funnel.trial, funnel.funnel.joined],
+                  ["funnel.paid", funnel.funnel.paid, funnel.funnel.joined],
+                  ["funnel.renewed", funnel.funnel.renewed, funnel.funnel.paid],
+                ] as const
+              ).map(([label, n, of]) => (
+                <div key={label} className="border-t border-gray-100 px-3.5 py-[7px]">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="truncate text-xs text-ink">{t(label)}</span>
+                    <span className="flex shrink-0 items-center gap-3">
+                      {label !== "funnel.joined" && (
+                        <span className="text-[11px] text-ink-muted">{of > 0 ? `${Math.round((n / of) * 100)}%` : "—"}</span>
+                      )}
+                      <Mono className="text-xs text-ink">{n.toLocaleString(currentLang())}</Mono>
+                    </span>
+                  </div>
+                  <div className="mt-1 h-1 overflow-hidden rounded-full bg-gray-100">
+                    <div
+                      className="h-full rounded-full bg-brand-600"
+                      style={{ width: `${funnel.funnel.joined > 0 ? (n / funnel.funnel.joined) * 100 : 0}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
+              <p className="border-t border-gray-100 px-3.5 py-2 text-[11px] text-ink-muted">{t("funnel.hint")}</p>
+              {funnel.by_source.some((s) => s.source !== "") && (
+                <div className="overflow-x-auto border-t border-gray-100">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className={cn(MICRO, "text-left")}>
+                        <th className="px-3.5 py-2 font-medium">{t("funnel.source")}</th>
+                        <th className="px-2 py-2 text-right font-medium">{t("funnel.joined")}</th>
+                        <th className="px-2 py-2 text-right font-medium">{t("funnel.paid")}</th>
+                        <th className="px-2 py-2 text-right font-medium">{t("funnel.renewed")}</th>
+                        <th className="px-3.5 py-2 text-right font-medium">{t("funnel.revenue")}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {funnel.by_source.map((s) => (
+                        <tr key={s.source} className="border-t border-gray-100">
+                          <td className="max-w-[10rem] truncate px-3.5 py-[6px] text-ink">
+                            {s.source === "" ? t("funnel.noSource") : s.source === "~ref" ? t("funnel.byInvite") : <Mono>{s.source}</Mono>}
+                          </td>
+                          <td className="px-2 py-[6px] text-right"><Mono>{s.joined}</Mono></td>
+                          <td className="px-2 py-[6px] text-right">
+                            <Mono>{s.paid}</Mono>
+                            <span className="ml-1 text-[11px] text-ink-muted">
+                              {s.joined > 0 ? `${Math.round((s.paid / s.joined) * 100)}%` : ""}
+                            </span>
+                          </td>
+                          <td className="px-2 py-[6px] text-right"><Mono>{s.renewed}</Mono></td>
+                          <td className="px-3.5 py-[6px] text-right"><Mono>{fmtRub(s.revenue_rub)}</Mono></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              <p className="border-t border-gray-100 px-3.5 py-2 text-[11px] text-ink-muted">{t("funnel.sourceHint")}</p>
+              {funnel.winback.sent > 0 && (
+                <p className="border-t border-gray-100 px-3.5 py-2.5 text-xs text-ink-muted">
+                  {t("funnel.winback", {
+                    sent: funnel.winback.sent,
+                    used: funnel.winback.used,
+                    revenue: funnel.winback.revenue_rub.toLocaleString(currentLang()),
+                  })}
+                </p>
+              )}
+            </>
+          )}
+        </Panel>
+
+        {/* What the referral programme brought: shown once someone came by a link. */}
+        {refStats && refStats.invited > 0 && (
+          <Panel title={t("ref.title")}>
+            <p className="border-t border-gray-100 px-3.5 py-2.5 text-xs text-ink-muted">
+              {t(refStats.paid_out_kop > 0 ? "ref.statsLine" : "ref.statsLineNoBonus", {
+                invited: refStats.invited,
+                paying: refStats.paying,
+                revenue: refStats.revenue_rub.toLocaleString(currentLang()),
+                paid: fmtKop(refStats.paid_out_kop),
+              })}
+            </p>
+            {refStats.top.length > 0 && (
+              <>
+                <div className={cn(MICRO, "border-t border-gray-100 px-3.5 py-2")}>{t("ref.top")}</div>
+                {refStats.top.map((r) => (
+                  <div
+                    key={r.user_id}
+                    className="flex items-center justify-between gap-3 border-t border-gray-100 px-3.5 py-[7px]"
+                  >
+                    {canUsers ? (
+                      <button
+                        type="button"
+                        className="truncate text-left text-xs font-medium text-brand-600 hover:underline"
+                        onClick={() => openUser(r.user_id)}
+                      >
+                        {r.name}
+                      </button>
+                    ) : (
+                      <span className="truncate text-xs text-ink">{r.name}</span>
+                    )}
+                    <Mono className="shrink-0 text-xs text-ink-muted">
+                      {t("ref.topLine", { invited: r.invited, paying: r.paying, earned: fmtKop(r.earned_kop) })}
+                    </Mono>
+                  </div>
+                ))}
+              </>
+            )}
+          </Panel>
+        )}
       </div>
 
       <Panel title={t("pay.history")}>
@@ -316,17 +547,22 @@ export function PaymentsPage({ onPending }: { onPending?: (n: number) => void })
                   {wide ? (
                     <>
                       <span className="truncate text-xs text-ink">{orderWho(o)}</span>
-                      <span className="truncate text-xs text-ink-muted" title={o.plan_name}>
-                        {o.plan_name}
+                      <span className="truncate text-xs text-ink-muted" title={orderWhat(o)}>
+                        {orderWhat(o)}
                       </span>
-                      <Mono className="text-xs text-ink">{fmtRub(o.amount_rub)}</Mono>
+                      <Mono className="text-xs text-ink">{orderAmount(o)}</Mono>
                       <span className="truncate text-xs text-ink-muted">
                         {providerMeta(o.provider).label}
                       </span>
-                      <span className="min-w-0">
+                      <span className="flex min-w-0 items-center gap-1.5">
                         <Badge color={st.color} size="xs">
                           {st.label}
                         </Badge>
+                        {canRefund && refundable(o) && (
+                          <Button size="xs" variant="subtle" color="gray" onClick={() => openRefund(o)}>
+                            {t("pay.refund")}
+                          </Button>
+                        )}
                       </span>
                       <Mono
                         className="truncate text-right text-[11px] text-ink-muted"
@@ -340,14 +576,19 @@ export function PaymentsPage({ onPending }: { onPending?: (n: number) => void })
                       <Mono className="text-right text-[11px] text-ink-muted">{when}</Mono>
                       <span className="col-span-2 flex min-w-0 items-center gap-2">
                         <span className="min-w-0 flex-1 truncate text-[11px] text-ink-muted">
-                          {orderWho(o)} · {o.plan_name} · {providerMeta(o.provider).label}
+                          {orderWho(o)} · {orderWhat(o)} · {providerMeta(o.provider).label}
                         </span>
                         <Mono className="shrink-0 text-xs text-ink">
-                          {fmtRub(o.amount_rub)}
+                          {orderAmount(o)}
                         </Mono>
                         <Badge color={st.color} size="xs">
                           {st.label}
                         </Badge>
+                        {canRefund && refundable(o) && (
+                          <Button size="xs" variant="subtle" color="gray" onClick={() => openRefund(o)}>
+                            {t("pay.refund")}
+                          </Button>
+                        )}
                       </span>
                     </>
                   )}
@@ -359,7 +600,44 @@ export function PaymentsPage({ onPending }: { onPending?: (n: number) => void })
         )}
       </Panel>
 
+      {canManage && <FraudPanel onOpenUser={canUsers ? openUser : undefined} />}
+      {canManage && <PaymentCallbacks providerLabel={(p) => providerMeta(p).label} />}
+
       {stepUpNode}
+      <UserDetail
+        user={detail}
+        userBotEnabled={userBotEnabled}
+        onOpenUser={openUser}
+        onChanged={() => {}}
+        onClose={() => setDetail(null)}
+      />
+      <Modal
+        open={!!refund}
+        onClose={() => openRefund(null)}
+        title={t("pay.refundTitle")}
+        subtitle={refund ? `#${refund.id} · ${orderWho(refund)} · ${orderWhat(refund)} · ${orderAmount(refund)}` : undefined}
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button variant="light" color="gray" size="sm" onClick={() => openRefund(null)}>
+              {t("common.cancel")}
+            </Button>
+            <Button size="sm" loading={busy} disabled={!stepUpReady(refundCreds, false)} onClick={doRefund}>
+              {t("pay.refund")}
+            </Button>
+          </div>
+        }
+      >
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-ink-muted">{t("pay.refundHint")}</p>
+          <Checkbox
+            checked={refundCancel}
+            onChange={setRefundCancel}
+            label={t("pay.refundCancelPlan")}
+            hint={t("pay.refundCancelPlanHint")}
+          />
+          <StepUpFields value={refundCreds} onChange={setRefundCreds} />
+        </div>
+      </Modal>
     </div>
   );
 }

@@ -29,6 +29,10 @@ export interface User {
   telegram_linked?: boolean
   telegram_link?: string
   telegram_deep_link?: string
+  // The linked Telegram account is on the shared blacklist (user card only).
+  blacklisted?: boolean
+  source?: string // the /start tag the user came with
+  blacklist_reason?: string
   tg_chat_id?: number // linked Telegram chat/user id (0 = not linked)
   system_email: string // Xray client id "u<id>" (logs/stats)
   sub_url: string
@@ -737,6 +741,7 @@ export type Perm =
   | 'stats.manage'
   | 'billing.view'
   | 'billing.manage'
+  | 'billing.sell'
   | 'payments.manage'
   | 'broadcasts.manage'
   | 'servers.view'
@@ -980,6 +985,21 @@ export const applyUpdate = (withNodes = false) =>
     withNodes ? 'api/update?nodes=1' : 'api/update',
     { method: 'POST' },
   )
+
+// Auto-update: at cron (the panel's timezone; "" = off) the panel installs a newer
+// release by itself; with nodes the servers follow. last is the last attempt's
+// outcome: updated:<version> | latest | nodes:<n> | error:<message>.
+export interface AutoUpdate {
+  cron: string
+  nodes: boolean
+  last_at: number
+  last: string
+  supported: boolean // runs as a systemd service; a container updates with its image
+}
+
+export const getAutoUpdate = () => api<AutoUpdate>('api/update/auto')
+export const saveAutoUpdate = (a: { cron: string; nodes: boolean }) =>
+  api<AutoUpdate>('api/update/auto', { method: 'POST', body: JSON.stringify(a) })
 
 export const setupPassword = (password: string) =>
   api<{ ok: boolean }>('api/setup/password', {
@@ -1410,6 +1430,7 @@ export interface TelegramInfo {
   user_reg_mode: RegMode // off | open | moderation | invite
   user_reg_code: string // invite code (mode === 'invite')
   user_bot_username: string // user bot @username
+  user_miniapp_url?: string // the Mini App address for @BotFather ("" without a host)
   admin_events: Record<string, boolean> // admin notification categories (key→on)
   // What the USER bot tells the person themselves, and how many days ahead the
   // expiry warning goes out.
@@ -1436,6 +1457,21 @@ export interface TelegramInfo {
 export type RegMode = 'off' | 'open' | 'moderation' | 'invite'
 
 export const getTelegram = () => api<TelegramInfo>('api/telegram')
+
+// The shared Telegram blacklist: accounts other VPN services banned.
+export interface BlacklistInfo {
+  enabled: boolean
+  url: string
+  default_url: string
+  count: number
+  synced_at: number
+  error?: string
+}
+
+export const getBlacklist = () => api<BlacklistInfo>('api/telegram/blacklist')
+export const saveBlacklist = (enabled: boolean, url: string) =>
+  api<BlacklistInfo>('api/telegram/blacklist', { method: 'POST', body: JSON.stringify({ enabled, url }) })
+export const refreshBlacklist = () => api<BlacklistInfo>('api/telegram/blacklist/refresh', { method: 'POST' })
 
 // Takes an object rather than a positional list: the three bots contribute a dozen
 // fields, half of them same-typed, and a swapped token argument would fail silently.
@@ -1575,6 +1611,25 @@ export const testBroadcast = (
   b: { text: string; audience: BroadcastAudience; buttons: BroadcastButton[] },
   media: File | null,
 ) => apiForm<{ ok: boolean }>('api/broadcasts/test', broadcastForm(b, media))
+
+// An automatic message: a rule the user bot follows on its own.
+export interface AutoRule {
+  id: number
+  name: string
+  enabled: boolean
+  trigger: string
+  delay_hours: number
+  text: string
+  buttons: BroadcastButton[]
+  discount_percent: number
+  discount_days: number
+  stats?: { sent: number; converted: number; revenue_rub: number; codes_used: number }
+}
+
+export const listAutoRules = () => api<{ rules: AutoRule[]; triggers: string[] }>('api/broadcasts/rules')
+export const saveAutoRule = (r: AutoRule) =>
+  api<AutoRule>('api/broadcasts/rules', { method: 'POST', body: JSON.stringify(r) })
+export const deleteAutoRule = (id: number) => api<void>(`api/broadcasts/rules/${id}`, { method: 'DELETE' })
 
 export const pauseBroadcast = (id: number) =>
   api<Broadcast>(`api/broadcasts/${id}/pause`, { method: 'POST' })
@@ -1931,6 +1986,16 @@ export interface TariffPlan {
   // Access groups the plan grants: whoever is put on the plan joins these groups and
   // leaves them when they move off it. Null/empty = the plan says nothing about access.
   group_ids: number[] | null
+  // Devices beyond device_limit a user may buy: this much each per period, up to
+  // device_max of them (0 = none sold).
+  device_price?: number
+  device_max?: number
+}
+
+// Traffic on sale on top of a plan's quota.
+export interface TrafficPack {
+  gb: number
+  price_rub: number
 }
 
 export interface PaymentOrder {
@@ -1946,6 +2011,17 @@ export interface PaymentOrder {
   pay_url?: string
   created_at: number
   paid_at: number
+  // plan | topup. amount_rub is the money that came in; balance_kop the part of the
+  // price the balance paid; discount_rub what promo_code took off.
+  kind?: 'plan' | 'topup' | 'change' | 'devices' | 'traffic'
+  devices?: number // extra devices a plan comes with, or how many a devices order adds
+  pack_bytes?: number // a traffic order's traffic
+  balance_kop?: number
+  discount_rub?: number
+  promo_code?: string
+  periods?: number // of the plan's periods bought
+  refunded_at?: number // when its money went back (0/absent = never)
+  refund_source?: 'balance' | 'provider' // to the balance by an operator, or by the payment system
 }
 
 export interface BillingInfo {
@@ -1957,9 +2033,28 @@ export interface BillingInfo {
   // on and off like one, with a pay-button label of its own ("" = the default).
   manual: boolean
   manual_label: string
+  // The wallet and the referral programme.
+  wallet: boolean
+  topup_min: number
+  ref_mode: RefMode
+  ref_percent: number
+  ref_days: number
+  ref_first: boolean
+  periods: PeriodOffer[] // discounts for buying several periods at once
+  winback: WinbackSettings
+  traffic_packs: TrafficPack[]
+  plan_change: boolean // users may switch plans while one is active
   plans: TariffPlan[]
   plan_users?: Record<string, number> // plan id → number of users on it
 }
+
+export type RefMode = 'off' | 'percent' | 'days'
+
+export interface PeriodOffer {
+  periods: number
+  percent: number
+}
+
 
 export const getBilling = () => api<BillingInfo>('api/billing')
 
@@ -2010,6 +2105,16 @@ export const saveBilling = (b: {
   payment_note: string
   manual: boolean
   manual_label: string
+  wallet: boolean
+  topup_min: number
+  ref_mode: RefMode
+  ref_percent: number
+  ref_days: number
+  ref_first: boolean
+  periods: PeriodOffer[]
+  winback: WinbackSettings
+  traffic_packs: TrafficPack[]
+  plan_change: boolean
 }) =>
   api<{ ok: boolean }>('api/billing', {
     method: 'POST',
@@ -2048,6 +2153,7 @@ export interface PaymentStats {
   pending_count: number
   pending_sum: number
   by_provider: ProviderStat[]
+  wallet?: boolean // refunds to the balance are on offer
 }
 
 export const getPaymentStats = () => api<PaymentStats>('api/payments/stats')
@@ -2062,6 +2168,192 @@ export const cancelPaymentOrder = (id: number, current_password: string) =>
   api<{ ok: boolean }>(`api/billing/orders/${id}/cancel`, {
     method: 'POST',
     body: JSON.stringify({ current_password }),
+  })
+
+// ---- Wallet and promo codes ----
+
+export type PromoKind = 'percent' | 'amount' | 'days' | 'balance'
+
+export interface PromoCode {
+  id: number
+  code: string
+  kind: PromoKind
+  value: number
+  plan_ids: number[] // discount: the plans it applies to ([] = any)
+  plan_id: number // days: the plan it grants (0 = the user's active one)
+  first_only: boolean
+  max_uses: number // 0 = unlimited
+  uses: number
+  expires_at: number // 0 = never
+  enabled: boolean
+  note: string
+  created_at: number
+}
+
+export interface PromoUse {
+  user_id: number
+  name: string
+  order_id?: number
+  used_at: number
+  amount_rub: number
+  discount_rub: number
+}
+
+export interface PromoUsage {
+  uses: PromoUse[]
+  orders: number
+  revenue_rub: number
+}
+
+export const getPromoUses = (id: number) => api<PromoUsage>(`api/billing/promos/${id}/uses`)
+
+export interface Referral {
+  user_id: number
+  name: string
+  created_at: number
+  paid_rub: number
+  earned_kop: number
+}
+
+export const getUserReferrals = (id: number) => api<Referral[]>(`api/users/${id}/referrals`)
+
+export interface ReferralStats {
+  invited: number
+  paying: number
+  revenue_rub: number
+  paid_out_kop: number
+  top: { user_id: number; name: string; invited: number; paying: number; earned_kop: number }[]
+}
+
+export const getReferralStats = () => api<ReferralStats>('api/billing/referrals')
+
+// Win-back: after_days after a paid term lapses, the user gets a one-use code for
+// percent % off, valid for valid_days.
+export interface WinbackSettings {
+  enabled: boolean
+  after_days: number
+  percent: number
+  valid_days: number
+}
+
+// The users who joined in a period: how many took a trial, paid, and paid again —
+// and what the win-back codes did (all time).
+export interface PaymentFunnel {
+  funnel: { joined: number; trial: number; paid: number; renewed: number }
+  winback: { sent: number; used: number; revenue_rub: number }
+  // The same split by where the users came from: a /start tag, "~ref" for an invite
+  // link without one, "" for neither.
+  by_source: {
+    source: string
+    joined: number
+    trial: number
+    paid: number
+    renewed: number
+    revenue_rub: number
+  }[]
+}
+
+export const getPaymentFunnel = (days: number) => api<PaymentFunnel>(`api/payments/funnel?days=${days}`)
+
+// One callback a payment provider sent and what the panel made of it.
+export interface PaymentCallback {
+  id: number
+  at: number
+  provider: string
+  remote_ip: string
+  provider_id: string
+  order_id: number
+  status: string
+  outcome: string
+  error?: string
+  headers?: string
+  body?: string
+}
+
+// A pattern worth a look: what several accounts share, how often, and who.
+export interface FraudSignal {
+  kind: string
+  key: string
+  count: number
+  at: number
+  users: { id: number; name: string }[]
+}
+
+export const getFraudSignals = () => api<FraudSignal[]>('api/payments/fraud')
+
+export const listPaymentCallbacks = (q: { failed?: boolean; before?: number; order?: number } = {}) => {
+  const p = new URLSearchParams()
+  if (q.failed) p.set('failed', '1')
+  if (q.before) p.set('before', String(q.before))
+  if (q.order) p.set('order', String(q.order))
+  p.set('limit', '50')
+  return api<PaymentCallback[]>(`api/payments/callbacks?${p}`)
+}
+
+export const refundOrder = (id: number, cancel_plan: boolean, current_password: string) =>
+  api<{ refund_kop: number }>(`api/billing/orders/${id}/refund`, {
+    method: 'POST',
+    body: JSON.stringify({ cancel_plan, current_password }),
+  })
+
+export const listPromos = () => api<PromoCode[]>('api/billing/promos')
+
+export const savePromo = (p: PromoCode, current_password = '') =>
+  api<PromoCode>('api/billing/promos', {
+    method: 'POST',
+    body: JSON.stringify({ ...p, current_password }),
+  })
+
+export const deletePromo = (id: number) =>
+  api<{ ok: boolean }>(`api/billing/promos/${id}`, { method: 'DELETE' })
+
+export interface Wallet {
+  balance_kop: number
+  auto_renew: boolean
+  referrer_id: number
+  referrer_name?: string
+  ref_code?: string
+  invited: number
+  paying: number
+  earned_kop: number
+  ref_bonus_days: number
+  promo_id: number
+  promo_code?: string
+}
+
+export type BalanceTxKind = 'topup' | 'purchase' | 'renew' | 'referral' | 'promo' | 'admin' | 'refund'
+
+export interface BalanceTx {
+  id: number
+  amount_kop: number
+  balance_kop: number
+  kind: BalanceTxKind
+  order_id?: number
+  ref_user_id?: number
+  ref_name?: string
+  promo_code?: string
+  note?: string
+  created_at: number
+}
+
+export const getUserWallet = (id: number) =>
+  api<{ wallet: Wallet; history: BalanceTx[] }>(`api/users/${id}/wallet`)
+
+export const adjustUserBalance = (
+  id: number,
+  amount_kop: number,
+  note: string,
+  current_password: string,
+) =>
+  api<{ balance_kop: number }>(`api/users/${id}/balance`, {
+    method: 'POST',
+    body: JSON.stringify({ amount_kop, note, current_password }),
+  })
+
+export const setUserAutoRenew = (id: number, on: boolean) =>
+  api<{ ok: boolean }>(`api/users/${id}/autorenew`, {
+    method: 'POST',
+    body: JSON.stringify({ on }),
   })
 
 export const setUserPlan = (id: number, plan_id: number) =>

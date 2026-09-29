@@ -180,6 +180,8 @@ type tariffPlanDTO struct {
 	SortOrder   int     `json:"sort_order"`
 	Enabled     bool    `json:"enabled"`
 	GroupIDs    []int64 `json:"group_ids"`
+	DevicePrice int     `json:"device_price"`
+	DeviceMax   int     `json:"device_max"`
 }
 
 func toTariffPlanDTO(p *model.TariffPlan) tariffPlanDTO {
@@ -203,6 +205,8 @@ func toTariffPlanDTO(p *model.TariffPlan) tariffPlanDTO {
 		SortOrder:   p.SortOrder,
 		Enabled:     p.Enabled,
 		GroupIDs:    groupIDs,
+		DevicePrice: p.DevicePrice,
+		DeviceMax:   p.DeviceMax,
 	}
 }
 
@@ -235,22 +239,37 @@ func fromTariffPlanDTO(d tariffPlanDTO) model.TariffPlan {
 		SortOrder:   d.SortOrder,
 		Enabled:     d.Enabled,
 		GroupIDs:    groupIDs,
+		DevicePrice: d.DevicePrice,
+		DeviceMax:   d.DeviceMax,
 	}
 }
 
 type paymentOrderDTO struct {
-	ID         int64  `json:"id"`
-	UserID     int64  `json:"user_id"`
-	UserName   string `json:"user_name,omitempty"`
-	PlanID     int64  `json:"plan_id"`
-	PlanName   string `json:"plan_name,omitempty"`
-	AmountRub  int    `json:"amount_rub"`
-	Status     string `json:"status"`
-	Provider   string `json:"provider"`
-	ProviderID string `json:"provider_id,omitempty"`
-	PayURL     string `json:"pay_url,omitempty"`
-	CreatedAt  int64  `json:"created_at"`
-	PaidAt     int64  `json:"paid_at"`
+	ID            int64  `json:"id"`
+	UserID        int64  `json:"user_id"`
+	UserName      string `json:"user_name,omitempty"`
+	PlanID        int64  `json:"plan_id"`
+	PlanName      string `json:"plan_name,omitempty"`
+	AmountRub     int    `json:"amount_rub"`
+	Status        string `json:"status"`
+	Provider      string `json:"provider"`
+	ProviderID    string `json:"provider_id,omitempty"`
+	PayURL        string `json:"pay_url,omitempty"`
+	CreatedAt     int64  `json:"created_at"`
+	PaidAt        int64  `json:"paid_at"`
+	Kind          string `json:"kind"`
+	BalanceKop    int64  `json:"balance_kop"`
+	DiscountRub   int    `json:"discount_rub"`
+	PromoID       int64  `json:"promo_id,omitempty"`
+	PromoCode     string `json:"promo_code,omitempty"`
+	Periods       int    `json:"periods"`
+	RefundedAt    int64  `json:"refunded_at,omitempty"`
+	RefundSource  string `json:"refund_source,omitempty"`
+	Devices       int    `json:"devices,omitempty"`
+	ChangeFrom    int64  `json:"change_from,omitempty"`
+	ExpectExpire  int64  `json:"expect_expire,omitempty"`
+	PackBytes     int64  `json:"pack_bytes,omitempty"`
+	DevicesBefore int    `json:"devices_before,omitempty"`
 }
 
 func toPaymentOrderDTO(o *model.PaymentOrder) paymentOrderDTO {
@@ -258,18 +277,31 @@ func toPaymentOrderDTO(o *model.PaymentOrder) paymentOrderDTO {
 		return paymentOrderDTO{}
 	}
 	return paymentOrderDTO{
-		ID:         o.ID,
-		UserID:     o.UserID,
-		UserName:   o.UserName,
-		PlanID:     o.PlanID,
-		PlanName:   o.PlanName,
-		AmountRub:  o.AmountRub,
-		Status:     o.Status,
-		Provider:   o.Provider,
-		ProviderID: o.ProviderID,
-		PayURL:     o.PayURL,
-		CreatedAt:  o.CreatedAt,
-		PaidAt:     o.PaidAt,
+		ID:            o.ID,
+		UserID:        o.UserID,
+		UserName:      o.UserName,
+		PlanID:        o.PlanID,
+		PlanName:      o.PlanName,
+		AmountRub:     o.AmountRub,
+		Status:        o.Status,
+		Provider:      o.Provider,
+		ProviderID:    o.ProviderID,
+		PayURL:        o.PayURL,
+		CreatedAt:     o.CreatedAt,
+		PaidAt:        o.PaidAt,
+		Kind:          o.Kind,
+		BalanceKop:    o.BalanceKop,
+		DiscountRub:   o.DiscountRub,
+		PromoID:       o.PromoID,
+		PromoCode:     o.PromoCode,
+		Periods:       o.Periods,
+		RefundedAt:    o.RefundedAt,
+		RefundSource:  o.RefundSource,
+		Devices:       o.Devices,
+		ChangeFrom:    o.ChangeFrom,
+		ExpectExpire:  o.ExpectExpire,
+		PackBytes:     o.PackBytes,
+		DevicesBefore: o.DevicesBefore,
 	}
 }
 

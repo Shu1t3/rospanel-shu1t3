@@ -2,6 +2,8 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
@@ -49,7 +51,7 @@ func (s *Store) SetPlanUsersResetPeriod(planID int64, period string, now int64) 
 // ListTariffPlans returns plans sorted for display.
 func (s *Store) ListTariffPlans(includeDisabled bool) ([]model.TariffPlan, error) {
 	q := `SELECT id, slug, name, price_rub, period_days, data_limit, device_limit,
-	             speed_limit, reset_period, sort_order, enabled
+	             speed_limit, reset_period, sort_order, enabled, device_price, device_max
 	      FROM tariff_plans`
 	if !includeDisabled {
 		q += ` WHERE enabled = 1`
@@ -60,7 +62,7 @@ func (s *Store) ListTariffPlans(includeDisabled bool) ([]model.TariffPlan, error
 
 func (s *Store) GetTariffPlan(id int64) (*model.TariffPlan, error) {
 	plans, err := s.scanPlans(`SELECT id, slug, name, price_rub, period_days, data_limit, device_limit,
-		speed_limit, reset_period, sort_order, enabled FROM tariff_plans WHERE id = ?`, id)
+		speed_limit, reset_period, sort_order, enabled, device_price, device_max FROM tariff_plans WHERE id = ?`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -82,18 +84,21 @@ func (s *Store) SaveTariffPlan(p *model.TariffPlan) error {
 		if p.ID == 0 {
 			if err := tx.QueryRow(
 				`INSERT INTO tariff_plans (slug, name, price_rub, period_days, data_limit, device_limit,
-				 speed_limit, reset_period, is_free, sort_order, enabled)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+				 speed_limit, reset_period, is_free, sort_order, enabled, device_price, device_max)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
 				p.Slug, p.Name, p.PriceRub, p.PeriodDays, p.DataLimit, p.DeviceLimit,
 				p.SpeedLimit, p.ResetPeriod, boolToInt(p.IsFree()), p.SortOrder, boolToInt(p.Enabled),
+				p.DevicePrice, p.DeviceMax,
 			).Scan(&p.ID); err != nil {
 				return err
 			}
 		} else if _, err := tx.Exec(
 			`UPDATE tariff_plans SET slug=?, name=?, price_rub=?, period_days=?, data_limit=?,
-			 device_limit=?, speed_limit=?, reset_period=?, is_free=?, sort_order=?, enabled=? WHERE id=?`,
+			 device_limit=?, speed_limit=?, reset_period=?, is_free=?, sort_order=?, enabled=?,
+			 device_price=?, device_max=? WHERE id=?`,
 			p.Slug, p.Name, p.PriceRub, p.PeriodDays, p.DataLimit, p.DeviceLimit,
-			p.SpeedLimit, p.ResetPeriod, boolToInt(p.IsFree()), p.SortOrder, boolToInt(p.Enabled), p.ID,
+			p.SpeedLimit, p.ResetPeriod, boolToInt(p.IsFree()), p.SortOrder, boolToInt(p.Enabled),
+			p.DevicePrice, p.DeviceMax, p.ID,
 		); err != nil {
 			return err
 		}
@@ -182,10 +187,9 @@ func (s *Store) PurgeCancelledOrders(before int64) (int64, error) {
 }
 
 // CountPendingOrdersForPlan returns how many orders are still awaiting payment for a
-// plan. Every order read inner-joins tariff_plans, so deleting a plan out from under a
-// pending order makes that order invisible to the webhook handler, the poller, the
-// orders list and the cancel path alike — the money can still be captured at the
-// provider with nothing left on this side able to see it, report it, or refund it.
+// plan. Deleting a plan out from under a pending order leaves the payment nothing to
+// grant: the money can still be captured at the provider, and the confirm path then
+// fails on the missing plan with the order left pending.
 func (s *Store) CountPendingOrdersForPlan(planID int64) (int, error) {
 	var n int
 	err := s.db.QueryRow(
@@ -219,7 +223,7 @@ func (s *Store) UserIDsOnPlan(planID int64) ([]int64, error) {
 func (s *Store) PaidByProvider() ([]model.ProviderStat, error) {
 	rows, err := s.db.Query(`
 		SELECT provider, count(*), COALESCE(sum(amount_rub), 0)
-		FROM payment_orders WHERE status = 'paid'
+		FROM payment_orders WHERE status = 'paid' AND provider <> 'balance' AND refund_source <> 'provider'
 		GROUP BY provider ORDER BY sum(amount_rub) DESC`)
 	if err != nil {
 		return nil, err
@@ -240,7 +244,8 @@ func (s *Store) PaidByProvider() ([]model.ProviderStat, error) {
 func (s *Store) PaidSumSince(since int64) (int, error) {
 	var v int
 	err := s.db.QueryRow(
-		`SELECT COALESCE(sum(amount_rub), 0) FROM payment_orders WHERE status = 'paid' AND paid_at >= ?`,
+		`SELECT COALESCE(sum(amount_rub), 0) FROM payment_orders
+		 WHERE status = 'paid' AND paid_at >= ? AND refund_source <> 'provider'`,
 		since,
 	).Scan(&v)
 	return v, err
@@ -266,7 +271,7 @@ func (s *Store) scanPlans(query string, args ...any) ([]model.TariffPlan, error)
 		var en int
 		if err := rows.Scan(
 			&p.ID, &p.Slug, &p.Name, &p.PriceRub, &p.PeriodDays, &p.DataLimit, &p.DeviceLimit,
-			&p.SpeedLimit, &p.ResetPeriod, &p.SortOrder, &en,
+			&p.SpeedLimit, &p.ResetPeriod, &p.SortOrder, &en, &p.DevicePrice, &p.DeviceMax,
 		); err != nil {
 			return nil, err
 		}
@@ -347,6 +352,83 @@ type UserPlanWrite struct {
 	// and adds the user's whole lifetime traffic straight back.
 	ResetUsage       bool
 	LastUp, LastDown int64
+
+	// ExtraDevices is how many devices beyond the plan's the user holds (already in
+	// DeviceLimit); PackData the bought traffic already in DataLimit.
+	ExtraDevices int
+	PackData     int64
+	// RequirePlan / RequireExpire, when set, make the write apply only while the user
+	// is still on that plan with that term — a plan change priced for one term must
+	// not land on another. ErrPlanStale otherwise.
+	RequirePlan   int64
+	RequireExpire int64
+}
+
+// ErrPlanStale is a plan write or an add-on whose user moved on since it was priced.
+var ErrPlanStale = errors.New("the subscription changed since the price was computed")
+
+// AddonWrite adds devices or traffic to the plan a user holds. RequireExpire, when
+// set, holds it to the term it was priced for.
+type AddonWrite struct {
+	UserID        int64
+	PlanID        int64
+	AddDevices    int
+	AddData       int64
+	RequireExpire int64
+	// MaxDevices caps the extra devices held after the add-on (the plan's DeviceMax).
+	MaxDevices int
+	// RequireExtra, when not negative, holds the add-on to the extra devices the user
+	// had when it was priced — a second tap of the same button finds them changed.
+	RequireExtra int
+	// RequirePack likewise for the bought traffic (-1 = no check).
+	RequirePack int64
+}
+
+// applyAddonOn writes an add-on, or ErrPlanStale when the user is no longer on the
+// plan (or the term) it was bought for.
+func applyAddonOn(ex execer, a AddonWrite) error {
+	where, wargs := addonWhere(a)
+	args := append([]any{a.AddDevices, a.AddDevices, a.AddData, a.AddData}, wargs...)
+	res, err := ex.Exec(`UPDATE users SET device_limit = device_limit + ?, extra_devices = extra_devices + ?,
+	          data_limit = data_limit + ?, pack_data = pack_data + ?
+	      WHERE `+where, args...)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrPlanStale
+	}
+	return nil
+}
+
+// addonWhere is the condition an add-on is written under: the plan (and term) it was
+// bought for, a cap and a quota to add to, room under the device cap, and the state it
+// was priced on.
+func addonWhere(a AddonWrite) (string, []any) {
+	q := `id = ? AND plan_id = ?`
+	args := []any{a.UserID, a.PlanID}
+	if a.RequireExpire != 0 {
+		q += ` AND expire_at = ?`
+		args = append(args, a.RequireExpire)
+	}
+	// Devices onto a cap and traffic onto a quota: added to "unlimited" (0) they would
+	// make one of just the add-on.
+	if a.AddDevices > 0 {
+		q += ` AND device_limit > 0 AND extra_devices + ? <= ?`
+		args = append(args, a.AddDevices, a.MaxDevices)
+	}
+	if a.AddData > 0 {
+		q += ` AND data_limit > 0`
+	}
+	if a.RequireExtra >= 0 {
+		q += ` AND extra_devices = ?`
+		args = append(args, a.RequireExtra)
+	}
+	if a.RequirePack >= 0 {
+		q += ` AND pack_data = ?`
+		args = append(args, a.RequirePack)
+	}
+	return q, args
 }
 
 // ApplyUserPlan writes a plan assignment atomically.
@@ -354,8 +436,21 @@ func (s *Store) ApplyUserPlan(p UserPlanWrite) error {
 	return s.withTx(func(tx *sql.Tx) error { return applyUserPlanOn(tx, p) })
 }
 
-func applyUserPlanOn(ex execer, p UserPlanWrite) error {
+func applyUserPlanOn(ex *sql.Tx, p UserPlanWrite) error {
+	if p.RequirePlan != 0 {
+		var plan, exp int64
+		if err := ex.QueryRow(`SELECT plan_id, expire_at FROM users WHERE id = ?`, p.UserID).Scan(&plan, &exp); err != nil {
+			return err
+		}
+		if plan != p.RequirePlan || (p.RequireExpire != 0 && exp != p.RequireExpire) {
+			return ErrPlanStale
+		}
+	}
 	if err := setUserLimitsOn(ex, p.UserID, p.DataLimit, p.ExpireAt, p.DeviceLimit); err != nil {
+		return err
+	}
+	if _, err := ex.Exec(`UPDATE users SET extra_devices = ?, pack_data = ? WHERE id = ?`,
+		p.ExtraDevices, p.PackData, p.UserID); err != nil {
 		return err
 	}
 	// A plan decides the term — a date, or none on a free plan — so a hold set by
@@ -486,15 +581,23 @@ func (s *Store) CreatePaymentOrder(userID, planID int64, amountRub int) (*model.
 	return s.GetPaymentOrder(id)
 }
 
-const orderCols = `o.id, o.user_id, u.name, o.plan_id, p.name, o.amount_rub, o.status,
-	o.provider, o.provider_id, o.pay_url, o.created_at, o.paid_at`
+const orderCols = `o.id, o.user_id, u.name, o.plan_id, COALESCE(p.name, ''), o.amount_rub, o.status,
+	o.provider, o.provider_id, o.pay_url, o.created_at, o.paid_at,
+	o.kind, o.balance_kop, o.discount_rub, o.promo_id, COALESCE(pc.code, ''),
+	o.periods, o.refunded_at, o.refund_source,
+	o.devices, o.change_from, o.expect_expire, o.pack_bytes, o.devices_before`
+
+// orderJoins resolves an order's user, plan and promo code. The plan is a LEFT join:
+// a top-up has none.
+const orderJoins = `
+	JOIN users u ON u.id = o.user_id
+	LEFT JOIN tariff_plans p ON p.id = o.plan_id
+	LEFT JOIN promo_codes pc ON pc.id = o.promo_id`
 
 func (s *Store) GetPaymentOrder(id int64) (*model.PaymentOrder, error) {
 	orders, err := s.listPaymentOrders(
 		`SELECT `+orderCols+`
-		 FROM payment_orders o
-		 JOIN users u ON u.id = o.user_id
-		 JOIN tariff_plans p ON p.id = o.plan_id
+		 FROM payment_orders o`+orderJoins+`
 		 WHERE o.id = ?`, id)
 	if err != nil {
 		return nil, err
@@ -511,9 +614,7 @@ func (s *Store) GetPaymentOrder(id int64) (*model.PaymentOrder, error) {
 func (s *Store) LatestPendingManualOrder(userID, planID int64) (*model.PaymentOrder, error) {
 	orders, err := s.listPaymentOrders(
 		`SELECT `+orderCols+`
-		 FROM payment_orders o
-		 JOIN users u ON u.id = o.user_id
-		 JOIN tariff_plans p ON p.id = o.plan_id
+		 FROM payment_orders o`+orderJoins+`
 		 WHERE o.user_id = ? AND o.plan_id = ? AND o.status = 'pending'
 		   AND (o.provider IS NULL OR o.provider = '')
 		 ORDER BY o.created_at DESC LIMIT 1`, userID, planID)
@@ -533,11 +634,27 @@ func (s *Store) LatestPendingManualOrder(userID, planID int64) (*model.PaymentOr
 func (s *Store) LatestPendingProviderOrder(userID int64) (*model.PaymentOrder, error) {
 	orders, err := s.listPaymentOrders(
 		`SELECT `+orderCols+`
-		 FROM payment_orders o
-		 JOIN users u ON u.id = o.user_id
-		 JOIN tariff_plans p ON p.id = o.plan_id
+		 FROM payment_orders o`+orderJoins+`
 		 WHERE o.user_id = ? AND o.status = 'pending' AND o.provider <> ''
 		 ORDER BY o.created_at DESC LIMIT 1`, userID)
+	if err != nil {
+		return nil, err
+	}
+	if len(orders) == 0 {
+		return nil, sql.ErrNoRows
+	}
+	return &orders[0], nil
+}
+
+// LatestPaidOrder returns the user's newest order paid after since (or
+// sql.ErrNoRows) — what a subscription page that watched a payment tells its user
+// once it clears. Purchases from the balance are left out: nothing was waited on.
+func (s *Store) LatestPaidOrder(userID, since int64) (*model.PaymentOrder, error) {
+	orders, err := s.listPaymentOrders(
+		`SELECT `+orderCols+`
+		 FROM payment_orders o`+orderJoins+`
+		 WHERE o.user_id = ? AND o.status = 'paid' AND o.paid_at > ? AND o.provider <> 'balance'
+		 ORDER BY o.paid_at DESC, o.id DESC LIMIT 1`, userID, since)
 	if err != nil {
 		return nil, err
 	}
@@ -553,9 +670,7 @@ func (s *Store) LatestPendingProviderOrder(userID int64) (*model.PaymentOrder, e
 func (s *Store) LatestPendingProviderOrderForPlan(userID, planID int64, provider string) (*model.PaymentOrder, error) {
 	orders, err := s.listPaymentOrders(
 		`SELECT `+orderCols+`
-		 FROM payment_orders o
-		 JOIN users u ON u.id = o.user_id
-		 JOIN tariff_plans p ON p.id = o.plan_id
+		 FROM payment_orders o`+orderJoins+`
 		 WHERE o.user_id = ? AND o.plan_id = ? AND o.provider = ? AND o.status = 'pending'
 		 ORDER BY o.created_at DESC LIMIT 1`, userID, planID, provider)
 	if err != nil {
@@ -571,9 +686,7 @@ func (s *Store) LatestPendingProviderOrderForPlan(userID, planID int64, provider
 func (s *Store) GetPaymentOrderByProvider(provider, providerID string) (*model.PaymentOrder, error) {
 	orders, err := s.listPaymentOrders(
 		`SELECT `+orderCols+`
-		 FROM payment_orders o
-		 JOIN users u ON u.id = o.user_id
-		 JOIN tariff_plans p ON p.id = o.plan_id
+		 FROM payment_orders o`+orderJoins+`
 		 WHERE o.provider = ? AND o.provider_id = ?`, provider, providerID)
 	if err != nil {
 		return nil, err
@@ -584,18 +697,20 @@ func (s *Store) GetPaymentOrderByProvider(provider, providerID string) (*model.P
 	return &orders[0], nil
 }
 
-func (s *Store) ListPaymentOrders(status string, limit int) ([]model.PaymentOrder, error) {
+func (s *Store) ListPaymentOrders(status string, userID int64, limit int) ([]model.PaymentOrder, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 	q := `SELECT ` + orderCols + `
-	      FROM payment_orders o
-	      JOIN users u ON u.id = o.user_id
-	      JOIN tariff_plans p ON p.id = o.plan_id`
+	      FROM payment_orders o ` + orderJoins + ` WHERE 1 = 1`
 	args := []any{}
 	if status != "" {
-		q += ` WHERE o.status = ?`
+		q += ` AND o.status = ?`
 		args = append(args, status)
+	}
+	if userID > 0 {
+		q += ` AND o.user_id = ?`
+		args = append(args, userID)
 	}
 	q += ` ORDER BY o.created_at DESC LIMIT ?`
 	args = append(args, limit)
@@ -660,6 +775,9 @@ func (s *Store) listPaymentOrders(query string, args ...any) ([]model.PaymentOrd
 			&o.ID, &o.UserID, &o.UserName, &o.PlanID, &o.PlanName,
 			&o.AmountRub, &o.Status, &o.Provider, &o.ProviderID, &o.PayURL,
 			&o.CreatedAt, &o.PaidAt,
+			&o.Kind, &o.BalanceKop, &o.DiscountRub, &o.PromoID, &o.PromoCode,
+			&o.Periods, &o.RefundedAt, &o.RefundSource,
+			&o.Devices, &o.ChangeFrom, &o.ExpectExpire, &o.PackBytes, &o.DevicesBefore,
 		); err != nil {
 			return nil, err
 		}
@@ -674,10 +792,18 @@ func (s *Store) SetBillingSettings(st *model.Settings) error {
 		`UPDATE settings SET billing_enabled = ?,
 		 billing_free_plan_id = ?, billing_trial_plan_id = ?, billing_payment_note = ?,
 		 billing_manual_enabled = ?, billing_manual_label = ?,
+		 wallet_enabled = ?, wallet_topup_min = ?, billing_periods = ?,
+		 ref_mode = ?, ref_percent = ?, ref_days = ?, ref_first_only = ?,
+		 winback_enabled = ?, winback_after_days = ?, winback_percent = ?, winback_valid_days = ?,
+		 traffic_packs = ?, plan_change = ?,
 		 updated_at = unixepoch() WHERE id = 1`,
 		boolToInt(st.BillingEnabled),
 		st.BillingFreePlanID, st.BillingTrialPlanID, st.BillingPaymentNote,
 		boolToInt(st.BillingManualEnabled), st.BillingManualLabel,
+		boolToInt(st.WalletEnabled), st.WalletTopupMin, periodsJSON(st.BillingPeriods),
+		st.RefMode, st.RefPercent, st.RefDays, boolToInt(st.RefFirstOnly),
+		boolToInt(st.Winback.Enabled), st.Winback.AfterDays, st.Winback.Percent, st.Winback.ValidDays,
+		packsJSON(st.TrafficPacks), boolToInt(st.PlanChange),
 	)
 	return err
 }
@@ -696,9 +822,69 @@ func (s *Store) PendingProviderOrders(limit int) ([]model.PaymentOrder, error) {
 	}
 	return s.listPaymentOrders(
 		`SELECT `+orderCols+`
-		 FROM payment_orders o
-		 JOIN users u ON u.id = o.user_id
-		 JOIN tariff_plans p ON p.id = o.plan_id
+		 FROM payment_orders o`+orderJoins+`
 		 WHERE o.status = 'pending' AND o.provider != '' AND o.provider_id != ''
 		 ORDER BY o.created_at ASC LIMIT ?`, limit)
+}
+
+// periodsJSON stores the multi-period discounts; none is ”.
+func periodsJSON(offers []model.PeriodOffer) string {
+	if len(offers) == 0 {
+		return ""
+	}
+	b, _ := json.Marshal(offers)
+	return string(b)
+}
+
+// packsJSON is the traffic packs as stored ("" for none).
+func packsJSON(p []model.TrafficPack) string {
+	if len(p) == 0 {
+		return ""
+	}
+	b, _ := json.Marshal(p)
+	return string(b)
+}
+
+// TakeBackAddon removes devices and traffic an order added, from a user still on the
+// plan they were bought for — never below what the plan itself gives.
+func (s *Store) TakeBackAddon(userID, planID int64, devices int, data int64) (bool, error) {
+	res, err := s.db.Exec(
+		`UPDATE users SET
+		     device_limit = device_limit - min(?, extra_devices),
+		     extra_devices = extra_devices - min(?, extra_devices),
+		     data_limit = data_limit - min(?, pack_data),
+		     pack_data = pack_data - min(?, pack_data)
+		 WHERE id = ? AND plan_id = ? AND ((? > 0 AND extra_devices > 0) OR (? > 0 AND pack_data > 0))`,
+		devices, devices, data, data, userID, planID, devices, data)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// PlanPaidPerPeriodKop is what the user last paid for one period of plan, with its
+// extra devices, in kopecks — money and balance together; found false when they
+// never bought it (it was assigned, given by a code, or reached by a change).
+func (s *Store) PlanPaidPerPeriodKop(userID, planID int64) (int64, bool) {
+	var kop, periods int64
+	err := s.db.QueryRow(
+		`SELECT amount_rub * 100 + balance_kop, max(periods, 1) FROM payment_orders
+		 WHERE user_id = ? AND plan_id = ? AND status = 'paid' AND kind = 'plan' AND refunded_at = 0
+		 ORDER BY paid_at DESC, id DESC LIMIT 1`, userID, planID).Scan(&kop, &periods)
+	if err != nil || periods <= 0 {
+		return 0, false
+	}
+	return kop / periods, true
+}
+
+// ReachedByChange reports whether the user's move onto plan was a paid-for change —
+// the difference was paid at the plan's list price.
+func (s *Store) ReachedByChange(userID, planID int64) bool {
+	var n int
+	_ = s.db.QueryRow(
+		`SELECT count(*) FROM payment_orders
+		 WHERE user_id = ? AND plan_id = ? AND status = 'paid' AND kind = 'change' AND refunded_at = 0`,
+		userID, planID).Scan(&n)
+	return n > 0
 }
