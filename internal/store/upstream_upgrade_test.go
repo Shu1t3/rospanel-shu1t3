@@ -11,6 +11,15 @@ import (
 // Exercise a real upgrade from the shipped fork schema, including its own
 // migrations whose ordinals overlap with the incoming upstream migrations.
 func TestUpgradeFromFork403PreservesData(t *testing.T) {
+	testUpgradeFromFork(t, "4.0.3")
+}
+
+func TestUpgradeFromFork410PreservesData(t *testing.T) {
+	testUpgradeFromFork(t, "4.1.0")
+}
+
+func testUpgradeFromFork(t *testing.T, version string) {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "upgrade.db")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -20,7 +29,7 @@ func TestUpgradeFromFork403PreservesData(t *testing.T) {
 	if _, err := db.Exec(`CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at INTEGER NOT NULL DEFAULT (unixepoch()))`); err != nil {
 		t.Fatal(err)
 	}
-	names, err := os.ReadFile("testdata/migrations_v4.0.3.txt")
+	names, err := os.ReadFile("testdata/migrations_v" + version + ".txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,6 +53,18 @@ func TestUpgradeFromFork403PreservesData(t *testing.T) {
 	} {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatal(err)
+		}
+	}
+	if version == "4.1.0" {
+		for _, q := range []string{
+			`UPDATE users SET tg_chat_id=987, trial_used=1 WHERE id=1`,
+			`INSERT INTO registration_requests(id,chat_id,name,created_at) VALUES (51,123,'Pending',1000)`,
+			`INSERT INTO registration_requests(id,chat_id,name,created_at) VALUES (52,124,'Decided',1000)`,
+			`DELETE FROM registration_requests WHERE id=52`,
+		} {
+			if _, err := db.Exec(q); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	if err := db.Close(); err != nil {
@@ -86,6 +107,21 @@ func TestUpgradeFromFork403PreservesData(t *testing.T) {
 		}
 		if o.Status != "paid" || o.AmountRub != 199 || o.Kind != "plan" {
 			t.Errorf("order changed: %+v", o)
+		}
+		if version == "4.1.0" {
+			if !st.ChatHadTrial(987) {
+				t.Error("trial history was not migrated")
+			}
+			r, err := st.GetRegistrationRequest(51)
+			if err != nil || r.ChatID != 123 || r.Name != "Pending" {
+				t.Fatalf("pending request lost: %+v, %v", r, err)
+			}
+			if i == 0 {
+				r, err := st.CreateWebRegistrationRequest("new@example.com", "New", "", 0, 1001)
+				if err != nil || r.ID <= 52 {
+					t.Fatalf("request sequence regressed: %+v, %v", r, err)
+				}
+			}
 		}
 		st.Close()
 	}

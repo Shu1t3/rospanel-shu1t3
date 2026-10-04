@@ -127,6 +127,13 @@ type pageText struct {
 	ManualNote     string
 	ScanQR         string
 	CopyLink       string
+	AccessTitle    string
+	AccessHint     string
+	AccessCopy     string
+	TGBind         string
+	TGBindHint     string
+	TGChange       string
+	TGChangeCopied string
 	OpenInApp      string
 	DownloadClash  string
 	SingleConfigs  string
@@ -220,6 +227,13 @@ func text(lang i18n.Lang) pageText {
 		ManualNote:     t("sub.manualNote"),
 		ScanQR:         t("sub.scanQR"),
 		CopyLink:       t("sub.copyLink"),
+		AccessTitle:    t("sub.accessTitle"),
+		AccessHint:     t("sub.accessHint"),
+		AccessCopy:     t("sub.accessCopy"),
+		TGBind:         t("sub.tgBind"),
+		TGBindHint:     t("sub.tgBindHint"),
+		TGChange:       t("sub.tgChange"),
+		TGChangeCopied: t("sub.tgChangeCopied"),
 		OpenInApp:      t("sub.openInApp"),
 		DownloadClash:  t("sub.downloadClash"),
 		SingleConfigs:  t("sub.singleConfigs"),
@@ -330,6 +344,7 @@ type pageData struct {
 	Surface   string // card background
 	IsDefault bool   // true when the stock RosPanel name is in effect
 	SubURL    string
+	Access    Access
 	Links     []protoLink
 	DeepLinks []DeepLink
 	Wizard    []WizardPlatform
@@ -570,11 +585,12 @@ func subStatus(s string, lang i18n.Lang) (label, class string) {
 // leaves the list entirely once it is full with hide-when-full set. Every one of
 // those would have addressed the panel's own links at a node, which serves none of
 // them.
-func Page(u model.User, local *model.Settings, servers []Server, billing Billing, devices Devices, showDownload bool, lang i18n.Lang) ([]byte, error) {
+func Page(u model.User, local *model.Settings, servers []Server, billing Billing, devices Devices, access Access, showDownload bool, lang i18n.Lang) ([]byte, error) {
 	data, err := buildPageData(u, local, servers, billing, devices, showDownload, lang)
 	if err != nil {
 		return nil, err
 	}
+	data.Access = access
 	var buf bytes.Buffer
 	if err := pageTmpl.Execute(&buf, data); err != nil {
 		return nil, err
@@ -810,4 +826,11 @@ func relTime(sec int64, lang i18n.Lang) string {
 	default:
 		return i18n.T(lang, "sub.daysAgo", sec/86400)
 	}
+}
+
+// Access is the page's "access to your account" card: the page's own address is the
+// key to it, and Telegram can be linked later.
+type Access struct {
+	TGLink   string // the bot's link that binds this account to the Telegram that opens it
+	TGLinked bool   // already linked: the link moves it to another Telegram
 }

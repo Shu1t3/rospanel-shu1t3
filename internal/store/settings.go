@@ -62,7 +62,7 @@ func (s *Store) readSettings() (*model.Settings, error) {
 	var subShowConfigs, statusEn, maintenanceMode, probeDetect, watchdogEnabled int
 	var probeBlock int
 	var routingCfg, subRulesJSON, subDPIJSON string
-	var masterHideFull, masterHideOver, awgEn, hideOffline, subHappCrypt int
+	var masterHideFull, masterHideOver, awgEn, hideOffline, subHappCrypt, subTGBind, subTGRebind int
 	var awgParamsJSON, connPolicyJSON string
 	var walletEn, refFirstOnly, winbackEn, autoUpdateNodes, blacklistEn, planChange int
 	var trafficPacksJSON string
@@ -118,7 +118,7 @@ func (s *Store) readSettings() (*model.Settings, error) {
 		       billing_periods, winback_enabled, winback_after_days, winback_percent, winback_valid_days,
 		       auto_update_cron, auto_update_nodes, auto_update_last_at, auto_update_last,
 		       blacklist_enabled, blacklist_url, blacklist_synced_at, blacklist_error,
-		       traffic_packs, plan_change, miniapp_path, tg_menu_url
+		       traffic_packs, plan_change, miniapp_path, tg_menu_url, sub_tg_bind, sub_tg_rebind
 		FROM settings WHERE id = 1`,
 	).Scan(
 		&st.ID, &st.Host, &st.SNI, &st.TLSMode, &st.ACMEEmail, &st.CertPath, &st.KeyPath,
@@ -174,7 +174,7 @@ func (s *Store) readSettings() (*model.Settings, error) {
 		&billingPeriodsJSON, &winbackEn, &st.Winback.AfterDays, &st.Winback.Percent, &st.Winback.ValidDays,
 		&st.AutoUpdateCron, &autoUpdateNodes, &st.AutoUpdateLastAt, &st.AutoUpdateLast,
 		&blacklistEn, &st.BlacklistURL, &st.BlacklistSyncedAt, &st.BlacklistError,
-		&trafficPacksJSON, &planChange, &st.MiniAppPath, &st.TGMenuURL,
+		&trafficPacksJSON, &planChange, &st.MiniAppPath, &st.TGMenuURL, &subTGBind, &subTGRebind,
 	)
 
 	if err != nil {
@@ -188,6 +188,7 @@ func (s *Store) readSettings() (*model.Settings, error) {
 	st.MasterPlacement.HideWhenFull = masterHideFull != 0
 	st.MasterPlacement.HideWhenOver = masterHideOver != 0
 	st.SubHideOffline = hideOffline != 0
+	st.SubTGBind, st.SubTGRebind = subTGBind != 0, subTGRebind != 0
 	// A blank column (pre-0063, or never saved) reads as the feature off; so does a
 	// corrupt one — a policy nobody can parse must not start refusing connections.
 	st.ConnPolicy = model.DefaultConnPolicy()
@@ -527,6 +528,15 @@ func (s *Store) SetSubSettings(st *model.Settings) error {
 		st.SubUpdateInterval, st.SubAnnounce, boolToInt(st.SubShowConfigs),
 		model.OrderModeOr(st.SubOrderMode), boolToInt(st.SubHideOffline), boolToInt(st.SubHappCrypt),
 	)
+	return err
+}
+
+// SetSubTGBinding stores whether the subscription page offers binding Telegram and
+// changing it (see migration 0101).
+func (s *Store) SetSubTGBinding(bind, rebind bool) error {
+	defer s.invalidateSettingsCache()
+	_, err := s.db.Exec(`UPDATE settings SET sub_tg_bind = ?, sub_tg_rebind = ?, updated_at = unixepoch() WHERE id = 1`,
+		boolToInt(bind), boolToInt(rebind))
 	return err
 }
 

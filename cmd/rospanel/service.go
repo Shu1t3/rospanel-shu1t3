@@ -294,6 +294,12 @@ func runServer(dataDir string) {
 	})
 
 	if !isStandby {
+		// Hold legacy API keys to the exact methods their previous permissions opened.
+		if n, err := server.ConvertLegacyAPIKeys(mgr.Store()); err != nil {
+			log.Printf("api keys: %v", err)
+		} else if n > 0 {
+			log.Printf("api keys: %d converted to explicit API methods", n)
+		}
 		if err := mgr.EnsureMiniAppPath(); err != nil {
 			log.Printf("mini app: %v", err)
 		}

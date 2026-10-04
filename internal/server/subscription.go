@@ -73,7 +73,8 @@ func handleSub(rt *Router, w http.ResponseWriter, r *http.Request, rest string) 
 		// button fetches YAML from this very URL instead of re-rendering the page.
 		if isBrowser(r) && r.URL.Query().Get("format") == "" {
 			lang := i18n.FromAcceptLanguage(r.Header.Get("Accept-Language"))
-			if err := rt.servePage(w, *u, set, lang, clientIP(r)); err != nil {
+			access := rt.buildAccess(r, *u, set)
+			if err := rt.servePage(w, *u, set, access, lang, clientIP(r)); err != nil {
 				// Render errors keep the masquerade; an access read that failed is a
 				// different thing and must not look like a successful, empty answer.
 				if errors.Is(err, errSubUnavailable) {
@@ -611,8 +612,13 @@ func (rt *Router) buildBilling(u model.User, set *model.Settings, lang i18n.Lang
 		b.Stamp = a.Stamp
 		// Devices as one offer with a count to pick, not a card per count.
 		if a.DevicesMax > 0 {
+			// The price is for the rest of the term, so the term is named: the date it
+			// runs to and the days that leaves.
+			left := max((u.ExpireAt-time.Now().Unix()+86399)/86400, 1)
+			until := time.Unix(u.ExpireAt, 0).In(loc).Format("02.01")
 			e := sub.Extra{Kind: model.OrderDevices, PlanID: u.PlanID, N: 1,
-				Name: i18n.T(lang, "sub.addDevicesTitle"), Sub: i18n.T(lang, "sub.addDevicesEach", a.DevicePrice)}
+				Name: i18n.T(lang, "sub.addDevicesTitle"),
+				Sub:  i18n.T(lang, "sub.addDevicesEach", a.DevicePrice, until, i18n.TN(lang, "notify.days", int(left)))}
 			for n := 1; n <= min(a.DevicesMax, 10); n++ {
 				q, err := rt.mgr.QuotePurchase(u, core.Purchase{Kind: model.OrderDevices, Devices: n})
 				if err != nil {
@@ -726,7 +732,7 @@ func hasTurnInbound(servers []sub.Server) bool {
 // lang comes from the caller's Accept-Language: the subscription page is the one
 // surface a VPN *user* sees, and the panel knows nothing about their language
 // preference, so the browser decides it per request.
-func (rt *Router) servePage(w http.ResponseWriter, u model.User, set *model.Settings, lang i18n.Lang, clientIP string) error {
+func (rt *Router) servePage(w http.ResponseWriter, u model.User, set *model.Settings, access sub.Access, lang i18n.Lang, clientIP string) error {
 	// Span the local server + each enabled node so the page's individual-config list
 	// covers every server (single-server ⇒ just the local set).
 	// A required HWID means the browser cannot fetch the machine payload — so the
@@ -744,7 +750,7 @@ func (rt *Router) servePage(w http.ResponseWriter, u model.User, set *model.Sett
 		}
 	}
 	html, err := sub.Page(u, set, servers, rt.buildBilling(u, set, lang, rt.mgr.PaymentMethods()),
-		rt.buildDevices(u, set, lang), showDownload, lang)
+		rt.buildDevices(u, set, lang), access, showDownload, lang)
 	if err != nil {
 		return err
 	}
@@ -764,15 +770,15 @@ func (rt *Router) telegramSupportURL(ctx context.Context, set *model.Settings, u
 	if bot == "" {
 		return ""
 	}
-	// Already linked: just point at the bot (no bind needed).
-	if u.TgChatID != 0 {
+	// Already linked, or binding switched off: just point at the bot.
+	if u.TgChatID != 0 || !set.SubTGBind {
 		return telegram.UserBotLink(bot)
 	}
 	// Reuse the bind code while it is still valid instead of minting one per fetch.
 	// This runs on the public subscription path, so a fresh code meant an UPDATE on
 	// users for every request a client made — and it invalidated the code handed out
 	// moments earlier, so a support-url a user had just been shown stopped working.
-	if u.UserTgLinkCodeValid() {
+	if u.UserTgLinkCodeFresh() {
 		return telegram.UserDeepLink(bot, u.TgLinkCode)
 	}
 	code, err := rt.mgr.GenerateUserTgLinkCode(u.ID)

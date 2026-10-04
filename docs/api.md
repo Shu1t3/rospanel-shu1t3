@@ -48,9 +48,12 @@ Authorization: Bearer rp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 A missing or invalid key returns `401`. The surface is per-IP rate-limited.
 
-A key has **full access** or carries an **admin role** picked at creation. With a role it
-reaches exactly what an admin with that role reaches in the panel; anything else answers
-`403` with `"code": "forbidden"`, and the MCP endpoint lists only the tools the role can call.
+A key has **full access** or the **API methods ticked for it** (`GET /v1/users`,
+`POST /v1/signup`, …) when it is created, changeable later. It calls exactly those; anything
+else answers `403` with `"code": "forbidden"`, and the MCP endpoint lists only those tools.
+Nobody ticks a method they may not call themselves, and only the owner gives full access (or
+backups). A key made before methods could be ticked keeps reaching what its permissions open,
+until it is edited.
 `PATCH /v1/settings` and `PATCH /v1/nodes/{id}` check each field against its section (DNS and
 egress need `routing.manage`, trusted networks and probe settings `security.manage`).
 
@@ -177,8 +180,9 @@ monitor pointed here keeps working.
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/v1/users` | List users (filter + paginate); `?telegram_id=` or `?sub_token=` finds one. |
+| `GET` | `/v1/users` | List users (filter + paginate); `?telegram_id=`, `?sub_token=` or `?external_id=` finds one. |
 | `POST` | `/v1/users` | Create a user. |
+| `POST` | `/v1/signup` | Sign up a website client under the self-registration rules (see below). |
 | `POST` | `/v1/users/bulk` | Apply one action to many users at once. |
 | `GET` | `/v1/users/{id}` | Get one user. |
 | `PATCH` | `/v1/users/{id}` | Update name / limits / expiry / device limit / speed limit / enabled. |
@@ -413,10 +417,10 @@ top-up is `{"user_id": 5, "kind": "topup", "amount_rub": 300}` (plus `provider`,
 manual one). Both take `lang` (`ru`/`en`, for the manual-payment instructions) and
 `return_url` (where a hosted payment sends the payer back; Telegram when left out).
 
-**Your own bot or user cabinet** — the key stays on your server, never in a browser. Give it a
-role with `users.manage` (create users, link Telegram) and `billing.sell` (orders, promo codes,
-referrers, renewal) — not `billing.manage`, which also confirms orders without payment, credits
-balances and refunds. On each message find the user: `GET /v1/users?telegram_id=<id>` (an
+**Your own bot or user cabinet** — the key stays on your server, never in a browser. Tick the
+methods it calls: creating users and linking Telegram, opening orders, promo codes, referrers,
+renewal — and leave out confirming an order, correcting a balance and refunds, which move money
+without it arriving. On each message find the user: `GET /v1/users?telegram_id=<id>` (an
 indexed lookup; an empty list means a newcomer). A newcomer is `POST /v1/users` with a
 `plan_id` (the trial or free plan — a user with no plan gets no payment block), then
 `POST /v1/users/{id}/telegram` with `{"chat_id": <id>}` and, when their `/start` carried an
@@ -428,6 +432,23 @@ that signs people in by their subscription link finds them with `?sub_token=`.
 traffic, term, `sub_url`, one-tap imports per app (`apps`), every config (`links`; list them
 only when `show_configs`), devices, the payment block (`billing`) and the operator's colours
 (`brand`) — worded in `?lang`; the actions go through the endpoints above.
+
+**Sign-up from your website** — `POST /v1/signup` with `{"external_id": "ann@example.com"}`
+registers a client by your site's own id under the rules the user bot keeps: closed
+registration refuses (`err.signupClosed`), the invite mode wants `invite`
+(`err.signupBadInvite`), moderation files a request, and the account gets the trial or free plan
+like a bot sign-up. One account per `external_id` — compared exactly, so lower-case an e-mail
+first — so signing up again returns it (`200`, `"status": "existing"`, its `user_id`; the
+account in full only to a key with `users.view`) instead of a second trial. The site must
+pass only an id it has verified (a confirmed e-mail): whoever passes it gets that account.
+A new account answers `201 "created"` with the account, a request `202 "pending"` with `request_id`
+(asking again while it waits files nothing). Optional: `name` (the external id when left out),
+`source` (the funnel's tag), `ref` (an invite code; an unknown one is ignored), and `ip` — the
+client's address, for a limit of one sign-up a minute per address (per /64 for IPv6) and per id,
+20 a minute in all; over it the answer is `429` with `Retry-After`. Tick the site's key for
+`POST /v1/signup` (plus what it shows and sells) and not `POST /v1/users`: it then cannot make a
+user on its own terms. `user.registered` and `registration.rejected` carry the
+`external_id`, and `GET /v1/users?external_id=` finds the account again.
 
 **Migrate** — body `{ "to_plan_id": 3 }`, response `{ "data": { "migrated": 12 } }`.
 Applies the target plan's limits, period and access groups to every user on the source
@@ -859,13 +880,14 @@ delivery is the result: `{ "data": { "status": 502, "ok": false, "error": "…" 
 
 ### Registrations
 
-The moderated signup queue (only meaningful while the user bot is in moderation mode —
-`moderation` says whether it is).
+The moderated signup queue (only meaningful while self-registration is in moderation mode —
+`moderation` says whether it is). A request is a Telegram chat's (`chat_id`) or a website
+client's (`external_id`, from `POST /v1/signup`).
 
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/v1/registrations` | Pending signups. |
-| `POST` | `/v1/registrations/{id}/approve` | Create the account and link its Telegram chat. |
+| `POST` | `/v1/registrations/{id}/approve` | Create the account and link its Telegram chat or website id. |
 | `POST` | `/v1/registrations/{id}/reject` | Drop the request. |
 
 ### Monitoring
@@ -935,9 +957,9 @@ is the credential**, exactly as secret as the key inside it, and it stops workin
 that key is revoked. Build it by hand from the two values *Settings → API* gives you — the
 base address shown there, and a key at the moment you create it (it is never shown again).
 
-The toolbox is the key's role: the assistant is offered exactly the tools behind routes the role
-can call, and a call to any other answers "unknown tool". For an assistant that should only look,
-create a key with a role that has no write — an assistant acting on a misread sentence then
+The toolbox is the key's permissions: the assistant is offered exactly the tools behind routes
+the key can call, and a call to any other answers "unknown tool". For an assistant that should
+only look, create a key with no write ticked — an assistant acting on a misread sentence then
 cannot delete a customer, whatever it is asked.
 
 Transport is MCP's Streamable HTTP: one JSON-RPC message per `POST`, answered with
@@ -966,7 +988,7 @@ one, can put a backup back.
 
 The tool list is generated from the OpenAPI document above, so it never drifts from the API:
 an endpoint added to `/v1` becomes a tool with no one remembering to register it, and a
-removed one disappears. That includes the configuration half — an assistant whose key's role
+removed one disappears. That includes the configuration half — an assistant whose key
 allows it can read and change settings, rewrite a server's routing, take and roll back config
 save-points and restart Xray.
 
@@ -1022,7 +1044,8 @@ body is never read).
 | --- | --- |
 | `user.created` | a user is created (panel or API) |
 | `user.deleted` | a user is deleted |
-| `user.registered` | a user self-registers via the Telegram user bot |
+| `user.registered` | a user self-registers: the Telegram user bot, the Mini App or `POST /v1/signup` (with `external_id`) |
+| `registration.rejected` | an operator rejects a moderated sign-up (`telegram_id` or `external_id`) |
 | `user.expired` | a subscription lapses |
 | `user.limited` | a user exhausts their traffic quota |
 | `user.device_limited` | a user exceeds their device limit |

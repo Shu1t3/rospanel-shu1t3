@@ -210,6 +210,12 @@ type User struct {
 // TelegramLinkCodeTTL is how long a one-time Telegram bind code stays valid.
 const TelegramLinkCodeTTL = 15 * time.Minute
 
+// UserTgLinkCodeFresh reports whether the code has long enough left to hand out: a
+// link shown with seconds to go is dead by the time it is tapped (or confirmed).
+func (u User) UserTgLinkCodeFresh() bool {
+	return u.UserTgLinkCodeValid() && time.Now().Unix()-u.TgLinkCodeAt <= int64((TelegramLinkCodeTTL-5*time.Minute).Seconds())
+}
+
 // UserTgLinkCodeValid reports whether the user's pending Telegram bind code
 // exists and has not expired.
 func (u User) UserTgLinkCodeValid() bool {
@@ -317,10 +323,17 @@ const (
 // No user exists yet — approval creates one and links ChatID; rejection just drops
 // the request.
 type RegistrationRequest struct {
-	ID        int64  `json:"id"`
-	ChatID    int64  `json:"chat_id"`
-	Name      string `json:"name"`
-	CreatedAt int64  `json:"created_at"`
+	ID     int64 `json:"id"`
+	ChatID int64 `json:"chat_id"` // a Telegram request; 0 for a website one
+	// ExternalID is the website's own id for its client (POST /v1/signup); "" for a
+	// Telegram request.
+	ExternalID string `json:"external_id,omitempty"`
+	Name       string `json:"name"`
+	// What a website request came with, applied when it is approved. A Telegram
+	// request keeps these on the chat instead.
+	Source     string `json:"-"`
+	ReferrerID int64  `json:"-"`
+	CreatedAt  int64  `json:"created_at"`
 }
 
 // SupportGroup is a group the support bot has been added to — an option in the
@@ -477,15 +490,26 @@ type PaymentProvider struct {
 // ever returned once (at creation, in RawKey); the stored record keeps just its
 // HMAC hash and the clear Prefix so the operator can identify it in the UI.
 type APIKey struct {
-	ID         int64  `json:"id"`
-	Name       string `json:"name"`
-	Role       string `json:"role"`              // admin role key; "" = full access
-	Prefix     string `json:"prefix"`            // leading clear part, e.g. "rp_A1b2C3"
-	CreatedAt  int64  `json:"created_at"`        // unix seconds
-	LastUsedAt int64  `json:"last_used_at"`      // unix seconds, 0 = never used
-	RevokedAt  int64  `json:"revoked_at"`        // unix seconds, 0 = active
-	RawKey     string `json:"raw_key,omitempty"` // populated only on creation
-	// Perms is what the key may do, resolved from Role on lookup. Never serialised.
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+	// FullAccess is every permission and the owner's reach besides (backups); only
+	// the owner mints it. Otherwise Grants is what the key may do — its own set, not
+	// a role's.
+	FullAccess bool     `json:"full_access"`
+	Grants     []string `json:"perms"`
+	// Routes, when set, are the API methods the key may call ("GET /v1/users"), and
+	// Grants what those methods may do inside (the fields a PATCH may carry). Empty on
+	// a key held to its permissions alone — every key made before methods could be
+	// ticked.
+	Routes []string `json:"routes"`
+	// Allowed is Routes as a set, filled on lookup; nil = not held to methods.
+	Allowed    map[string]bool `json:"-"`
+	Prefix     string          `json:"prefix"`            // leading clear part, e.g. "rp_A1b2C3"
+	CreatedAt  int64           `json:"created_at"`        // unix seconds
+	LastUsedAt int64           `json:"last_used_at"`      // unix seconds, 0 = never used
+	RevokedAt  int64           `json:"revoked_at"`        // unix seconds, 0 = active
+	RawKey     string          `json:"raw_key,omitempty"` // populated only on creation
+	// Perms is Grants (or everything) as a set, filled on lookup. Never serialised.
 	Perms PermSet `json:"-"`
 }
 
@@ -527,7 +551,7 @@ func (h Webhook) Subscribed(event string) bool {
 const (
 	WebhookUserCreated      = "user.created"        // created via panel or API
 	WebhookUserDeleted      = "user.deleted"        //
-	WebhookUserRegistered   = "user.registered"     // self-registered via the user bot
+	WebhookUserRegistered   = "user.registered"     // self-registered: the user bot, the Mini App or POST /v1/signup
 	WebhookUserExpired      = "user.expired"        // subscription lapsed
 	WebhookUserLimited      = "user.limited"        // traffic quota exhausted
 	WebhookUserDeviceLimit  = "user.device_limited" //
@@ -535,6 +559,8 @@ const (
 	WebhookPaymentPaid      = "payment.paid"        // order paid, plan applied
 	WebhookPaymentCancelled = "payment.cancelled"   //
 	WebhookPaymentRefunded  = "payment.refunded"    // money returned: to the balance, or by the payment system
+	// A moderated sign-up the operator turned down. Approval is user.registered.
+	WebhookRegistrationRejected = "registration.rejected"
 )
 
 // WebhookEventCatalog is the stable key list the settings UI iterates over (display
@@ -545,6 +571,7 @@ var WebhookEventCatalog = []string{
 	WebhookUserCreated,
 	WebhookUserDeleted,
 	WebhookUserRegistered,
+	WebhookRegistrationRejected,
 	WebhookUserExpired,
 	WebhookUserLimited,
 	WebhookUserDeviceLimit,
@@ -1053,6 +1080,11 @@ type Settings struct {
 	// user bot's menu button was last set to.
 	MiniAppPath string `json:"-"`
 	TGMenuURL   string `json:"-"`
+	// SubTGBind offers binding Telegram on the subscription page to an account that
+	// has none; SubTGRebind moving a linked account to another Telegram (the bot
+	// refuses the move when it is off).
+	SubTGBind   bool `json:"-"`
+	SubTGRebind bool `json:"-"`
 
 	// AutoUpdateCron is when the panel checks for a newer release and installs it (in
 	// the panel's timezone; "" = never); AutoUpdateNodes has the servers follow.

@@ -2,7 +2,9 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 )
@@ -127,5 +129,47 @@ func TestRegModeHelpers(t *testing.T) {
 				tc.mode, tc.legacyEnabled, s.RegMode(), s.RegistrationOpen(), s.RegistrationActivates(),
 				tc.wantMode, tc.open, tc.activates)
 		}
+	}
+}
+
+func TestModerationApprovalDoesNotRenewTelegramTrial(t *testing.T) {
+	for _, withFree := range []bool{true, false} {
+		t.Run(fmt.Sprint(withFree), func(t *testing.T) {
+			m, st, free, trial := designatedFixture(t)
+			if !withFree {
+				set, err := st.GetSettings()
+				if err != nil {
+					t.Fatal(err)
+				}
+				set.BillingFreePlanID = 0
+				if err := m.SaveBillingSettings(set); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := st.MarkChatTrial(8124); err != nil {
+				t.Fatal(err)
+			}
+			req, err := st.CreateRegistrationRequest(8124, "Returning applicant", 1000)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := m.ApproveRegistrationRequest(context.Background(), req.ID); err != nil {
+				t.Fatal(err)
+			}
+			u, err := st.GetUserByTelegramChatID(8124)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !u.TrialUsed {
+				t.Fatal("trial use forgotten")
+			}
+			if withFree {
+				if u.PlanID != free.ID {
+					t.Fatalf("expected free plan: %+v", u)
+				}
+			} else if u.PlanID != trial.ID || u.ExpireAt == 0 || u.ExpireAt > time.Now().Unix() {
+				t.Fatalf("expected expired trial, not unlimited access: %+v", u)
+			}
+		})
 	}
 }

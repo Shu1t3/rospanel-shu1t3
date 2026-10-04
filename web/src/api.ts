@@ -32,6 +32,7 @@ export interface User {
   // The linked Telegram account is on the shared blacklist (user card only).
   blacklisted?: boolean
   source?: string // the /start tag the user came with
+  external_id?: string // the website's id for a client it signed up
   blacklist_reason?: string
   tg_chat_id?: number // linked Telegram chat/user id (0 = not linked)
   system_email: string // Xray client id "u<id>" (logs/stats)
@@ -775,7 +776,6 @@ export interface AdminRole {
   perms: Perm[]
   created_at: number
   admins: number
-  api_keys: number
 }
 
 // The name a role is shown under: what the owner called it, or the preset's own.
@@ -1431,6 +1431,10 @@ export interface TelegramInfo {
   user_reg_code: string // invite code (mode === 'invite')
   user_bot_username: string // user bot @username
   user_miniapp_url?: string // the Mini App address for @BotFather ("" without a host)
+  // The subscription page's Telegram button: binding an account that has none (on by
+  // default), and moving a linked one to another Telegram (off by default).
+  user_tg_bind?: boolean
+  user_tg_rebind?: boolean
   admin_events: Record<string, boolean> // admin notification categories (key→on)
   // What the USER bot tells the person themselves, and how many days ahead the
   // expiry warning goes out.
@@ -1484,6 +1488,8 @@ export const saveTelegram = (t: {
   user_token: string
   user_reg_mode: RegMode
   user_reg_code: string
+  user_tg_bind: boolean
+  user_tg_rebind: boolean
   admin_events: Record<string, boolean>
   user_events: Record<string, boolean>
   user_expiring_days: number
@@ -1659,7 +1665,8 @@ export const messageUser = (id: number, text: string, media: File | null) => {
 // exists until a request is approved.
 export interface RegistrationRequest {
   id: number
-  chat_id: number
+  chat_id: number // 0 for a website sign-up
+  external_id?: string // the website's id for its client
   name: string
   created_at: number
 }
@@ -2367,7 +2374,13 @@ export const setUserPlan = (id: number, plan_id: number) =>
 export interface ApiKey {
   id: number
   name: string
-  role: Role // '' = full access
+  // A key holds its own reach: everything (and the owner's), or the API methods ticked
+  // for it ("GET /v1/users"). perms is what those methods may do inside.
+  full_access: boolean
+  perms: Perm[]
+  routes: string[]
+  // Whether this admin could have issued it — and so may change or revoke it.
+  can_manage?: boolean
   prefix: string
   created_at: number
   last_used_at: number
@@ -2380,21 +2393,34 @@ export interface ApiKeysInfo {
   api_path: string
   base_url: string
   keys: ApiKey[]
-  // Every role, so a key's role reads by name; grantable marks the ones the caller's
-  // own permissions cover — what a new key may be given. full_access says whether
-  // full access is among the choices.
-  roles?: { key: string; name: string; preset: boolean; grantable: boolean }[]
-  full_access?: boolean
+  // Every API method a key can be ticked for, in the spec's sections; grantable is
+  // whether this admin may give it. Full access only to the owner.
+  routes: ApiRoute[]
+  full_access: boolean
+}
+
+export interface ApiRoute {
+  route: string // "GET /v1/users"
+  method: string
+  path: string
+  tag: string // the section, named by apiTag.<tag>
+  key: string // names it: apiRoute.<key>
+  grantable: boolean
 }
 
 export const getApiKeys = () => api<ApiKeysInfo>('api/apikeys')
 
-// role is the admin role the key acts with; '' = full access. The server refuses a
-// role broader than the caller's own.
-export const createApiKey = (name: string, role: Role = '') =>
+// The server refuses a key broader than the caller's own reach.
+export const createApiKey = (name: string, full_access: boolean, routes: string[]) =>
   api<{ key: ApiKey; base_url: string }>('api/apikeys', {
     method: 'POST',
-    body: JSON.stringify({ name, role }),
+    body: JSON.stringify({ name, full_access, routes }),
+  })
+
+export const setApiKeyAccess = (id: number, full_access: boolean, routes: string[]) =>
+  api<{ ok: boolean }>(`api/apikeys/${id}`, {
+    method: 'POST',
+    body: JSON.stringify({ full_access, routes }),
   })
 
 export const revokeApiKey = (id: number) =>

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -173,8 +174,8 @@ func TestRolesAreOwnerOnlyAndGuarded(t *testing.T) {
 	}
 	var created model.AdminRole
 	_ = json.Unmarshal(rec.Body.Bytes(), &created)
-	if want := []string{model.PermBillingManage, model.PermBillingSell, model.PermBillingView}; !slices.Equal(created.Perms, want) {
-		t.Errorf("created perms = %v, want %v (manage brings sell and view)", created.Perms, want)
+	if want := []string{model.PermBillingManage, model.PermBillingView}; !slices.Equal(created.Perms, want) {
+		t.Errorf("created perms = %v, want %v (manage brings view)", created.Perms, want)
 	}
 	// The same name twice is refused, whatever the case — a preset's built-in name and
 	// the owner's included.
@@ -208,8 +209,9 @@ func TestRolesAreOwnerOnlyAndGuarded(t *testing.T) {
 	}
 }
 
-// A role holding the API permission cannot mint a key broader than itself: that
-// would turn "may manage keys" into "may do anything".
+// An admin holding the API permission cannot mint a key broader than themselves —
+// that would turn "may manage keys" into "may do anything" — nor change or revoke a
+// key that outranks them, a key the owner allowed backups included.
 func TestAPIKeyCannotOutrankItsCreator(t *testing.T) {
 	t.Parallel()
 	rt, st := rolesTestRouter(t)
@@ -219,27 +221,111 @@ func TestAPIKeyCannotOutrankItsCreator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create role: %v", err)
 	}
-	reader, err := st.CreateAdminRole("Чтение", []string{model.PermUsersView})
-	if err != nil {
-		t.Fatalf("create role: %v", err)
-	}
 	c := signIn(t, st, "integrator", narrow.Key, false)
 
 	for _, tc := range []struct {
-		role string
+		body string
 		want int
 	}{
-		{"", 400},              // full access
-		{model.RoleAdmin, 400}, // broader than the creator
-		{model.RoleOwner, 400}, // never a key role
-		{"no-such-role", 400},  // unknown
-		{reader.Key, 201},      // a subset
-		{narrow.Key, 201},      // exactly the creator's own
+		{`{"name":"k","full_access":true}`, 400},                              // full access
+		{`{"name":"k","routes":["GET /v1/settings"]}`, 400},                   // broader than the creator
+		{`{"name":"k","routes":["GET /v1/backup"]}`, 400},                     // the owner's
+		{`{"name":"k","routes":["GET /v1/nope"]}`, 400},                       // no such method
+		{`{"name":"k","routes":["GET /v1/health"]}`, 400},                     // open to every key, not ticked
+		{`{"name":"k","routes":[]}`, 400},                                     // nothing at all
+		{`{"name":"k","routes":["GET /v1/users"]}`, 201},                      // a subset
+		{`{"name":"k","routes":["GET /v1/users","GET /v1/users/{id}"]}`, 201}, // more of it
 	} {
-		body := `{"name":"k","role":"` + tc.role + `"}`
-		if got := callBody(h, "POST", "/api/apikeys", body, c).Code; got != tc.want {
-			t.Errorf("create key with role %q = %d, want %d", tc.role, got, tc.want)
+		if got := callBody(h, "POST", "/api/apikeys", tc.body, c).Code; got != tc.want {
+			t.Errorf("create key %s = %d, want %d", tc.body, got, tc.want)
 		}
+	}
+
+	mine, err := st.CreateAPIKey("mine", false, []string{model.PermUsersView}, []string{"GET /v1/users"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, err := st.CreateAPIKey("owners", true, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backup, err := st.CreateAPIKey("backups", false, nil, []string{"GET /v1/backup"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		id   int64
+		body string
+		want int
+	}{
+		{mine.ID, `{"routes":["GET /v1/settings"]}`, 400}, // widened past the editor
+		{mine.ID, `{"full_access":true}`, 400},
+		{mine.ID, `{"routes":["GET /v1/users/{id}"]}`, 200},
+		{full.ID, `{"routes":["GET /v1/users"]}`, 400},   // a key that outranks the editor
+		{backup.ID, `{"routes":["GET /v1/users"]}`, 400}, // allowed what no permission names
+		{9999, `{"routes":["GET /v1/users"]}`, 400},
+	} {
+		path := "/api/apikeys/" + strconv.FormatInt(tc.id, 10)
+		if got := callBody(h, "POST", path, tc.body, c).Code; got != tc.want {
+			t.Errorf("change key %d to %s = %d, want %d", tc.id, tc.body, got, tc.want)
+		}
+	}
+	for _, id := range []int64{full.ID, backup.ID} {
+		if got := callBody(h, "DELETE", "/api/apikeys/"+strconv.FormatInt(id, 10), "", c).Code; got != 400 {
+			t.Errorf("revoke key %d the editor cannot cover = %d, want 400", id, got)
+		}
+	}
+	if got, _ := st.LookupAPIKey(backup.RawKey); got == nil || !got.Allowed["GET /v1/backup"] {
+		t.Error("the owner's backup key was touched")
+	}
+	if got, _ := st.LookupAPIKey(mine.RawKey); got == nil || !got.Allowed["GET /v1/users/{id}"] || got.Allowed["GET /v1/users"] {
+		t.Errorf("the allowed change did not land: %+v", got)
+	}
+}
+
+// A key held to methods calls exactly those — not the rest of what its permissions
+// would open — and MCP offers exactly those tools.
+func TestAPIKeyHeldToMethods(t *testing.T) {
+	t.Parallel()
+	h, mgr, st := nodeAPITestServer(t)
+	base, _ := apiFixture(t, h, st)
+	u, err := mgr.CreateUser(t.Context(), "someone", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k, err := st.CreateAPIKey("reader", false, []string{model.PermUsersView}, []string{"GET /v1/users/{id}"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := strconv.FormatInt(u.ID, 10)
+	if rec := apiDo(t, h, http.MethodGet, base+"/v1/users/"+id, k.RawKey, ""); rec.Code != http.StatusOK {
+		t.Fatalf("the ticked method: %d %s", rec.Code, rec.Body.String())
+	}
+	// users.view would open the list too; the key was not ticked for it.
+	if rec := apiDo(t, h, http.MethodGet, base+"/v1/users", k.RawKey, ""); rec.Code != http.StatusForbidden {
+		t.Fatalf("a method not ticked: %d", rec.Code)
+	}
+	// Open to every key whatever is ticked.
+	if rec := apiDo(t, h, http.MethodGet, base+"/v1/health", k.RawKey, ""); rec.Code != http.StatusOK {
+		t.Fatalf("health: %d", rec.Code)
+	}
+	rec := rpc(t, h, base+"/v1/mcp/"+k.RawKey, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	var out struct {
+		Result struct {
+			Tools []struct {
+				Name string `json:"name"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("tools/list: %v %s", err, rec.Body.String())
+	}
+	names := map[string]bool{}
+	for _, tl := range out.Result.Tools {
+		names[tl.Name] = true
+	}
+	if !names["get_users_by_id"] || names["get_users"] || names["post_users"] {
+		t.Fatalf("tools offered: %v", names)
 	}
 }
 
@@ -254,7 +340,7 @@ func TestAPIKeyRoleGatesRESTAndMCP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create role: %v", err)
 	}
-	k, err := st.CreateAPIKey("reader", role.Key)
+	k, err := st.CreateAPIKey("reader", false, role.Perms, nil)
 	if err != nil {
 		t.Fatalf("create key: %v", err)
 	}
@@ -370,7 +456,7 @@ func TestBulkDeleteWorksForADeleteOnlyRole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("role: %v", err)
 	}
-	k, err := st.CreateAPIKey("cleaner", role.Key)
+	k, err := st.CreateAPIKey("cleaner", false, role.Perms, nil)
 	if err != nil {
 		t.Fatalf("key: %v", err)
 	}

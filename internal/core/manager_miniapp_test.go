@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
 )
 
@@ -143,12 +144,73 @@ func TestMiniAppEnterConcurrent(t *testing.T) {
 // One chat retrying does not use up everyone's sign-ups.
 func TestMiniAppSignupsPerChat(t *testing.T) {
 	t.Parallel()
-	var l miniAppSignups
+	var l signupLimiter
 	now := time.Now()
-	if !l.allow(1, now) || l.allow(1, now) {
+	if !l.allow(now, "tg:1") || l.allow(now, "tg:1") {
 		t.Fatal("a chat got two slots in a minute")
 	}
-	if !l.allow(2, now) {
+	if !l.allow(now, "tg:2") {
 		t.Fatal("another chat was refused")
+	}
+	// Any one busy key refuses the attempt, and a refused attempt holds no slot.
+	if l.allow(now, "ext:a", "tg:2") {
+		t.Fatal("a busy key did not refuse")
+	}
+	if !l.allow(now, "ext:a") {
+		t.Fatal("a refused attempt kept its other key busy")
+	}
+	if !l.allow(now.Add(61*time.Second), "tg:1") {
+		t.Fatal("a key stayed busy past its minute")
+	}
+}
+
+// A Telegram that signed up before signs up again through the Mini App, but not into
+// a second trial: the trial plan, already over. A newcomer still gets theirs, and is
+// recorded as having had it.
+func TestMiniAppGivesNoSecondTrial(t *testing.T) {
+	t.Parallel()
+	m, trial := signupFixture(t, model.RegOpen, "")
+	set, _ := m.store.GetSettings()
+	set.BillingFreePlanID = 0 // no free plan: the account sits on the finished trial
+	if err := m.store.SetBillingSettings(set); err != nil {
+		t.Fatal(err)
+	}
+	// This Telegram signed up before; its account has since moved on.
+	if err := m.store.MarkChatTrial(1001); err != nil {
+		t.Fatal(err)
+	}
+	res, err := m.MiniAppEnter(context.Background(), MiniAppUser{ID: 1001, FirstName: "Ann"}, "")
+	if err != nil || res.UserID == 0 {
+		t.Fatalf("enter = %+v, %v", res, err)
+	}
+	got, _ := m.store.GetUser(res.UserID)
+	if got.PlanID != trial.ID || !got.TrialUsed || got.ExpireAt > time.Now().Unix() {
+		t.Fatalf("a second trial: plan=%d used=%v expire=%d", got.PlanID, got.TrialUsed, got.ExpireAt)
+	}
+	// A newcomer still gets theirs.
+	fresh, err := m.MiniAppEnter(context.Background(), MiniAppUser{ID: 3003, FirstName: "Bob"}, "")
+	if err != nil || fresh.UserID == 0 {
+		t.Fatalf("newcomer = %+v, %v", fresh, err)
+	}
+	if nu, _ := m.store.GetUser(fresh.UserID); nu.ExpireAt <= time.Now().Unix() {
+		t.Fatal("a newcomer got no trial")
+	}
+	if !m.store.ChatHadTrial(3003) {
+		t.Fatal("the newcomer's Telegram was not recorded as having had its trial")
+	}
+}
+
+// Without a trial, a free plan is where the account lands — where a finished trial
+// would have landed too.
+func TestNoTrialLandsOnTheFreePlan(t *testing.T) {
+	t.Parallel()
+	m, _ := signupFixture(t, model.RegOpen, "")
+	set, _ := m.store.GetSettings()
+	u, err := m.createRegisteredUser("again", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.PlanID != set.BillingFreePlanID || !u.TrialUsed {
+		t.Fatalf("plan=%d (free %d) used=%v", u.PlanID, set.BillingFreePlanID, u.TrialUsed)
 	}
 }

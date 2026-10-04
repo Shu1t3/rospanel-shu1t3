@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/auth"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/mcp"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 )
 
@@ -30,42 +31,60 @@ func (rt *Router) listAPIKeys(w http.ResponseWriter, r *http.Request) {
 		writeManagerErr(w, err)
 		return
 	}
-	if keys == nil {
-		keys = []model.APIKey{}
-	}
-	// The roles a new key may be given: the ones the caller's own permissions cover
-	// (core.CreateAPIKey refuses the rest), and full access only for a caller who
-	// holds everything. Listed here rather than read from /api/roles, which is the
-	// owner's: whoever manages keys has to be able to pick a role for one.
-	all, err := rt.mgr.ListAdminRoles()
-	if err != nil {
-		writeManagerErr(w, err)
-		return
-	}
 	mine := callerPerms(r)
-	// Every role is listed, so a key's role reads by name in the list; grantable says
-	// which of them the caller may pick for a new one.
-	type keyRole struct {
-		Key       string `json:"key"`
-		Name      string `json:"name"`
-		Preset    bool   `json:"preset"`
+	// Each key with the methods it may call (a key still held to its permissions
+	// shows the methods those open) and whether this caller may change or revoke it.
+	type keyView struct {
+		model.APIKey
+		CanManage bool `json:"can_manage"`
+	}
+	views := make([]keyView, 0, len(keys))
+	for _, k := range keys {
+		k.Routes = keyRoutes(k)
+		views = append(views, keyView{APIKey: k, CanManage: keyCoveredBy(k, mine)})
+	}
+	// Every method a key can be ticked for, grouped by the spec's sections;
+	// grantable is whether this caller may give it — the methods they may call
+	// themselves. Full access only for a caller who holds everything.
+	type routeView struct {
+		Route     string `json:"route"`
+		Method    string `json:"method"`
+		Path      string `json:"path"`
+		Tag       string `json:"tag"`
+		Key       string `json:"key"` // the dictionary key naming it (the MCP tool name)
 		Grantable bool   `json:"grantable"`
 	}
-	roles := make([]keyRole, 0, len(all))
-	for _, role := range all {
-		roles = append(roles, keyRole{
-			Key: role.Key, Name: role.Name, Preset: role.Preset,
-			Grantable: mine.Covers(model.NewPermSet(role.Perms)),
+	routes := []routeView{}
+	for _, t := range tickableRoutes() {
+		routes = append(routes, routeView{
+			Route: t.pattern, Method: t.method, Path: t.path, Tag: t.tag,
+			Key: mcp.ToolName(t.method, t.path), Grantable: apiMayCall(apiAccess{perms: mine}, t.pattern),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"enabled":     set.APIPath != "",
 		"api_path":    set.APIPath,
 		"base_url":    apiBaseURL(r, set.APIPath),
-		"keys":        keys,
-		"roles":       roles,
+		"keys":        views,
+		"routes":      routes,
 		"full_access": mine.Covers(model.OwnerPermSet()),
 	})
+}
+
+// apiKeyAccessReq is what a key may do: everything, or the API methods ticked.
+type apiKeyAccessReq struct {
+	FullAccess bool     `json:"full_access"`
+	Routes     []string `json:"routes"`
+}
+
+// grant turns the request into what core stores: for methods, the permissions they
+// carry, checked against the caller.
+func (req apiKeyAccessReq) grant(caller model.PermSet) (perms, routes []string, err error) {
+	if req.FullAccess {
+		return nil, nil, nil
+	}
+	perms, err = keyGrantForRoutes(req.Routes, caller)
+	return perms, req.Routes, err
 }
 
 // createAPIKey mints a new named key and returns its raw value exactly once.
@@ -75,9 +94,8 @@ func (rt *Router) listAPIKeys(w http.ResponseWriter, r *http.Request) {
 func (rt *Router) createAPIKey(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name string `json:"name"`
-		// Role the key acts with; empty = full access. Never broader than the caller's
-		// own (see core.CreateAPIKey).
-		Role string `json:"role"`
+		// Never broader than the caller's own (see keyGrantForRoutes, core.CreateAPIKey).
+		apiKeyAccessReq
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -87,7 +105,13 @@ func (rt *Router) createAPIKey(w http.ResponseWriter, r *http.Request) {
 		writeErrCode(w, http.StatusBadRequest, "err.keyNameRequired", "укажите название ключа")
 		return
 	}
-	key, err := rt.mgr.CreateAPIKey(req.Name, strings.TrimSpace(req.Role), callerPerms(r))
+	caller := callerPerms(r)
+	perms, routes, err := req.grant(caller)
+	if err != nil {
+		writeManagerErr(w, err)
+		return
+	}
+	key, err := rt.mgr.CreateAPIKey(req.Name, req.FullAccess, perms, routes, caller)
 	if err != nil {
 		writeManagerErr(w, err)
 		return
@@ -95,7 +119,7 @@ func (rt *Router) createAPIKey(w http.ResponseWriter, r *http.Request) {
 	// Which key, and with what reach: a full-access key and a read-only one are
 	// different events in the trail. The key itself is never recorded.
 	auditTarget(r, key.Name)
-	auditDetails(r, map[string]any{"role": rt.keyRoleForAudit(key.Role)})
+	auditDetails(r, keyAccessForAudit(key.FullAccess, key.Routes))
 	set, _ := rt.mgr.Store().GetSettings()
 	base := ""
 	if set != nil {
@@ -107,16 +131,57 @@ func (rt *Router) createAPIKey(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// revokeAPIKey permanently disables one key by id — one the caller could have issued.
-func (rt *Router) revokeAPIKey(w http.ResponseWriter, r *http.Request, id int64) {
-	name := ""
+// setAPIKeyAccess changes what an active key may do — one the caller could have
+// issued, to what they could issue now.
+func (rt *Router) setAPIKeyAccess(w http.ResponseWriter, r *http.Request, id int64) {
+	var req apiKeyAccessReq
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	caller := callerPerms(r)
+	k, ok := rt.apiKey(id)
+	if !ok || k.RevokedAt != 0 {
+		writeErrCode(w, http.StatusBadRequest, "err.keyNotFound", "ключ не найден")
+		return
+	}
+	if !keyCoveredBy(k, caller) {
+		writeErrCode(w, http.StatusBadRequest, "err.keyOutranksYou", "у ключа больше прав, чем у вас, — менять или отзывать его может тот, у кого они есть")
+		return
+	}
+	perms, routes, err := req.grant(caller)
+	if err != nil {
+		writeManagerErr(w, err)
+		return
+	}
+	if err := rt.mgr.SetAPIKeyPerms(id, req.FullAccess, perms, routes, caller); err != nil {
+		writeManagerErr(w, err)
+		return
+	}
+	auditTarget(r, k.Name)
+	auditDetails(r, keyAccessForAudit(req.FullAccess, routes))
+	writeOK(w)
+}
+
+// apiKey finds one key, revoked or not.
+func (rt *Router) apiKey(id int64) (model.APIKey, bool) {
 	if keys, err := rt.mgr.Store().ListAPIKeys(); err == nil {
 		for _, k := range keys {
 			if k.ID == id {
-				name = k.Name
+				return k, true
 			}
 		}
 	}
+	return model.APIKey{}, false
+}
+
+// revokeAPIKey permanently disables one key by id — one the caller could have issued.
+func (rt *Router) revokeAPIKey(w http.ResponseWriter, r *http.Request, id int64) {
+	k, ok := rt.apiKey(id)
+	if ok && !keyCoveredBy(k, callerPerms(r)) {
+		writeErrCode(w, http.StatusBadRequest, "err.keyOutranksYou", "у ключа больше прав, чем у вас, — менять или отзывать его может тот, у кого они есть")
+		return
+	}
+	name := k.Name
 	if err := rt.mgr.RevokeAPIKey(id, callerPerms(r)); err != nil {
 		writeManagerErr(w, err)
 		return
@@ -168,10 +233,11 @@ func (rt *Router) setAPIPathSettings(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// keyRoleForAudit names a key's role in the trail: "full" for none.
-func (rt *Router) keyRoleForAudit(role string) string {
-	if role == "" {
-		return "full"
+// keyAccessForAudit is what a key may do, as the trail records it: a full-access
+// key and a read-only one are different events.
+func keyAccessForAudit(full bool, routes []string) map[string]any {
+	if full {
+		return map[string]any{"routes": "full"}
 	}
-	return rt.roleForAudit(role)
+	return map[string]any{"routes": strings.Join(routes, ", ")}
 }

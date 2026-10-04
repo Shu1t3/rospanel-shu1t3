@@ -333,18 +333,36 @@ func (m *Manager) reapplyPlanToItsUsers(ctx context.Context, planID int64) {
 // CreateRegisteredUser creates an active user from self-registration (trial/free/
 // plain per billing config), links nothing itself, and alerts the admin chats. Used
 // by the open and invite modes; moderation instead goes through RequestRegistration.
-func (m *Manager) CreateRegisteredUser(ctx context.Context, name string) (*model.User, error) {
-	u, err := m.createRegisteredUser(name)
+func (m *Manager) CreateRegisteredUser(ctx context.Context, name string, trial bool) (*model.User, error) {
+	u, err := m.createRegisteredUser(name, trial)
 	if err != nil || u == nil {
 		return u, err
 	}
-	plan := m.PlanName(u.PlanID)
-	lang := m.botLang()
-	m.notifyAdminEvent(model.AdminEventRegistered,
-		i18n.T(lang, "notify.registered", escHTML(u.Name))+planLine(lang, plan))
-	m.audit(ctx, u.ID, model.EventUserRegistered, map[string]any{"plan": plan})
-	m.EmitWebhook(model.WebhookUserRegistered, userEventData(*u))
+	m.announceRegistration(ctx, u, "", false)
 	return u, nil
+}
+
+// announceRegistration tells the operator and the webhooks about a self-registered
+// account: the journal row and user.registered, and — unless an operator just
+// approved it themselves — the admin alert. externalID is a website client's id,
+// carried in the event so the site can tell whose account it is.
+func (m *Manager) announceRegistration(ctx context.Context, u *model.User, externalID string, moderated bool) {
+	plan := m.PlanName(u.PlanID)
+	details := map[string]any{"plan": plan}
+	if moderated {
+		details["moderation"] = true
+	} else {
+		lang := m.botLang()
+		m.notifyAdminEvent(model.AdminEventRegistered,
+			i18n.T(lang, "notify.registered", escHTML(u.Name))+planLine(lang, plan))
+	}
+	data := userEventData(*u)
+	if externalID != "" {
+		details["external_id"] = externalID
+		data["external_id"] = externalID
+	}
+	m.audit(ctx, u.ID, model.EventUserRegistered, details)
+	m.EmitWebhook(model.WebhookUserRegistered, data)
 }
 
 func planLine(lang i18n.Lang, plan string) string {
@@ -395,44 +413,16 @@ func (m *Manager) ApproveRegistrationRequest(ctx context.Context, reqID int64) e
 	if err != nil {
 		return invalidCode("err.requestNotFound", "заявка не найдена")
 	}
+	if req.ExternalID != "" {
+		return m.approveWebRequest(ctx, req)
+	}
 	// Filed before the list was on, or before the account was put on it.
 	if m.RegistrationBlacklisted(req.ChatID) {
 		return invalidCode("err.requestBlacklisted", "этот Telegram-аккаунт в общем чёрном списке — заявку можно только отклонить")
 	}
-	name, err := cleanUserName(truncateName(req.Name))
+	in, err := m.prepareRegistration(truncateName(req.Name), !m.store.ChatHadTrial(req.ChatID))
 	if err != nil {
 		return err
-	}
-	password, err := auth.RandomPassword()
-	if err != nil {
-		return err
-	}
-	subToken, err := auth.RandomToken()
-	if err != nil {
-		return err
-	}
-	in := store.RegistrationUser{Name: name, UUID: uuid.NewString(), Password: password, SubToken: subToken}
-	set, err := m.Settings()
-	if err != nil {
-		return err
-	}
-	if set.BillingEnabled {
-		now := time.Now().Unix()
-		if set.BillingTrialPlanID > 0 {
-			plan, planErr := m.store.GetTariffPlan(set.BillingTrialPlanID)
-			if planErr == nil && plan != nil && plan.PeriodDays > 0 {
-				w := planLimits(0, plan, now+int64(plan.PeriodDays)*86400, false, now)
-				w.TrialUsed = true
-				in.Plan = &w
-			}
-		}
-		if in.Plan == nil && set.BillingFreePlanID > 0 {
-			plan, planErr := m.store.GetTariffPlan(set.BillingFreePlanID)
-			if planErr == nil && plan != nil {
-				w := planLimits(0, plan, 0, plan.IsFree(), now)
-				in.Plan = &w
-			}
-		}
 	}
 	u, claimed, alreadyLinked, err := m.store.ApproveRegistrationRequest(reqID, in)
 	if err != nil {
@@ -449,10 +439,8 @@ func (m *Manager) ApproveRegistrationRequest(ctx context.Context, reqID int64) e
 	if in.Plan == nil {
 		m.EmitWebhook(model.WebhookUserCreated, userEventData(*u))
 	}
-	plan := m.PlanName(u.PlanID)
-	m.audit(ctx, u.ID, model.EventUserRegistered, map[string]any{"plan": plan, "moderation": true})
 	m.AttachReferrer(ctx, u.ID, req.ChatID)
-	m.EmitWebhook(model.WebhookUserRegistered, userEventData(*u))
+	m.announceRegistration(ctx, u, "", true)
 	// Gated with the other user-facing notices: an operator who switched them all off
 	// should not still have the bot writing to people.
 	m.notifyRegistrationDecision(req.ChatID, "notify.regApproved")
@@ -474,12 +462,79 @@ func (m *Manager) RejectRegistrationRequest(ctx context.Context, reqID int64) er
 	if !claimed {
 		return nil // another admin already decided this request
 	}
-	m.notifyRegistrationDecision(req.ChatID, "notify.regRejected")
+	data := map[string]any{"request_id": req.ID, "name": req.Name}
+	if req.ExternalID != "" {
+		// A website client hears it from the site, which the event tells.
+		data["external_id"] = req.ExternalID
+	} else {
+		data["telegram_id"] = req.ChatID
+		m.notifyRegistrationDecision(req.ChatID, "notify.regRejected")
+	}
+	m.EmitWebhook(model.WebhookRegistrationRejected, data)
 	return nil
 }
 
+// prepareRegistration builds credentials and plan terms without writing the account.
+// The store commits them together with its identity and moderation decision.
+func (m *Manager) prepareRegistration(name string, trial bool) (store.RegistrationUser, error) {
+	name, err := cleanUserName(name)
+	if err != nil {
+		return store.RegistrationUser{}, err
+	}
+	password, err := auth.RandomPassword()
+	if err != nil {
+		return store.RegistrationUser{}, err
+	}
+	subToken, err := auth.RandomToken()
+	if err != nil {
+		return store.RegistrationUser{}, err
+	}
+	in := store.RegistrationUser{Name: name, UUID: uuid.NewString(), Password: password, SubToken: subToken}
+	set, err := m.Settings()
+	if err != nil {
+		return in, err
+	}
+	if !set.BillingEnabled {
+		return in, nil
+	}
+	now := time.Now().Unix()
+	freeOK := false
+	if set.BillingFreePlanID > 0 {
+		p, err := m.store.GetTariffPlan(set.BillingFreePlanID)
+		freeOK = err == nil && p != nil
+	}
+	if set.BillingTrialPlanID > 0 && (trial || !freeOK) {
+		plan, err := m.store.GetTariffPlan(set.BillingTrialPlanID)
+		if err == nil && plan != nil && plan.PeriodDays > 0 {
+			expire := now + int64(plan.PeriodDays)*86400
+			if !trial {
+				expire = now
+			}
+			w := planLimits(0, plan, expire, false, now)
+			w.TrialUsed = true
+			in.Plan = &w
+			return in, nil
+		}
+	}
+	if freeOK {
+		plan, err := m.store.GetTariffPlan(set.BillingFreePlanID)
+		if err != nil {
+			return in, err
+		}
+		w := planLimits(0, plan, 0, plan.IsFree(), now)
+		w.TrialUsed = !trial
+		in.Plan = &w
+	}
+	return in, nil
+}
+
 // createRegisteredUser is the registration body: trial → free → plain user.
-func (m *Manager) createRegisteredUser(name string) (*model.User, error) {
+//
+// trial=false is someone who already had their trial — a Telegram whose account
+// moved to another one: they get an account and can buy, but not a second trial.
+// That is the free plan when there is one (where a finished trial lands anyway),
+// otherwise the trial plan already run out.
+func (m *Manager) createRegisteredUser(name string, trial bool) (*model.User, error) {
 	// Self-registration name comes from the Telegram display name — bound its length
 	// (truncate rather than reject) so it can't bloat the DB / config unboundedly.
 	name = truncateName(name)
@@ -497,7 +552,15 @@ func (m *Manager) createRegisteredUser(name string) (*model.User, error) {
 	// The trial's length is the trial plan's own period — there is no separate
 	// "trial days" setting to disagree with it. A trial plan without a period would
 	// never expire, so it falls through to the free plan instead.
-	if set.BillingTrialPlanID > 0 {
+	// Without a trial, the free plan when it really exists — a designation pointing at
+	// a deleted plan must not slip through to the unlimited fallback below.
+	freeOK := false
+	if set.BillingFreePlanID > 0 {
+		if p, err := m.store.GetTariffPlan(set.BillingFreePlanID); err == nil && p != nil {
+			freeOK = true
+		}
+	}
+	if set.BillingTrialPlanID > 0 && (trial || !freeOK) {
 		plan, err := m.store.GetTariffPlan(set.BillingTrialPlanID)
 		// Not gated on plan.Enabled: designating a plan as the trial IS the on switch
 		// (clear it in "Pricing" to stop granting trials), and the editor no longer
@@ -509,12 +572,15 @@ func (m *Manager) createRegisteredUser(name string) (*model.User, error) {
 				return nil, err
 			}
 			expire := now + int64(plan.PeriodDays)*86400
+			if !trial {
+				expire = now // the trial they already had: on the plan, and over
+			}
 			w := planLimits(u.ID, plan, expire, false, now)
 			w.TrialUsed = true
 			if err := m.store.ApplyUserPlan(w); err != nil {
 				return nil, err
 			}
-			logInfo("user registered with trial plan", "user", u.ID, "plan", plan.Name, "days", plan.PeriodDays)
+			logInfo("user registered with trial plan", "user", u.ID, "plan", plan.Name, "days", plan.PeriodDays, "trial", trial)
 			m.TriggerUserSync()
 			return m.store.GetUser(u.ID)
 		}
@@ -526,7 +592,9 @@ func (m *Manager) createRegisteredUser(name string) (*model.User, error) {
 			if err != nil {
 				return nil, err
 			}
-			if err := m.store.ApplyUserPlan(planLimits(u.ID, plan, 0, plan.IsFree(), now)); err != nil {
+			w := planLimits(u.ID, plan, 0, plan.IsFree(), now)
+			w.TrialUsed = !trial
+			if err := m.store.ApplyUserPlan(w); err != nil {
 				return nil, err
 			}
 			logInfo("user registered with free plan", "user", u.ID, "plan", plan.Name)

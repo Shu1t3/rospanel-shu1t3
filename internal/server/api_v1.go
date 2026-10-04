@@ -199,11 +199,10 @@ func (rt *Router) apiMux() http.Handler {
 			mux.HandleFunc(pattern, h)
 			return
 		}
-		perms, ok := apiRoutePerms[pattern]
-		if !ok {
+		if _, ok := apiRoutePerms[pattern]; !ok {
 			panic("api: route " + pattern + " has no entry in apiRoutePerms")
 		}
-		mux.HandleFunc(pattern, apiGate(perms, h))
+		mux.HandleFunc(pattern, apiGate(pattern, h))
 	}
 	id := func(pattern string, h func(http.ResponseWriter, *http.Request, int64)) {
 		hf(pattern, func(w http.ResponseWriter, r *http.Request) {
@@ -220,6 +219,7 @@ func (rt *Router) apiMux() http.Handler {
 
 	hf("GET /v1/users", rt.apiListUsers)
 	hf("POST /v1/users", rt.apiCreateUser)
+	hf("POST /v1/signup", rt.apiSignup)
 	hf("POST /v1/users/bulk", rt.apiBulkUsers)
 	id("GET /v1/users/{id}", rt.apiGetUser)
 	id("PATCH /v1/users/{id}", rt.apiPatchUser)
@@ -417,9 +417,9 @@ func (rt *Router) apiAuth(next http.Handler) http.Handler {
 		}
 		rt.apiKeys.success(ip, "")
 		// The key's name is the actor in the audit log, so a mutation made over the
-		// external API is attributable to the integration that made it; its role's
-		// permissions are what apiGate checks each route against.
-		ctx := withAPIPerms(actor.With(r.Context(), actor.APIKey(ak.Name)), ak.Perms)
+		// external API is attributable to the integration that made it; its methods
+		// and permissions are what apiGate checks each route against.
+		ctx := withAPIAccess(actor.With(r.Context(), actor.APIKey(ak.Name)), keyAccess(*ak))
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -666,7 +666,7 @@ func userMatches(u model.User, q string) bool {
 // pagination (?limit, ?offset). The result carries a "meta" block with the total
 // count (after filtering, before the page window) so callers can paginate.
 //
-// ?telegram_id and ?sub_token find one user by an index instead — what an outside bot
+// ?telegram_id, ?sub_token and ?external_id find one user by an index instead — what an outside bot
 // asks on every message it gets, so it must not read the whole table each time.
 func (rt *Router) apiListUsers(w http.ResponseWriter, r *http.Request) {
 	set, err := rt.mgr.Store().GetSettings()
@@ -740,14 +740,20 @@ func (rt *Router) apiListUsers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, PageEnvelope[userView]{Data: views, Meta: meta})
 }
 
-// apiLookupUser answers ?telegram_id / ?sub_token: the matching user as a list of
+// apiLookupUser answers ?telegram_id / ?sub_token / ?external_id: the matching user as a list of
 // one (or none), or nil when neither is asked. ok is false when it wrote an error.
 func (rt *Router) apiLookupUser(w http.ResponseWriter, r *http.Request) ([]model.User, bool) {
 	q := r.URL.Query()
 	var u *model.User
 	var err error
-	if q.Has("telegram_id") && q.Has("sub_token") {
-		writeAPIErr(w, http.StatusBadRequest, "bad_request", "telegram_id or sub_token, not both")
+	asked := 0
+	for _, k := range []string{"telegram_id", "sub_token", "external_id"} {
+		if q.Has(k) {
+			asked++
+		}
+	}
+	if asked > 1 {
+		writeAPIErr(w, http.StatusBadRequest, "bad_request", "one of telegram_id, sub_token and external_id, not several")
 		return nil, false
 	}
 	switch {
@@ -765,6 +771,19 @@ func (rt *Router) apiLookupUser(w http.ResponseWriter, r *http.Request) ([]model
 			return nil, false
 		}
 		u, err = rt.mgr.Store().GetUserBySubToken(tok)
+	case q.Has("external_id"):
+		ext := strings.TrimSpace(q.Get("external_id"))
+		if ext == "" {
+			writeAPIErr(w, http.StatusBadRequest, "bad_request", "invalid external_id")
+			return nil, false
+		}
+		var id int64
+		if id, err = rt.mgr.Store().UserIDByExternalID(ext); err == nil {
+			if id == 0 {
+				return []model.User{}, true
+			}
+			u, err = rt.mgr.Store().GetUser(id)
+		}
 	default:
 		return nil, true
 	}

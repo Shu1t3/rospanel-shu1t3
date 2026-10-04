@@ -106,9 +106,14 @@ type Manager struct {
 	// billingStandby disables financial background actions on a standby master.
 	billingStandby atomic.Bool
 
-	// miniSignups bounds registrations through the Mini App entrance.
-	miniSignups miniAppSignups
+	// miniSignups bounds registrations through the Mini App entrance, webSignups
+	// those from the operator's website (Signup).
+	miniSignups signupLimiter
 	miniRegMu   sync.Mutex
+	webSignups  signupLimiter
+	// signupMu serializes website sign-ups and the approval of their requests, so
+	// one website id never ends up with two accounts.
+	signupMu sync.Mutex
 
 	// fraudCache is the last computed fraud signals, from fraudAt.
 	fraudMu    sync.Mutex

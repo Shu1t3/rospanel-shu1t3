@@ -75,10 +75,16 @@ func TestApproveRegistrationRequestRollsBackOnPlanFailure(t *testing.T) {
 	if users, err := s.ListUsers(); err != nil || len(users) != 0 {
 		t.Fatalf("orphan user after rollback: users=%d err=%v", len(users), err)
 	}
+	if s.ChatHadTrial(42) {
+		t.Fatal("trial history survived rollback")
+	}
 	in.Plan = nil
 	u, claimed, linked, err := s.ApproveRegistrationRequest(req.ID, in)
 	if err != nil || !claimed || linked || u == nil || u.TgChatID != 42 {
 		t.Fatalf("retry failed: user=%+v claimed=%v linked=%v err=%v", u, claimed, linked, err)
+	}
+	if !s.ChatHadTrial(42) {
+		t.Fatal("trial history missing after approval")
 	}
 	if pending, _ := s.GetRegistrationRequestByChat(42); pending != nil {
 		t.Fatal("request still pending after approval")
