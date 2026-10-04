@@ -1,5 +1,32 @@
 # Changelog
 
+## [4.2.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v4.1.0...v4.2.0) (2026-10-04)
+
+
+### Features
+
+* **api:** an API key holds its own permissions instead of a role ([835feb4](https://github.com/Shu1t3/rospanel-shu1t3/commit/835feb44a2c00edd062063d772ca16dbe801757e))
+* **api:** methods only for keys; retire the API-only permissions ([a3a6b97](https://github.com/Shu1t3/rospanel-shu1t3/commit/a3a6b97440f8480a92b1a6727b11863de53d4d77))
+* **api:** tick exact API methods for a key ([110a72b](https://github.com/Shu1t3/rospanel-shu1t3/commit/110a72bfdfb9b8d2318a78f98587bf21505a117b))
+* **api:** website sign-up under the self-registration rules ([07b417e](https://github.com/Shu1t3/rospanel-shu1t3/commit/07b417e3aa0ceb0f6d1723b2b53aceae13a7b0f5))
+* **sub:** an access card — the page is the account, keep its link ([48f8352](https://github.com/Shu1t3/rospanel-shu1t3/commit/48f835268125456c13d89db956ead5de21bd45b2))
+* **sub:** the device add-on names its term — the date and the days left ([e859d3b](https://github.com/Shu1t3/rospanel-shu1t3/commit/e859d3b0a9295bdf6bbdb22d99cbc5c2c1a6c47d))
+* sync upstream v4.3 preserving fork safeguards ([d79e000](https://github.com/Shu1t3/rospanel-shu1t3/commit/d79e0003e5588d2d6762edaf96bc0a06c7429091))
+* **telegram:** ask before a link code moves a chat off another account ([5b095f2](https://github.com/Shu1t3/rospanel-shu1t3/commit/5b095f2bfa3f586458b22be1b08513b1fc1a10f9))
+* **telegram:** change Telegram from the subscription page, with switches ([f781103](https://github.com/Shu1t3/rospanel-shu1t3/commit/f781103772308160f74feaa704fab3cb82304155))
+
+### Интеграция upstream и сохранённые гарантии форка
+
+- Обновлён upstream до v4.3.0 и коммита `553291d`: регистрация сайта через `/v1/signup` соблюдает режим регистрации, приглашения, модерацию, rate limit, источник и реферала.
+- API-ключи получили собственные права и выбор точных HTTP/MCP-методов. Права существующих ключей переносятся; автоматическая конвертация запускается только на активном мастере.
+- На странице подписки появились карточка доступа и срок дополнительных устройств. Добавлены управление Telegram-привязкой, подтверждение переноса чата и история использованного trial.
+- Сохранены доработки форка: модуль и источник обновлений, миграция мастера, standby/fencing, настройки firewall и более новые зависимости. SQLite обновлён до 1.60.1.
+- Регистрация сайта и Telegram-модерация фиксируют аккаунт, тариф, идентификатор и решение заявки транзакционно. Ошибка назначения тарифа не теряет заявку и не оставляет недоступный аккаунт; уведомления отправляются после commit.
+- Прежние SQL-миграции и их контрольные суммы сохранены. Добавлены тесты обновления заполненной БД с 4.0.3/4.1.0, повторного открытия, rollback/retry и защиты от повторного trial.
+- Проверено: frontend lint/build, Go vet/build, race-тесты, Linux amd64/arm64, golangci-lint без замечаний и govulncheck без уязвимостей вызываемого кода. Performance-бенчмарки не требовались; реальная production-интеграция платежей/Telegram не запускалась.
+
+Подробности: [отчёт интеграции](https://github.com/Shu1t3/rospanel-shu1t3/blob/main/docs/UPSTREAM_SYNC_2026-10-04.md).
+
 ## [4.1.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v4.0.3...v4.1.0) (2026-09-29)
 
 
