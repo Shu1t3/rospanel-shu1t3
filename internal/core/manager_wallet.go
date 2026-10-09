@@ -329,8 +329,8 @@ func (m *Manager) buyPlanFromBalance(ctx context.Context, userID int64, p Purcha
 	})
 	adminLang := m.botLang()
 	m.notifyAdminEvent(model.AdminEventPayment, i18n.T(adminLang, "notify.paidBalance",
-		order.ID, escHTML(u.Name), escHTML(orderSubject(adminLang, order)), kopText(q.BalanceKop)))
-	m.EmitWebhook(model.WebhookPaymentPaid, order)
+		order.ID, m.adminUser(*u), escHTML(orderSubject(adminLang, order)), kopText(q.BalanceKop)))
+	m.emitPaymentWebhook(model.WebhookPaymentPaid, order, nil)
 	return order, nil
 }
 
@@ -349,7 +349,7 @@ func (m *Manager) supersedePromoOrders(ctx context.Context, userID, promoID, kee
 		m.audit(ctx, o.UserID, model.EventPaymentCancelled, map[string]any{
 			"order_id": o.ID, "plan": o.PlanName, "amount_rub": o.AmountRub, "reason": "superseded",
 		})
-		m.EmitWebhook(model.WebhookPaymentCancelled, o)
+		m.emitPaymentWebhook(model.WebhookPaymentCancelled, &o, nil)
 	}
 }
 
@@ -459,6 +459,7 @@ func (m *Manager) AdjustBalance(ctx context.Context, userID, deltaKop int64, not
 	m.auditNamed(ctx, u.ID, u.Name, model.EventBalanceAdjusted, map[string]any{
 		"amount_kop": deltaKop, "balance_kop": bal, "note": note,
 	})
+	m.emitUserWebhook(model.WebhookBalanceAdjusted, u.ID, map[string]any{"amount_kop": deltaKop, "balance_kop": bal})
 	if deltaKop > 0 {
 		if set, err := m.Settings(); err == nil {
 			m.notifyUserEvent(set, *u, model.UserNotifyPayment,
@@ -631,6 +632,7 @@ func (m *Manager) referred(ctx context.Context, userID, ref int64) {
 		return
 	}
 	m.auditNamed(ctx, u.ID, u.Name, model.EventUserReferred, map[string]any{"referrer_id": ref})
+	m.emitUserWebhook(model.WebhookUserReferred, u.ID, map[string]any{"referrer_id": ref})
 	if r, err := m.store.GetUser(ref); err == nil {
 		if set, err := m.Settings(); err == nil {
 			m.notifyUserEvent(set, *r, model.UserNotifyPayment,
@@ -640,9 +642,15 @@ func (m *Manager) referred(ctx context.Context, userID, ref int64) {
 }
 
 // notifyReferral tells a referrer what an invited user's payment earned them.
-func (m *Manager) notifyReferral(set *model.Settings, res store.ConfirmResult) {
+func (m *Manager) notifyReferral(set *model.Settings, res store.ConfirmResult, order *model.PaymentOrder) {
 	if res.RefUserID == 0 {
 		return
+	}
+	if res.RefKop > 0 || res.RefDays > 0 {
+		m.emitUserWebhook(model.WebhookReferralReward, res.RefUserID, map[string]any{
+			"referred_user_id": order.UserID, "order_id": order.ID,
+			"reward_kop": res.RefKop, "reward_days": res.RefDays, "banked": res.RefBanked,
+		})
 	}
 	r, err := m.store.GetUser(res.RefUserID)
 	if err != nil {
@@ -777,7 +785,7 @@ func (m *Manager) renewFromBalance(set *model.Settings, userID, now int64) {
 	m.notifyUserEvent(set, *u, model.UserNotifyPayment,
 		i18n.T(lang, "notify.userRenewed", escHTML(plan.Name), until, kopText(wal.BalanceKop)))
 	if order, err := m.store.GetPaymentOrder(orderID); err == nil {
-		m.EmitWebhook(model.WebhookPaymentPaid, order)
+		m.emitPaymentWebhook(model.WebhookPaymentPaid, order, map[string]any{"renewal": true})
 	}
 }
 
@@ -1007,6 +1015,14 @@ func (m *Manager) RedeemPromo(ctx context.Context, userID int64, code string) (*
 	m.auditNamed(ctx, u.ID, u.Name, model.EventPromoRedeemed, map[string]any{
 		"code": p.Code, "kind": p.Kind, "value": p.Value,
 	})
+	extra := map[string]any{"code": p.Code, "kind": p.Kind, "value": p.Value}
+	if res.PlanName != "" {
+		extra["plan"] = res.PlanName
+	}
+	if wal, err := m.store.GetWalletLite(userID); err == nil && set.WalletEnabled {
+		extra["balance_kop"] = wal.BalanceKop
+	}
+	m.emitUserWebhook(model.WebhookPromoRedeemed, userID, extra)
 	return res, nil
 }
 

@@ -67,7 +67,9 @@ const ACTION_COLORS: Record<string, Color> = {
   "payment.refunded": "orange",
   "promo.winback": "teal",
   "user.source": "gray",
+  "user.external_id": "gray",
   "user.auto_message": "teal",
+  "user.mailing": "gray",
 };
 
 export function actionMeta(action: string): { label: string; color: Color } {
@@ -208,6 +210,10 @@ export function eventDetails(e: UserEvent): string {
       return [str(d, "rule"), str(d, "code")].filter(Boolean).join(" · ");
     case "user.source":
       return str(d, "source") || "—";
+    case "user.external_id":
+      return str(d, "external_id") || "—";
+    case "user.mailing":
+      return i18n.t(d.mailing ? "events.det.mailingOn" : "events.det.mailingOff");
     case "user.renamed":
       return `${str(d, "from") || "—"} → ${str(d, "to")}`;
     case "user.tags_changed": {

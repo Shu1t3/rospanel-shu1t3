@@ -33,6 +33,10 @@ export interface User {
   blacklisted?: boolean
   source?: string // the /start tag the user came with
   external_id?: string // the website's id for a client it signed up
+  // Broadcasts and automatic messages go to the user; the language to write in
+  // ("" unknown). The user card only.
+  mailing?: boolean
+  lang?: string
   blacklist_reason?: string
   tg_chat_id?: number // linked Telegram chat/user id (0 = not linked)
   system_email: string // Xray client id "u<id>" (logs/stats)
@@ -836,6 +840,10 @@ export interface Me {
   totp_enabled?: boolean
   billing_enabled?: boolean
   user_bot_enabled?: boolean
+  // An enabled webhook takes user.message / broadcast.sent / user.auto_message.
+  message_hook?: boolean
+  broadcast_hook?: boolean
+  auto_message_hook?: boolean
 }
 
 export const getMe = () => api<Me>('api/me')
@@ -1044,6 +1052,8 @@ export interface SubSettings {
   // link of every lane). On by default; off leaves the page offering the
   // subscription link and the client buttons only.
   sub_show_configs: boolean
+  // The page's "Download Clash config" button. On by default.
+  sub_show_clash: boolean
   // The page's Happ button adds the subscription through an encrypted happ://crypt4/
   // link, so Happ never shows the address. Off by default.
   sub_happ_crypt: boolean
@@ -1051,6 +1061,9 @@ export interface SubSettings {
   sub_order_mode: string
   // Drop a node from subscriptions while it is offline (off by default).
   sub_hide_offline: boolean
+  // The operator's own subscription page: browsers opening a subscription link are
+  // redirected there, {token} replaced by the user's token. Empty = the panel's page.
+  sub_page_url: string
 }
 
 // HWIDSettings gates device binding: which installs may fetch the subscription and
@@ -1391,6 +1404,27 @@ export interface BrandingInfo {
 }
 
 export const getBranding = () => api<BrandingInfo>('api/branding')
+// One legal document (Settings → Branding → Documents): its Markdown, the HTML its
+// page shows, the public page ("" while empty) and when it last changed (0 = never).
+export interface LegalView {
+  markdown: string
+  html: string
+  url: string
+  updated_at: number
+}
+export type LegalKind = 'terms' | 'privacy'
+export const getLegal = () => api<Record<LegalKind, LegalView>>('api/settings/legal')
+export const saveLegal = (docs: Partial<Record<LegalKind, string>>) =>
+  api<Record<LegalKind, LegalView>>('api/settings/legal', {
+    method: 'POST',
+    body: JSON.stringify(docs),
+  })
+export const previewLegal = (markdown: string) =>
+  api<{ html: string }>('api/settings/legal/preview', {
+    method: 'POST',
+    body: JSON.stringify({ markdown }),
+  })
+
 export const saveBranding = (panelName: string, theme: ThemeColors) =>
   api<BrandingInfo>('api/settings/branding', {
     method: 'POST',
@@ -1435,6 +1469,8 @@ export interface TelegramInfo {
   // default), and moving a linked one to another Telegram (off by default).
   user_tg_bind?: boolean
   user_tg_rebind?: boolean
+  // The bot's broadcast on/off button (shown by default).
+  user_mailing_switch?: boolean
   admin_events: Record<string, boolean> // admin notification categories (key→on)
   // What the USER bot tells the person themselves, and how many days ahead the
   // expiry warning goes out.
@@ -1490,6 +1526,7 @@ export const saveTelegram = (t: {
   user_reg_code: string
   user_tg_bind: boolean
   user_tg_rebind: boolean
+  user_mailing_switch: boolean
   admin_events: Record<string, boolean>
   user_events: Record<string, boolean>
   user_expiring_days: number
@@ -1584,13 +1621,15 @@ export interface Broadcast {
   // toward total, so leaving it out of the progress arithmetic strands the bar
   // short of 100% on any run where somebody opted out mid-flight.
   skipped: number
+  // Accounts it went to through the external system (broadcast.sent).
+  hook_users: number
 }
 
 export const listBroadcasts = () => api<Broadcast[]>('api/broadcasts')
 
 // broadcastAudience previews how many recipients a filter resolves to right now.
 export const broadcastAudience = (audience: BroadcastAudience) =>
-  api<{ count: number }>(
+  api<{ count: number; hook_users: number }>(
     `api/broadcasts/audience?audience=${encodeURIComponent(audience)}`,
   )
 
@@ -1652,13 +1691,22 @@ export const retryBroadcast = (id: number) =>
 // messageUser sends one message to one user's Telegram chat — the same thing a
 // broadcast does, for an audience of one, but answered synchronously so the operator
 // learns immediately whether it arrived.
+// setUserMailing switches broadcasts and automatic messages for one user — the same
+// switch their bot shows.
+export const setUserMailing = (id: number, on: boolean) =>
+  api<{ ok: boolean }>(`api/users/${id}/mailing`, { method: 'POST', body: JSON.stringify({ on }) })
+
 export const messageUser = (id: number, text: string, media: File | null) => {
   // Same multipart shape as a broadcast — one parser on the server decides photo vs
   // document, so a file behaves identically wherever it was attached.
   const fd = new FormData()
   fd.append('payload', JSON.stringify({ text }))
   if (media) fd.append('media', media)
-  return apiForm<{ ok: boolean }>(`api/users/${id}/telegram/message`, fd)
+  // telegram: the bot delivered it; webhook: it went to the external system.
+  return apiForm<{ ok: boolean; telegram: boolean; webhook: boolean }>(
+    `api/users/${id}/telegram/message`,
+    fd,
+  )
 }
 
 // Moderated self-registration queue: signups awaiting an admin decision. No user
@@ -1669,6 +1717,17 @@ export interface RegistrationRequest {
   external_id?: string // the website's id for its client
   name: string
   created_at: number
+  // What tells the applicant apart from others of the same name.
+  info?: {
+    username?: string // Telegram @username, without the @
+    lang?: string
+    started_at?: number // first /start
+    source?: string
+    referrer_id?: number
+    referrer_name?: string
+    blacklisted?: boolean
+    blacklist_reason?: string
+  }
 }
 
 export const getRegistrations = () =>

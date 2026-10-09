@@ -49,6 +49,9 @@ func handleSub(rt *Router, w http.ResponseWriter, r *http.Request, rest string) 
 	if set, err := rt.mgr.Store().GetSettings(); err == nil && sub.IsMiniAppPath(set, token) {
 		handleMiniApp(rt, w, r, leaf)
 		return
+	} else if err == nil && sub.IsLegalPath(set, token) {
+		rt.serveLegal(w, r, set, leaf)
+		return
 	}
 	u, err := rt.mgr.Store().GetUserBySubToken(token)
 	if err != nil {
@@ -72,6 +75,19 @@ func handleSub(rt *Router, w http.ResponseWriter, r *http.Request, rest string) 
 		// even from a browser — that's how the page's own "download Clash config"
 		// button fetches YAML from this very URL instead of re-rendering the page.
 		if isBrowser(r) && r.URL.Query().Get("format") == "" {
+			// The operator draws the page on their own site: the browser goes there,
+			// while apps keep fetching the subscription from this very address.
+			// An operator's signed preview link (from the user card) opens the
+			// panel's own page instead.
+			// One that points back at this panel under the name it was reached by
+			// (an IP, another domain) is not followed: it would redirect forever.
+			if to := set.SubPageRedirect(u.SubToken); to != "" &&
+				!validSubPreview(u.SubToken, r.URL.Query().Get("preview"), time.Now()) &&
+				!model.SubPageLoops(set.SubPageURL, r.Host, set.SubPathOr()) {
+				w.Header().Set("Cache-Control", "no-store")
+				http.Redirect(w, r, to, http.StatusFound)
+				return
+			}
 			lang := i18n.FromAcceptLanguage(r.Header.Get("Accept-Language"))
 			access := rt.buildAccess(r, *u, set)
 			if err := rt.servePage(w, *u, set, access, lang, clientIP(r)); err != nil {
@@ -1338,8 +1354,11 @@ func (rt *Router) buildHistory(u model.User, lang i18n.Lang) []sub.HistoryLine {
 	if orders, err := rt.mgr.Store().PaidPlanOrdersOffBalance(u.ID, historyMax); err == nil {
 		for _, o := range orders {
 			method := rt.mgr.ProviderLabel(o.Provider)
-			if o.Provider == "" {
+			switch o.Provider {
+			case "":
 				method = rt.mgr.ManualPaymentLabel(lang)
+			case model.ExternalPayProvider:
+				method = i18n.T(lang, "pay.external")
 			}
 			all = append(all, dated{o.PaidAt, sub.HistoryLine{
 				Title: i18n.T(lang, "sub.txPlanPaid", termTitle(o.PlanName, o.Periods), method), When: when(o.PaidAt),

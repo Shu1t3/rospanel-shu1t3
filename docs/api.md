@@ -182,10 +182,10 @@ monitor pointed here keeps working.
 | --- | --- | --- |
 | `GET` | `/v1/users` | List users (filter + paginate); `?telegram_id=`, `?sub_token=` or `?external_id=` finds one. |
 | `POST` | `/v1/users` | Create a user. |
-| `POST` | `/v1/signup` | Sign up a website client under the self-registration rules (see below). |
+| `POST` | `/v1/signup` | Sign up a client from an external system or your own bot under the self-registration rules (see below). |
 | `POST` | `/v1/users/bulk` | Apply one action to many users at once. |
 | `GET` | `/v1/users/{id}` | Get one user. |
-| `PATCH` | `/v1/users/{id}` | Update name / limits / expiry / device limit / speed limit / enabled. |
+| `PATCH` | `/v1/users/{id}` | Update name / limits / expiry or a term from the first connection / device limit / speed limit / enabled / the external system's `external_id` / `mailing` (broadcasts and automatic messages on or off — the bot's switch shows the same) / `lang` (`ru`, `en`, or `""` for what the Telegram reports). |
 | `DELETE` | `/v1/users/{id}` | Delete a user. |
 | `POST` | `/v1/users/{id}/reset` | Reset the user's traffic counters. |
 | `POST` | `/v1/users/{id}/reset-period` | Set auto-reset period. |
@@ -340,7 +340,11 @@ user to:
 ```
 
 A manual order — no `provider`, or `"manual"` — returns an empty `pay_url` and waits for
-`/confirm`; it is refused while manual payment is switched off. Creating an order
+`/confirm`; it is refused while manual payment is switched off. Money you take yourself —
+Telegram Stars in your own bot, your own checkout — is `"provider": "external"`, whatever the
+manual setting: `"paid": true` confirms it in the same call, or `/confirm` later — until then it
+stays pending, `/cancel` drops it; `external_ref` keeps your payment id as `provider_id`.
+It counts in the revenue like any payment. Creating an order
 is **not** idempotent by key, but it does not stack duplicates either: a still-pending
 order for the same user, plan and provider is reused instead of a second one being
 opened, so a retried call returns the order that already exists.
@@ -415,7 +419,7 @@ with `from_balance` when `money_rub` is 0 (add `expect_expire_at` — the `expir
 — so a retried request does not buy a second period), or with a `provider` for the rest. A
 top-up is `{"user_id": 5, "kind": "topup", "amount_rub": 300}` (plus `provider`, or none for a
 manual one). Both take `lang` (`ru`/`en`, for the manual-payment instructions) and
-`return_url` (where a hosted payment sends the payer back; Telegram when left out).
+`return_url` (where a hosted payment sends the payer back; the user's subscription link when left out — your own page, when one is set).
 
 **Your own bot or user cabinet** — the key stays on your server, never in a browser. Tick the
 methods it calls: creating users and linking Telegram, opening orders, promo codes, referrers,
@@ -429,26 +433,57 @@ invite code, `POST /v1/users/{id}/referrer` with `{"ref_code": "r_…"}` (with o
 `GET /v1/users/{id}/wallet` (`ref_link` too, while the panel's user bot is on). A cabinet
 that signs people in by their subscription link finds them with `?sub_token=`.
 `GET /v1/users/{id}/subscription` has everything the subscription page shows — status,
-traffic, term, `sub_url`, one-tap imports per app (`apps`), every config (`links`; list them
-only when `show_configs`), devices, the payment block (`billing`) and the operator's colours
-(`brand`) — worded in `?lang`; the actions go through the endpoints above.
+traffic, term, `sub_url`, one-tap imports per app (`apps`), every config (`links`), the Clash
+download (`clash_url`), devices, the payment block (`billing`), the operator's colours
+(`brand`), `terms_url` / `privacy_url` (the operator's documents, while they have text — `GET /v1/legal`
+has the text itself) and `tg_link` — the user bot's link that binds the account to the Telegram it is
+opened in (moves it there when `tg_linked`; absent while the switches in Settings → Telegram
+offer nothing, and good for 15 minutes) — worded in `?lang`; the actions go through the
+endpoints above. It keeps the subscription settings the page keeps: `links` is empty while
+the page would list no configs (`show_configs` off, or a required HWID — a raw link would
+bypass the device cap), `clash_url` is absent while the page's Clash button is off or under a
+required HWID, the Happ button is the encrypted link when that is on, and `maintenance` is the
+panel's maintenance mode.
 
-**Sign-up from your website** — `POST /v1/signup` with `{"external_id": "ann@example.com"}`
-registers a client by your site's own id under the rules the user bot keeps: closed
+**Legal documents** — `GET /v1/legal` (any key) returns the operator's user agreement and privacy
+policy, written in *Settings → Branding → Documents*: `{"terms": {...}, "privacy": {...}}`, each
+with `markdown`, `html` (rendered; raw HTML in the source is dropped), `url` (its public page, ""
+while the document is empty) and `updated_at` (0 = never set). Show them on your own pages, or link
+the `url`.
+
+**Sign-up from an external system** — `POST /v1/signup` with `{"external_id": "ann@example.com"}`
+registers a client by the external system's own id under the rules the user bot keeps: closed
 registration refuses (`err.signupClosed`), the invite mode wants `invite`
 (`err.signupBadInvite`), moderation files a request, and the account gets the trial or free plan
 like a bot sign-up. One account per `external_id` — compared exactly, so lower-case an e-mail
 first — so signing up again returns it (`200`, `"status": "existing"`, its `user_id`; the
-account in full only to a key with `users.view`) instead of a second trial. The site must
-pass only an id it has verified (a confirmed e-mail): whoever passes it gets that account.
+account in full only to a key with `users.view`) instead of a second trial. The external system
+must pass only an id it has verified (a confirmed e-mail): whoever passes it gets that account.
 A new account answers `201 "created"` with the account, a request `202 "pending"` with `request_id`
 (asking again while it waits files nothing). Optional: `name` (the external id when left out),
-`source` (the funnel's tag), `ref` (an invite code; an unknown one is ignored), and `ip` — the
+`source` (the funnel's tag), `ref` (an invite code; an unknown one is ignored), `lang` (`ru` or
+`en`, given to the account — at once, or when the operator approves it), and `ip` — the
 client's address, for a limit of one sign-up a minute per address (per /64 for IPv6) and per id,
-20 a minute in all; over it the answer is `429` with `Retry-After`. Tick the site's key for
+20 a minute in all; over it the answer is `429` with `Retry-After`. Tick the external system's key for
 `POST /v1/signup` (plus what it shows and sells) and not `POST /v1/users`: it then cannot make a
 user on its own terms. `user.registered` and `registration.rejected` carry the
 `external_id`, and `GET /v1/users?external_id=` finds the account again.
+
+**Sign-up from your own bot** — `POST /v1/signup` with `{"telegram_id": 123456789}` instead of
+`external_id` (one or the other) signs up a Telegram user under the rules the panel keeps for a
+Telegram: their account comes back (`"existing"`), one they unlinked is restored, the shared
+blacklist refuses (`err.signupBlacklisted`), one trial per Telegram for good — a deleted account
+does not earn a second one — and the Telegram is linked to the new account. `name`, `source`,
+`ref`, `invite` and `ip` work as above — one sign-up a minute per Telegram, and the 20 a minute
+in all shared with `external_id` sign-ups; under moderation the request is the Telegram's, and its
+approval links it. **Pass only a Telegram ID Telegram gave you** — the sender of a message to your
+bot, or Mini App `initData` you verified — never one a client typed in: whoever passes an ID signs
+that Telegram up, spends its one trial and holds the account it is linked to.
+
+A client who came from the bot or the Mini App already has an account: tie the external
+system's login to it with `PATCH /v1/users/{id}` `{"external_id": "ann@example.com"}` instead of
+signing them up again — from a page they reached by their subscription link (`?sub_token=`
+finds the account), so the id is theirs. An id another account holds is refused (`err.externalIDTaken`); `""` takes it off.
 
 **Migrate** — body `{ "to_plan_id": 3 }`, response `{ "data": { "migrated": 12 } }`.
 Applies the target plan's limits, period and access groups to every user on the source
@@ -669,9 +704,31 @@ curl -X PATCH $BASE/v1/settings -H "Authorization: Bearer $KEY" \
   "hwid_fallback_limit": 0, "hwid_ttl_days": 30,
   "device_count_mode": "auto",
   "local_backup_cron": "", "local_backup_keep": 7,
-  "sub_path": "sub", "warp_enabled": false, "warp_registered": true
+  "sub_path": "sub", "warp_enabled": false, "warp_registered": true,
+  "sub_order_mode": "manual", "sub_happ_crypt": false, "sub_page_url": "",
+  "trusted_nets": ["198.51.100.0/24", "203.0.113.10/32"]
 } }
 ```
+
+`sub_order_mode` is how a subscription orders servers: `manual` (weight, then the list),
+`nearest`, `load`, `nearest_load`, or `random` — a new order on every fetch, so clients
+that connect to the first entry spread across the fleet; hide-when-full and hide-when-over
+still apply. `sub_happ_crypt` makes the subscription page's Happ button, and
+`GET /v1/users/{id}/happ-link`, hand out an encrypted `happ://crypt4/` link instead of the
+plain address. `sub_page_url` is your own subscription page: a browser opening a subscription
+link is redirected there (`302`), `{token}` replaced by the user's token — e.g.
+`https://example.com/cabinet?sub={token}`, then `GET /v1/users?sub_token=` finds the user. Apps
+fetching the subscription, and `?format=` downloads, are not redirected; `""` brings back the
+panel's page. A link to this panel's own subscription path is refused (`err.subPageLoop`) and not
+followed under any name the panel is reached by; an unknown token is never redirected; and the
+user card's "open the subscription page" button opens the panel's own page through an hour-long
+signed link. `trusted_nets` are the IPs and networks the panel never bans on its own —
+not for guessing the SOCKS/HTTP password, not for scanning the panel, not under the source
+policy (a refusal is still journaled). Sending it replaces the whole list; entries are
+stored as prefixes (`198.51.100.7/24` becomes `198.51.100.0/24`), networks wider than an
+IPv4 /8 or an IPv6 /32 are refused, and bans already in place inside the list are lifted.
+An unknown `sub_order_mode`, a bad `sub_page_url` or `trusted_nets` entry is refused before any field of
+the body is written.
 
 `device_count_mode` decides what a user's device limit counts. `auto` (the default) counts
 distinct source addresses seen in the last two minutes — the only thing that caps how many
@@ -881,13 +938,13 @@ delivery is the result: `{ "data": { "status": 502, "ok": false, "error": "…" 
 ### Registrations
 
 The moderated signup queue (only meaningful while self-registration is in moderation mode —
-`moderation` says whether it is). A request is a Telegram chat's (`chat_id`) or a website
-client's (`external_id`, from `POST /v1/signup`).
+`moderation` says whether it is). A request is a Telegram chat's (`chat_id`) or an external
+system client's (`external_id`, from `POST /v1/signup`).
 
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/v1/registrations` | Pending signups. |
-| `POST` | `/v1/registrations/{id}/approve` | Create the account and link its Telegram chat or website id. |
+| `POST` | `/v1/registrations/{id}/approve` | Create the account and link its Telegram chat or external system id. |
 | `POST` | `/v1/registrations/{id}/reject` | Drop the request. |
 
 ### Monitoring
@@ -1044,15 +1101,40 @@ body is never read).
 | --- | --- |
 | `user.created` | a user is created (panel or API) |
 | `user.deleted` | a user is deleted |
-| `user.registered` | a user self-registers: the Telegram user bot, the Mini App or `POST /v1/signup` (with `external_id`) |
-| `registration.rejected` | an operator rejects a moderated sign-up (`telegram_id` or `external_id`) |
+| `registration.requested` | a sign-up waits for the operator (moderation): `data.request_id`, `data.name`, and `data.telegram_id` or `data.external_id` |
+| `user.registered` | a user self-registers: the Telegram user bot, the Mini App or `POST /v1/signup` (`external_id` or `telegram_id`); `data.telegram_id` when the Telegram is linked by then (a `telegram_id` sign-up, a moderation approval — `data.moderated`, `data.request_id`) — a bot or Mini App sign-up links it right after, in `user.telegram_linked` |
+| `registration.rejected` | a moderated sign-up closes without an account of its own (`telegram_id` or `external_id`): `data.reason` is `operator` (rejected) or `has_account` (approved, but the Telegram or `external_id` already has one — `data.user_id`) |
 | `user.expired` | a subscription lapses |
 | `user.limited` | a user exhausts their traffic quota |
-| `user.device_limited` | a user exceeds their device limit |
+| `user.device_limited` | a user exceeds their device limit — or a new device is turned away at the limit (`data.refused`, `data.device`) |
+| `user.expiring` | a term is running out — at 14, 7, 3 and 1 days before it ends, each once per term (a renewal starts over; a term given with fewer days left gets the nearest stage only); `data.stage` (14, 7, 3 or 1), `data.days_left` — act on the stages you want; with a paid plan the balance can renew, `data.auto_renew`, `data.renew_price_kop`, `data.balance_kop` |
+| `user.traffic_low` | a user has spent 80% of the quota — once until usage drops back under it; `data.used`, `data.percent` |
+| `user.sub_rotated` | the subscription link is reissued (panel, API, or a Telegram move) — the old one no longer works; `data.sub_url` |
+| `user.telegram_linked` | a Telegram is bound to the account (panel, API, bot, Mini App); `data.telegram_id` |
+| `user.telegram_unlinked` | the account loses a Telegram — unlinked, the chat moved to another account, or the account moved to another Telegram; `data.telegram_id` |
+| `user.limits_changed` | the operator changed the limits or the term, or extended it (`data.extended_days` for a bulk extension), or a refund took the order's days back (`data.refund_order_id`) |
+| `user.term_started` | a term waiting for the first connection started — `data.expire_at` is now set |
+| `user.traffic_reset` | the traffic counters were zeroed — by hand (`data.auto` false) or by the reset period (`data.auto` true) |
+| `user.device_bound` | a new device took a slot (`data.device`, `data.devices`, `data.device_limit`) |
+| `user.device_unbound` | device slots were released — one (`data.hwid`), all of them, or by a reissued link (`data.reason`); `data.devices` |
+| `user.enabled` / `user.disabled` | the operator switches the user on or off (panel, API, bulk action) |
+| `user.abuse` | a blocklist measure: `data.measure` is `warned`, `throttled` (`speed_limit`), `disabled` (`until`) or `lifted` (`was`) |
+| `plan.changed` | the plan is set by the operator or the API, or bought as a change of plan; `data.plan`, `data.prev_plan` |
+| `plan.downgraded` | a paid term ended and the free plan took over; `data.plan`, `data.prev_plan` |
+| `plan.cancelled` | a paid plan given up — to the free plan (`data.plan`) or ended now (`data.plan` empty); `data.prev_plan` |
+| `balance.adjusted` | an operator corrected the balance; `data.amount_kop` (either sign), `data.balance_kop` |
+| `user.referred` | a user signed up by someone's invite; `data.referrer_id` |
+| `referral.reward` | an invited user's payment earned the inviter (the user in `data`) a reward; `data.reward_kop`, `data.reward_days`, `data.banked`, `data.referred_user_id`, `data.order_id` |
+| `promo.winback` | a lapsed user got a personal discount code; `data.code`, `data.percent`, `data.expires_at`, `data.attached` (already on their next payment) |
+| `promo.redeemed` | a code the user entered took effect: `data.code`, `data.kind` (`balance`, `days`, `percent`, `amount`), `data.value`, `data.plan` (days), `data.balance_kop` |
 | `payment.created` | a payment order is opened |
-| `payment.paid` | an order is paid and the plan applied |
+| `payment.paid` | an order is paid and the plan applied; `data.renewal` for an automatic renewal from the balance, `data.undelivered` when the plan could not be applied and the money went to the balance (`kind` is then `topup`) |
 | `payment.cancelled` | an order is cancelled |
-| `payment.refunded` | an order's money went back — to the balance by an operator, or by the payment system (`refund_source`) |
+| `payment.refunded` | an order's money went back — to the balance by an operator (`data.refund_kop`), or by the payment system (`refund_source`; `data.taken_kop`, `data.returned_kop`); `data.plan_cancelled` when the access it bought was taken back |
+| `user.message` | the operator wrote to the user from the panel: `data.text` (Telegram HTML), `data.buttons` (`text`, `url`), `data.media_kind`/`data.media_name` (the file goes only to Telegram), `data.telegram_sent` — false when the bot did not deliver it (no Telegram, a blocked bot, the bot off), then it is yours to deliver. With this event subscribed the panel can write to users without Telegram |
+| `user.auto_message` | an automatic message came due: `data.rule_id`, `data.rule`, `data.trigger`, `data.text` (Telegram HTML, variables filled in), `data.buttons`, `data.code`/`data.percent`/`data.code_expires_at` (a personal discount), `data.telegram_sent`. With this event subscribed the rules also cover the accounts the bot does not reach — all of them with the bot off — except who turned mailings off in the bot; each account hears a rule once per occurrence, whichever way |
+| `user.mailing` | mailings switched on or off for the user — by the bot's switch, the operator or `PATCH /v1/users/{id}`; `data.mailing` |
+| `broadcast.sent` | a broadcast went out — one delivery per broadcast: `data.id`, `data.text`, `data.buttons`, `data.audience`, `data.media_kind`/`data.media_name`, `data.telegram_recipients` (chats the bot sends it to), `data.users` (`id`, `external_id`) — the accounts in the audience the bot does not reach, except who turned mailings off in the bot. With this event subscribed broadcasts work with the bot off (text only) |
 
 ## Delivery format
 
@@ -1064,12 +1146,20 @@ Each delivery is an HTTP `POST` with a JSON body:
   "event": "user.created",
   "created_at": 1767225600,
   "data": { "id": 7, "name": "alice", "status": "active", "enabled": true,
-            "expire_at": 0, "data_limit": 0, "plan_id": 0 }
+            "expire_at": 0, "data_limit": 0, "plan_id": 0,
+            "external_id": "", "telegram_id": 0, "mailing": true, "lang": "ru" }
 }
 ```
 
-`data` is the user object for `user.*` events and the payment order for
-`payment.*` events.
+`data` is the user object (`id`, `name`, `status`, `enabled`, `expire_at`, `data_limit`,
+`plan_id`, the ids you know the user by — `external_id`, `""` when none, and
+`telegram_id`, 0 when none — `mailing` and `lang`, `""` when unknown) for every event about a user — `user.*`, `plan.*`,
+`balance.adjusted`, `referral.reward` (the inviter), `promo.*` — plus the fields the events
+table lists for it; the payment order for `payment.*`, with `data.user` (that user object, as
+the order left it) and `data.user_balance_kop` (their balance now; the order's own
+`balance_kop` is the part of the price the balance covered); the request (`request_id`, `name`, `telegram_id`
+or `external_id`) for `registration.requested` and `registration.rejected`; and the broadcast
+for `broadcast.sent`.
 
 Headers:
 
@@ -1106,7 +1196,15 @@ function verify(secret, body, header) {
 
 Return a `2xx` status to acknowledge. A non-2xx response or a connection error is
 retried with a growing backoff (roughly 10s, 30s, 2m, 10m — up to 5 attempts),
-then dropped. Deliveries can arrive **out of order** and, on retry, **more than
-once** — treat the `id` field as an idempotency key. The **Test** button in the
+then dropped. Successfully enqueued deliveries are kept in the panel's database,
+including those from bulk actions; a restart resumes what was waiting. Deliveries can
+arrive **out of order** and, on retry or after a restart, **more than once** — treat the
+`id` field as an idempotency key. The **Test** button in the
 panel sends a `ping` delivery so you can confirm reachability and signature
 verification. The last delivery's status is shown next to each webhook.
+
+Enqueueing is best-effort and is separate from the action that produces an event.
+A database write failure can lose an event; reminder markers and automatic-message
+claims can already be recorded at that point. External broadcast recipients are held
+in memory between creation and start, so a restart in that interval can lose that
+part of the audience. The durable outbox protects deliveries after they are enqueued.

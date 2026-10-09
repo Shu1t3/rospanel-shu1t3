@@ -78,6 +78,8 @@ var auditActions = map[string]auditRoute{
 	"POST /api/settings/secret":                set("secretPath"),
 	"POST /api/settings/decoy":                 set("decoy"),
 	"POST /api/settings/subscription":          set("subscriptions"),
+	"POST /api/settings/legal":                 set("legal"),
+	"POST /api/settings/legal/preview":         skip, // renders Markdown, changes nothing
 	"POST /api/settings/sub-rules":             set("subscriptions"),
 	"POST /api/settings/sub-templates":         set("subscriptions"),
 	"POST /api/settings/sub-dpi":               set("subscriptions"),
@@ -241,16 +243,18 @@ var auditActions = map[string]auditRoute{
 	// End users: audited in the user journal instead, per user, with details this
 	// trail could not carry. Listed explicitly so the exhaustiveness test sees a
 	// decision rather than an omission.
-	"POST /api/users":                      skip,
-	"POST /api/users/bulk":                 skip,
-	"POST /api/users/import/inspect":       skip, // reads the upload, writes nothing
-	"POST /api/users/import":               skip, // one user.created row per imported user
-	"DELETE /api/users/{id}":               skip,
-	"POST /api/users/{id}/reset":           skip,
-	"POST /api/users/{id}/limits":          skip,
-	"POST /api/users/{id}/enabled":         skip,
-	"POST /api/users/{id}/name":            skip,
-	"POST /api/users/{id}/note":            skip,
+	"POST /api/users":                skip,
+	"POST /api/users/bulk":           skip,
+	"POST /api/users/import/inspect": skip, // reads the upload, writes nothing
+	"POST /api/users/import":         skip, // one user.created row per imported user
+	"DELETE /api/users/{id}":         skip,
+	"POST /api/users/{id}/reset":     skip,
+	"POST /api/users/{id}/limits":    skip,
+	"POST /api/users/{id}/enabled":   skip,
+	"POST /api/users/{id}/name":      skip,
+	"POST /api/users/{id}/note":      skip,
+	// The user's journal records it, with who switched it.
+	"POST /api/users/{id}/mailing":         skip,
 	"POST /api/users/{id}/tags":            skip,
 	"POST /api/users/{id}/rotate-sub":      skip,
 	"POST /api/users/{id}/telegram/unlink": skip,

@@ -107,7 +107,7 @@ func apiSpecRoutes() []oaRoute {
 				{name: "tag", typ: "string", desc: "only users carrying this tag (exact, case-insensitive)"},
 				{name: "telegram_id", typ: "integer", desc: "the user linked to this Telegram ID (an indexed lookup)"},
 				{name: "sub_token", typ: "string", desc: "the user whose subscription token this is (an indexed lookup)"},
-				{name: "external_id", typ: "string", desc: "the user a website signed up with this id (POST /v1/signup; an indexed lookup)"},
+				{name: "external_id", typ: "string", desc: "the user an external system signed up or tied to this id (POST /v1/signup, PATCH /v1/users/{id}; an indexed lookup)"},
 				{name: "limit", typ: "integer", desc: "page size (<=0 = all from offset)"},
 				{name: "offset", typ: "integer", desc: "number of users to skip"},
 			},
@@ -116,12 +116,13 @@ func apiSpecRoutes() []oaRoute {
 			req: t(apiCreateUserReq{}), reqRequired: []string{"name"},
 			resp: t(userView{}), status: 201},
 		{method: "POST", path: "/v1/signup", tag: "Users",
-			summary: "Sign up a website client under the self-registration rules (closed registration, " +
-				"invite code, moderation, one account and trial per external_id, a rate limit): " +
+			summary: "Sign up a client from an external system (external_id) or a Telegram user (telegram_id) under the " +
+				"self-registration rules (closed registration, invite code, moderation, one account and trial per id — " +
+				"per Telegram for good, the Telegram blacklist — a rate limit): " +
 				"201 created, 200 already has one, 202 filed for moderation, 429 try again in a minute",
 			destructive: true,
-			req:         t(apiSignupReq{}), reqRequired: []string{"external_id"},
-			resp: t(apiSignupResp{}), status: 201},
+			req:         t(apiSignupReq{}),
+			resp:        t(apiSignupResp{}), status: 201},
 		{method: "POST", path: "/v1/users/bulk", tag: "Users", summary: "Apply one action to many users",
 			req: t(apiBulkReq{}), reqRequired: []string{"ids", "action"}, resp: t(oaAffectedResp{})},
 		{method: "GET", path: "/v1/users/{id}", tag: "Users", summary: "Get a user",
@@ -179,7 +180,7 @@ func apiSpecRoutes() []oaRoute {
 			req:     t(apiRedeemReq{}), reqRequired: []string{"code"}, resp: t(apiRedeemResp{}),
 			destructive: true},
 		{method: "GET", path: "/v1/users/{id}/subscription", tag: "Users",
-			summary: "The user's subscription page as data, to draw it yourself: status, traffic, term, app imports, configs, devices, payment block",
+			summary: "The user's subscription page as data, to draw it yourself: status, traffic, term, app imports, configs, devices, payment block — under the subscription settings the panel's page keeps",
 			query:   []oaParam{{name: "lang", typ: "string", desc: "ru | en — the language of the texts (default en)"}},
 			resp:    t(sub.View{})},
 		{method: "POST", path: "/v1/users/{id}/telegram", tag: "Users",
@@ -457,6 +458,9 @@ func apiSpecRoutes() []oaRoute {
 		{method: "POST", path: "/v1/users/{id}/groups", tag: "Users", summary: "Set a user's group membership",
 			req: t(oaUserGroupsReq{}), reqRequired: []string{"group_ids"}},
 
+		{method: "GET", path: "/v1/legal", tag: "Settings",
+			summary: "The user agreement and privacy policy: Markdown, rendered HTML, public page and date (an empty one has no page)",
+			resp:    t(apiLegalResp{})},
 		{method: "GET", path: "/v1/webhooks", tag: "Webhooks", summary: "List webhook endpoints",
 			resp: t(webhookDTO{}), list: true},
 		{method: "GET", path: "/v1/webhooks/events", tag: "Webhooks", summary: "Event keys a webhook can subscribe to",

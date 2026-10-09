@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -57,6 +58,10 @@ type apiSettingsView struct {
 	SubOrderMode string `json:"sub_order_mode"`
 	// SubHappCrypt hands Happ the subscription as an encrypted happ://crypt4/ link.
 	SubHappCrypt bool `json:"sub_happ_crypt"`
+	// SubPageURL is the operator's own subscription page: a browser opening a
+	// subscription link is sent there, {token} replaced by the user's token. Empty
+	// keeps the panel's page.
+	SubPageURL string `json:"sub_page_url"`
 	// TrustedNets are the IPs and networks no automatic ban touches, as stored
 	// (normalised to prefixes).
 	TrustedNets []string `json:"trusted_nets"`
@@ -83,6 +88,7 @@ type apiSettingsReq struct {
 	LocalBackupKeep    *int    `json:"local_backup_keep"`
 	SubOrderMode       *string `json:"sub_order_mode"`
 	SubHappCrypt       *bool   `json:"sub_happ_crypt"`
+	SubPageURL         *string `json:"sub_page_url"` // "" brings back the panel's page
 	// TrustedNets replaces the whole list; an empty array trusts nobody.
 	TrustedNets *[]string `json:"trusted_nets"`
 }
@@ -116,6 +122,7 @@ func (rt *Router) apiSettingsPayload() (*apiSettingsView, error) {
 		WarpRegistered:     set.WarpRegistered(),
 		SubOrderMode:       set.SubOrderMode,
 		SubHappCrypt:       set.SubHappCrypt,
+		SubPageURL:         set.SubPageURL,
 		TrustedNets:        rt.mgr.TrustedNets(),
 	}, nil
 }
@@ -201,6 +208,16 @@ func (rt *Router) apiPatchSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		newDecoy = h
+	}
+	if req.SubPageURL != nil {
+		if v := strings.TrimSpace(*req.SubPageURL); v != "" && !model.ValidSubPageURL(v) {
+			writeAPIErr(w, http.StatusBadRequest, "bad_request", "sub_page_url: an absolute http(s) address")
+			return
+		}
+		if cur, err := rt.mgr.Store().GetSettings(); err == nil && model.SubPageLoops(strings.TrimSpace(*req.SubPageURL), cur.Host, cur.SubPathOr()) {
+			writeAPIErr(w, http.StatusBadRequest, "bad_request", "sub_page_url: points back at this panel's subscription links")
+			return
+		}
 	}
 	// Each apply is the manager method the panel screen calls, so validation, audit
 	// rows and the Xray reconcile that some of them trigger all behave identically.
@@ -678,7 +695,7 @@ func (rt *Router) syncDecoyFromSettings() {
 // of the subscription settings, so the current row is read and only what was sent is
 // overlaid — the same save the panel's subscriptions screen makes.
 func (rt *Router) apiApplySub(req apiSettingsReq) error {
-	if req.SubOrderMode == nil && req.SubHappCrypt == nil {
+	if req.SubOrderMode == nil && req.SubHappCrypt == nil && req.SubPageURL == nil {
 		return nil
 	}
 	set, err := rt.mgr.Store().GetSettings()
@@ -690,6 +707,9 @@ func (rt *Router) apiApplySub(req apiSettingsReq) error {
 	}
 	if req.SubHappCrypt != nil {
 		set.SubHappCrypt = *req.SubHappCrypt
+	}
+	if req.SubPageURL != nil {
+		set.SubPageURL = *req.SubPageURL
 	}
 	return rt.mgr.SaveSubSettings(set)
 }
@@ -715,5 +735,6 @@ func settingsFieldPerms(req apiSettingsReq) []fieldPerm {
 		{req.DeviceCountMode != nil, "device_count_mode", model.PermSettingsManage},
 		{req.SubOrderMode != nil, "sub_order_mode", model.PermSettingsManage},
 		{req.SubHappCrypt != nil, "sub_happ_crypt", model.PermSettingsManage},
+		{req.SubPageURL != nil, "sub_page_url", model.PermSettingsManage},
 	}
 }

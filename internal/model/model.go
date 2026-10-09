@@ -3,6 +3,7 @@ package model
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -205,6 +206,62 @@ type User struct {
 	// (0 = not yet). Cleared once usage falls back under the threshold, which is what
 	// a quota reset or a plan change does — so the warning re-arms on its own.
 	NotifiedQuotaAt int64 `json:"-"`
+
+	// HookExpireAt and HookQuotaAt are the same two markers for the reminders an
+	// external system gets as webhooks (user.expiring, user.traffic_low), on the
+	// bot's thresholds but kept apart from its markers: the bot marks only users
+	// with a Telegram, and a site's users often have none.
+	HookExpireAt int64 `json:"-"`
+	HookQuotaAt  int64 `json:"-"`
+	// HookExpireStage is the last user.expiring stage (days ahead, HookExpireStages)
+	// sent for the term HookExpireAt holds; 0 = none yet.
+	HookExpireStage int `json:"-"`
+
+	// MailingOff is the account's own "no mailings" (the API, the operator, the bot's
+	// switch); its Telegram chat's opt-out says the same on its own. Lang is the
+	// language set for the account ("" = what Telegram reports). The views show both
+	// resolved, as mailing and lang.
+	MailingOff bool   `json:"-"`
+	Lang       string `json:"-"`
+}
+
+// The operator's legal documents, in Markdown: shown on the subscription page, in
+// the user bot and over the API. An empty one is not shown anywhere.
+const (
+	LegalTerms   = "terms"   // user agreement
+	LegalPrivacy = "privacy" // privacy policy
+)
+
+// LegalKinds lists the documents, in the order they are shown.
+var LegalKinds = []string{LegalTerms, LegalPrivacy}
+
+// ValidLegalKind reports whether k names a legal document.
+func ValidLegalKind(k string) bool { return k == LegalTerms || k == LegalPrivacy }
+
+// MaxLegalDocLen bounds a document: room for any agreement, not for a dump.
+const MaxLegalDocLen = 200_000
+
+// LegalDoc is one document: its Markdown and when it last changed (0 = never set).
+type LegalDoc struct {
+	Kind      string `json:"kind"`
+	Body      string `json:"markdown"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
+// HookExpireStages are the days before a term ends that user.expiring goes out at,
+// each once per term — the external system decides which of them to act on.
+var HookExpireStages = []int{14, 7, 3, 1}
+
+// HookExpireStage is the stage a term with left seconds to go is at: the nearest of
+// HookExpireStages it is within, or 0 when it is further out than the first.
+func HookExpireStage(left int64) int {
+	stage := 0
+	for _, d := range HookExpireStages {
+		if left <= int64(d)*86400 {
+			stage = d
+		}
+	}
+	return stage
 }
 
 // TelegramLinkCodeTTL is how long a one-time Telegram bind code stays valid.
@@ -319,6 +376,10 @@ const (
 	RefundByProvider = "provider" // the payment system refunded it, or a chargeback
 )
 
+// ExternalPayProvider is the order provider of money an external system takes itself
+// (Telegram Stars in its own bot, its own checkout) and confirms over the API.
+const ExternalPayProvider = "external"
+
 // RegistrationRequest is a moderated self-registration awaiting an admin decision.
 // No user exists yet — approval creates one and links ChatID; rejection just drops
 // the request.
@@ -334,6 +395,8 @@ type RegistrationRequest struct {
 	Source     string `json:"-"`
 	ReferrerID int64  `json:"-"`
 	CreatedAt  int64  `json:"created_at"`
+	// Lang is the language a sign-up over the API came with, given to the account.
+	Lang string `json:"-"`
 }
 
 // SupportGroup is a group the support bot has been added to — an option in the
@@ -469,6 +532,9 @@ type Broadcast struct {
 	Failed  int `json:"failed"`
 	Blocked int `json:"blocked"`
 	Skipped int `json:"skipped"`
+	// HookUsers is how many accounts it went to through the external system
+	// (broadcast.sent): those the bot does not reach.
+	HookUsers int `json:"hook_users"`
 }
 
 // Pending reports how many recipients are still waiting.
@@ -549,18 +615,69 @@ func (h Webhook) Subscribed(event string) bool {
 // Webhook event keys. Stable strings sent in the payload's "event" field and the
 // X-RosPanel-Event header; never renumbered/renamed once shipped.
 const (
-	WebhookUserCreated      = "user.created"        // created via panel or API
-	WebhookUserDeleted      = "user.deleted"        //
-	WebhookUserRegistered   = "user.registered"     // self-registered: the user bot, the Mini App or POST /v1/signup
-	WebhookUserExpired      = "user.expired"        // subscription lapsed
-	WebhookUserLimited      = "user.limited"        // traffic quota exhausted
-	WebhookUserDeviceLimit  = "user.device_limited" //
-	WebhookPaymentCreated   = "payment.created"     // order opened
-	WebhookPaymentPaid      = "payment.paid"        // order paid, plan applied
-	WebhookPaymentCancelled = "payment.cancelled"   //
-	WebhookPaymentRefunded  = "payment.refunded"    // money returned: to the balance, or by the payment system
+	WebhookUserCreated     = "user.created"        // created via panel or API
+	WebhookUserDeleted     = "user.deleted"        //
+	WebhookUserRegistered  = "user.registered"     // self-registered: the user bot, the Mini App or POST /v1/signup
+	WebhookUserExpired     = "user.expired"        // subscription lapsed
+	WebhookUserLimited     = "user.limited"        // traffic quota exhausted
+	WebhookUserDeviceLimit = "user.device_limited" //
+	WebhookUserExpiring    = "user.expiring"       // a term is 14, 7, 3 or 1 days from its end (HookExpireStages)
+	WebhookUserTrafficLow  = "user.traffic_low"    // TrafficWarnPercent of the quota spent
+	WebhookUserSubRotated  = "user.sub_rotated"    // subscription link reissued: the old one is dead
+	// A Telegram bound to the account, or taken off it — by the operator, the API, the
+	// bot, or another account the Telegram moved to.
+	WebhookUserTelegramLinked   = "user.telegram_linked"
+	WebhookUserTelegramUnlinked = "user.telegram_unlinked"
+	// Switched on or off by the operator (the panel, the API, a bulk action). A
+	// switch-off for blocklist traffic is user.abuse.
+	WebhookUserEnabled  = "user.enabled"
+	WebhookUserDisabled = "user.disabled"
+	// The blocklist measures: data.measure is warned | throttled | disabled | lifted.
+	WebhookUserAbuse = "user.abuse"
+	// The plan moved: set by the operator or the API, or bought as a change of plan
+	// (plan.changed); the paid term ended and the free plan took over
+	// (plan.downgraded); given up (plan.cancelled).
+	WebhookPlanChanged    = "plan.changed"
+	WebhookPlanDowngraded = "plan.downgraded"
+	WebhookPlanCancelled  = "plan.cancelled"
+	// Money and codes the user should hear about: an operator's balance correction,
+	// someone signing up by their invite, what an invited user's payment earned them,
+	// and a win-back code.
+	WebhookBalanceAdjusted = "balance.adjusted"
+	WebhookUserReferred    = "user.referred"
+	WebhookReferralReward  = "referral.reward"
+	WebhookPromoWinback    = "promo.winback"
+	// A code the user entered took effect (data.kind: balance | days | percent | amount).
+	WebhookPromoRedeemed = "promo.redeemed"
+	// The term and the quota moved without a plan: the operator set limits or extended
+	// the term (user.limits_changed), a term waiting for the first connection started
+	// (user.term_started), the traffic was zeroed by hand or by the reset period
+	// (user.traffic_reset, data.auto).
+	WebhookUserLimitsChanged = "user.limits_changed"
+	WebhookUserTermStarted   = "user.term_started"
+	WebhookUserTrafficReset  = "user.traffic_reset"
+	// A device took a slot, or slots were released.
+	WebhookUserDeviceBound   = "user.device_bound"
+	WebhookUserDeviceUnbound = "user.device_unbound"
+	// A sign-up waits for the operator (moderation): from the bot, the Mini App or
+	// POST /v1/signup. The decision is user.registered or registration.rejected.
+	WebhookRegistrationRequested = "registration.requested"
+	WebhookPaymentCreated        = "payment.created"   // order opened
+	WebhookPaymentPaid           = "payment.paid"      // order paid, plan applied
+	WebhookPaymentCancelled      = "payment.cancelled" //
+	WebhookPaymentRefunded       = "payment.refunded"  // money returned: to the balance, or by the payment system
 	// A moderated sign-up the operator turned down. Approval is user.registered.
 	WebhookRegistrationRejected = "registration.rejected"
+	// Words for the user: the operator wrote to them (user.message), an automatic
+	// message came due (user.auto_message), a broadcast went out (broadcast.sent —
+	// one per broadcast, naming the users the panel's bot does not reach). Each says
+	// whether the panel's bot delivered it to Telegram as well.
+	WebhookUserMessage     = "user.message"
+	WebhookUserAutoMessage = "user.auto_message"
+	WebhookBroadcastSent   = "broadcast.sent"
+	// Mailings switched on or off for the user — by the bot's switch, the operator or
+	// the API; data.mailing is the new state.
+	WebhookUserMailing = "user.mailing"
 )
 
 // WebhookEventCatalog is the stable key list the settings UI iterates over (display
@@ -571,14 +688,40 @@ var WebhookEventCatalog = []string{
 	WebhookUserCreated,
 	WebhookUserDeleted,
 	WebhookUserRegistered,
+	WebhookRegistrationRequested,
 	WebhookRegistrationRejected,
 	WebhookUserExpired,
 	WebhookUserLimited,
 	WebhookUserDeviceLimit,
+	WebhookUserExpiring,
+	WebhookUserTrafficLow,
+	WebhookUserSubRotated,
+	WebhookUserTelegramLinked,
+	WebhookUserTelegramUnlinked,
+	WebhookUserEnabled,
+	WebhookUserDisabled,
+	WebhookUserAbuse,
+	WebhookPlanChanged,
+	WebhookPlanDowngraded,
+	WebhookPlanCancelled,
+	WebhookBalanceAdjusted,
+	WebhookUserReferred,
+	WebhookReferralReward,
+	WebhookPromoWinback,
+	WebhookPromoRedeemed,
+	WebhookUserLimitsChanged,
+	WebhookUserTermStarted,
+	WebhookUserTrafficReset,
+	WebhookUserDeviceBound,
+	WebhookUserDeviceUnbound,
 	WebhookPaymentCreated,
 	WebhookPaymentPaid,
 	WebhookPaymentCancelled,
 	WebhookPaymentRefunded,
+	WebhookUserMessage,
+	WebhookUserAutoMessage,
+	WebhookBroadcastSent,
+	WebhookUserMailing,
 }
 
 // ValidWebhookEvent reports whether k is a known webhook event key.
@@ -862,6 +1005,9 @@ type Settings struct {
 	// subscription link, the QR and the client buttons, which is what an operator
 	// selling access usually wants handed out.
 	SubShowConfigs bool `json:"-"`
+	// SubShowClash offers the page's "Download Clash config" button (default on).
+	// Clash clients fetch ?format=clash either way.
+	SubShowClash bool `json:"-"`
 	// SubHappCrypt makes the page's Happ button add the subscription through an
 	// encrypted happ://crypt4/ link instead of the plain address, so Happ never shows
 	// the address to the person using it. Off by default: an older Happ that does not
@@ -901,6 +1047,10 @@ type Settings struct {
 	// v2RayTun) via the subscription's Announce header. Empty ⇒ no announcement.
 	// Clients only render the first 200 characters; the panel enforces that limit.
 	SubAnnounce string `json:"-"`
+	// SubPageURL is the operator's own subscription page: a browser opening a
+	// subscription link is redirected there, {token} replaced by the user's token.
+	// Empty ⇒ the panel's own page. Apps fetching the subscription never see it.
+	SubPageURL string `json:"-"`
 
 	// HWID device binding (Settings → Subscriptions). When enabled, a client that
 	// identifies itself with an x-hwid header is bound to the user on first fetch and
@@ -1079,12 +1229,17 @@ type Settings struct {
 	// MiniAppPath is the Mini App's random address segment; TGMenuURL the address the
 	// user bot's menu button was last set to.
 	MiniAppPath string `json:"-"`
-	TGMenuURL   string `json:"-"`
+	// LegalPath is the random address segment the legal documents are served under
+	// (see LegalDoc); "" until the first is saved.
+	LegalPath string `json:"-"`
+	TGMenuURL string `json:"-"`
 	// SubTGBind offers binding Telegram on the subscription page to an account that
 	// has none; SubTGRebind moving a linked account to another Telegram (the bot
 	// refuses the move when it is off).
 	SubTGBind   bool `json:"-"`
 	SubTGRebind bool `json:"-"`
+	// TGMailingSwitch shows the user bot's broadcast on/off button (default on).
+	TGMailingSwitch bool `json:"-"`
 
 	// AutoUpdateCron is when the panel checks for a newer release and installs it (in
 	// the panel's timezone; "" = never); AutoUpdateNodes has the servers follow.
@@ -1530,6 +1685,43 @@ func (s *Settings) SubPathOr() string {
 		return p
 	}
 	return "sub"
+}
+
+// SubPageToken is the placeholder SubPageURL replaces with the user's token.
+const SubPageToken = "{token}"
+
+// SubPageRedirect is where a browser opening the user's subscription link goes, or
+// "" for the panel's own page.
+func (s *Settings) SubPageRedirect(token string) string {
+	if s.SubPageURL == "" {
+		return ""
+	}
+	return strings.ReplaceAll(s.SubPageURL, SubPageToken, url.QueryEscape(token))
+}
+
+// ValidSubPageURL reports whether raw is an absolute http(s) address, up to 2048
+// characters, once {token} is filled in.
+func ValidSubPageURL(raw string) bool {
+	if len(raw) > 2048 || strings.ContainsAny(raw, " \t\r\n") {
+		return false
+	}
+	u, err := url.Parse(strings.ReplaceAll(raw, SubPageToken, "t"))
+	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" && u.User == nil
+}
+
+// SubPageLoops reports whether raw sends the browser back to a subscription link of
+// this very panel — which would redirect it again, forever.
+func SubPageLoops(raw, host, subPath string) bool {
+	u, err := url.Parse(strings.ReplaceAll(raw, SubPageToken, "t"))
+	if err != nil || host == "" {
+		return false
+	}
+	h := host
+	if hh, _, err := net.SplitHostPort(host); err == nil {
+		h = hh
+	}
+	return strings.EqualFold(u.Hostname(), h) &&
+		strings.HasPrefix(strings.ToLower(u.Path), "/"+strings.ToLower(subPath)+"/")
 }
 
 // RealitySID returns the primary (first) REALITY shortId — the one embedded in

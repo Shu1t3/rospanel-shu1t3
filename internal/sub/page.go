@@ -731,7 +731,7 @@ func buildPageData(u model.User, local *model.Settings, servers []Server, billin
 		// with a browser Accept header, copy the links and use them from any number of
 		// devices, with no slot consumed and the HWID roster none the wiser.
 		ShowConfigs:  local.SubShowConfigs && showDownload,
-		ShowDownload: showDownload,
+		ShowDownload: showDownload && local.SubShowClash,
 	}
 	if u.DataLimit > 0 {
 		data.HasLimit = true
@@ -833,4 +833,12 @@ func relTime(sec int64, lang i18n.Lang) string {
 type Access struct {
 	TGLink   string // the bot's link that binds this account to the Telegram that opens it
 	TGLinked bool   // already linked: the link moves it to another Telegram
+	// Legal are the operator's documents the page links to at its foot.
+	Legal []LegalLink
+}
+
+// LegalLink is one legal document's name and public page.
+type LegalLink struct {
+	Title string
+	URL   string
 }

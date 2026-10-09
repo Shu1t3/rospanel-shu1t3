@@ -74,7 +74,9 @@ const (
 	EventPaymentRefunded = "payment.refunded"  // an order's money returned to the balance
 	EventWinbackSent     = "promo.winback"     // a lapsed user got a personal discount code
 	EventUserSource      = "user.source"       // where the user came from was set by hand or the API
+	EventUserExternalID  = "user.external_id"  // the website's id for the client was set or cleared
 	EventAutoMessage     = "user.auto_message" // an automatic message (a rule) was sent
+	EventUserMailing     = "user.mailing"      // mailings switched on or off (API, operator, the bot)
 )
 
 // UserEventCatalog is the stable key list the journal UI iterates over to build its
@@ -125,7 +127,9 @@ var UserEventCatalog = []string{
 	EventPaymentRefunded,
 	EventWinbackSent,
 	EventUserSource,
+	EventUserExternalID,
 	EventAutoMessage,
+	EventUserMailing,
 }
 
 // ValidUserEvent reports whether k is a known audit action key.

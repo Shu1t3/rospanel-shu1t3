@@ -88,16 +88,16 @@ func (s *Store) CreateRegistrationRequest(chatID int64, name string, now int64) 
 
 // regRequestCols reads a request of either kind: a chat's has no external id, a
 // website client's no chat, and each missing one reads as its zero value.
-const regRequestCols = `id, COALESCE(chat_id, 0), COALESCE(external_id, ''), name, source, referrer_id, created_at`
+const regRequestCols = `id, COALESCE(chat_id, 0), COALESCE(external_id, ''), name, source, referrer_id, created_at, lang`
 
 // CreateWebRegistrationRequest files a pending request for a website client, with
 // the source tag and referrer it came with. One per external id, like one per chat
 // (ErrRegistrationPending).
-func (s *Store) CreateWebRegistrationRequest(externalID, name, source string, referrerID, now int64) (*model.RegistrationRequest, error) {
+func (s *Store) CreateWebRegistrationRequest(externalID, name, source, lang string, referrerID, now int64) (*model.RegistrationRequest, error) {
 	res, err := s.db.Exec(
-		`INSERT INTO registration_requests (external_id, name, source, referrer_id, created_at) VALUES (?, ?, ?, ?, ?)
+		`INSERT INTO registration_requests (external_id, name, source, referrer_id, created_at, lang) VALUES (?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(external_id) DO NOTHING`,
-		externalID, name, source, referrerID, now)
+		externalID, name, source, referrerID, now, lang)
 	if err != nil {
 		return nil, err
 	}
@@ -115,6 +115,32 @@ func (s *Store) GetRegistrationRequestByExternal(externalID string) (*model.Regi
 		return nil, nil
 	}
 	return r, err
+}
+
+// RestoreRegistrationRequest puts a claimed request back as it was — its id too — when
+// approving it failed after the claim: whoever was told that id (the 202 of POST
+// /v1/signup, registration.requested) still finds the request by it.
+func (s *Store) RestoreRegistrationRequest(r *model.RegistrationRequest) error {
+	var chat sql.NullInt64
+	if r.ChatID != 0 {
+		chat = sql.NullInt64{Int64: r.ChatID, Valid: true}
+	}
+	var ext sql.NullString
+	if r.ExternalID != "" {
+		ext = sql.NullString{String: r.ExternalID, Valid: true}
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO registration_requests (id, chat_id, external_id, name, source, referrer_id, created_at, lang)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
+		r.ID, chat, ext, r.Name, r.Source, r.ReferrerID, r.CreatedAt, r.Lang)
+	return err
+}
+
+// SetRegistrationRequestLang keeps the language a request came with (a Telegram
+// sign-up over the API: its request is filed the way the bot files one).
+func (s *Store) SetRegistrationRequestLang(id int64, lang string) error {
+	_, err := s.db.Exec(`UPDATE registration_requests SET lang = ? WHERE id = ?`, lang, id)
+	return err
 }
 
 // ErrRegistrationPending means the chat already has a pending request.
@@ -138,7 +164,7 @@ func (s *Store) scanRegistrationRequest(where string, args ...any) (*model.Regis
 	var r model.RegistrationRequest
 	err := s.db.QueryRow(
 		`SELECT `+regRequestCols+` FROM registration_requests `+where, args...).
-		Scan(&r.ID, &r.ChatID, &r.ExternalID, &r.Name, &r.Source, &r.ReferrerID, &r.CreatedAt)
+		Scan(&r.ID, &r.ChatID, &r.ExternalID, &r.Name, &r.Source, &r.ReferrerID, &r.CreatedAt, &r.Lang)
 	if err != nil {
 		return nil, err
 	}
@@ -155,7 +181,7 @@ func (s *Store) ListRegistrationRequests() ([]model.RegistrationRequest, error) 
 	var out []model.RegistrationRequest
 	for rows.Next() {
 		var r model.RegistrationRequest
-		if err := rows.Scan(&r.ID, &r.ChatID, &r.ExternalID, &r.Name, &r.Source, &r.ReferrerID, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.ChatID, &r.ExternalID, &r.Name, &r.Source, &r.ReferrerID, &r.CreatedAt, &r.Lang); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

@@ -117,7 +117,7 @@ func testUpgradeFromFork(t *testing.T, version string) {
 				t.Fatalf("pending request lost: %+v, %v", r, err)
 			}
 			if i == 0 {
-				r, err := st.CreateWebRegistrationRequest("new@example.com", "New", "", 0, 1001)
+				r, err := st.CreateWebRegistrationRequest("new@example.com", "New", "", "", 0, 1001)
 				if err != nil || r.ID <= 52 {
 					t.Fatalf("request sequence regressed: %+v, %v", r, err)
 				}

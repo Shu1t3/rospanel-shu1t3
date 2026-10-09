@@ -63,7 +63,9 @@ func (rt *Router) getSettings(w http.ResponseWriter, _ *http.Request) {
 		"sub_routing_mihomo":   set.SubRoutingMihomo,
 		"sub_update_interval":  set.SubUpdateInterval,
 		"sub_announce":         set.SubAnnounce,
+		"sub_page_url":         set.SubPageURL,
 		"sub_show_configs":     set.SubShowConfigs,
+		"sub_show_clash":       set.SubShowClash,
 		"sub_happ_crypt":       set.SubHappCrypt,
 		"sub_dpi":              set.SubDPI,
 		"sub_order_mode":       set.SubOrderMode,
@@ -406,9 +408,11 @@ func (rt *Router) saveSubSettings(w http.ResponseWriter, r *http.Request) {
 		UpdateInterval int    `json:"sub_update_interval"`
 		Announce       string `json:"sub_announce"`
 		ShowConfigs    bool   `json:"sub_show_configs"`
+		ShowClash      bool   `json:"sub_show_clash"`
 		HappCrypt      bool   `json:"sub_happ_crypt"`
 		OrderMode      string `json:"sub_order_mode"`
 		HideOffline    bool   `json:"sub_hide_offline"`
+		PageURL        string `json:"sub_page_url"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -429,9 +433,11 @@ func (rt *Router) saveSubSettings(w http.ResponseWriter, r *http.Request) {
 		SubUpdateInterval: req.UpdateInterval,
 		SubAnnounce:       req.Announce,
 		SubShowConfigs:    req.ShowConfigs,
+		SubShowClash:      req.ShowClash,
 		SubHappCrypt:      req.HappCrypt,
 		SubOrderMode:      strings.TrimSpace(req.OrderMode),
 		SubHideOffline:    req.HideOffline,
+		SubPageURL:        req.PageURL,
 	})
 	if err != nil {
 		writeManagerErr(w, err)

@@ -67,6 +67,9 @@ type Panel interface {
 	PaymentMethods() []string
 	ManualPayment() bool
 	ManualPaymentLabel(lang i18n.Lang) string
+
+	// SetChatMailing is the mailing switch: the chat, and the account holding it.
+	SetChatMailing(ctx context.Context, chatID int64, on bool) error
 	ProviderLabel(key string) string
 	StartPlanPayment(ctx context.Context, lang i18n.Lang, userID, planID int64, provider string, periods int) (*model.PaymentOrder, error)
 
@@ -99,17 +102,18 @@ type Panel interface {
 	SetUserNotifier(fn func(chatID int64, html string))
 	SetUserMessenger(fn func(chatID int64, html string, buttons []model.BroadcastButton) error)
 	SetAdminNotifier(fn func(html string))
-	SetAdminModerationNotifier(fn func(reqID int64, name, plan string))
+	SetAdminModerationNotifier(fn func(reqID int64, who, details string))
 	// A sign-in from a new address, and the button under it: end every session of
 	// that admin. The bot never touches admin_sessions itself — the panel records
 	// who pressed it.
 	SetAdminLoginNotifier(fn func(a core.LoginAlert))
 	RevokeAdminSessions(ctx context.Context, adminID int64) (username string, n int64, err error)
 
-	// Audit hooks for the actions the bots perform directly on the store.
-	// (Unlinking is deliberately absent: it is an operator action in the panel, not
-	// something a user can do to themselves from the bot.)
+	// Audit hooks for the actions the bots perform directly on the store. A user
+	// cannot unlink themselves from the bot; an account only loses its Telegram there
+	// when the chat moves to another account (AuditTelegramDetached).
 	AuditTelegramLinked(ctx context.Context, id int64, username string)
+	AuditTelegramDetached(ctx context.Context, id, chatID int64)
 }
 
 // pollTimeout is the long-poll window (seconds). A change to the bot token or
@@ -208,8 +212,8 @@ func (s *Service) Run(ctx context.Context) {
 	s.panel.SetAdminNotifier(func(html string) {
 		q.submit(func(ctx context.Context) { s.sendAdminBroadcast(ctx, html) })
 	})
-	s.panel.SetAdminModerationNotifier(func(reqID int64, name, plan string) {
-		q.submit(func(ctx context.Context) { s.sendModerationPrompt(ctx, reqID, name, plan) })
+	s.panel.SetAdminModerationNotifier(func(reqID int64, who, details string) {
+		q.submit(func(ctx context.Context) { s.sendModerationPrompt(ctx, reqID, who, details) })
 	})
 	s.panel.SetAdminLoginNotifier(func(a core.LoginAlert) {
 		q.submit(func(ctx context.Context) { s.sendLoginAlert(ctx, a) })
@@ -247,16 +251,17 @@ func (s *Service) sendAdminBroadcast(ctx context.Context, html string) {
 	}
 }
 
-// sendModerationPrompt posts a signup awaiting moderation, with its buttons.
-func (s *Service) sendModerationPrompt(ctx context.Context, reqID int64, name, plan string) {
+// sendModerationPrompt posts a signup awaiting moderation, with its buttons. who and
+// details come from the panel as HTML, escaped there.
+func (s *Service) sendModerationPrompt(ctx context.Context, reqID int64, who, details string) {
 	set, err := s.store.GetSettings()
 	if err != nil || strings.TrimSpace(set.TGBotToken) == "" || !set.AdminEventEnabled(model.AdminEventRegistered) {
 		return
 	}
 	lang := s.lang()
-	msg := i18n.T(lang, "admin.regRequest", esc(name))
-	if plan != "" {
-		msg += "\n" + i18n.T(lang, "admin.planIs", esc(plan))
+	msg := i18n.T(lang, "admin.regRequest", who)
+	if details != "" {
+		msg += "\n" + details
 	}
 	msg += "\n\n" + i18n.T(lang, "admin.approveAccess")
 	rows := [][]InlineButton{{

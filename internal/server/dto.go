@@ -410,6 +410,7 @@ func fromBroadcastButtonDTOs(buttons []broadcastButtonDTO) []model.BroadcastButt
 }
 
 type broadcastDTO struct {
+	HookUsers  int                  `json:"hook_users"`
 	ID         int64                `json:"id"`
 	CreatedBy  string               `json:"created_by"`
 	Text       string               `json:"text"`
@@ -434,6 +435,7 @@ func toBroadcastDTO(b *model.Broadcast) broadcastDTO {
 	}
 	return broadcastDTO{
 		ID:         b.ID,
+		HookUsers:  b.HookUsers,
 		CreatedBy:  b.CreatedBy,
 		Text:       b.Text,
 		MediaKind:  b.MediaKind,

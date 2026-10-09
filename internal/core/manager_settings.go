@@ -660,6 +660,10 @@ func (m *Manager) SaveSubSettings(st *model.Settings) error {
 			"объявление: не длиннее {{max}} символов (сейчас {{count}}) — клиенты обрежут остальное",
 			map[string]any{"max": announceMaxRunes, "count": n})
 	}
+	st.SubPageURL = strings.TrimSpace(st.SubPageURL)
+	if st.SubPageURL != "" && !model.ValidSubPageURL(st.SubPageURL) {
+		return invalidCode("err.subPageURL", "адрес своей страницы подписки: полный http(s)-адрес, {token} — токен пользователя")
+	}
 	if reservedSubPaths[strings.ToLower(st.SubPath)] {
 		return invalidCode("err.subPathReserved", "путь подписки «{{path}}» зарезервирован панелью — выберите другой", map[string]any{"path": st.SubPath})
 	}
@@ -678,6 +682,9 @@ func (m *Manager) SaveSubSettings(st *model.Settings) error {
 	}
 	if strings.EqualFold(st.SubPath, "status") || (cur.StatusPath != "" && strings.EqualFold(st.SubPath, cur.StatusPath)) {
 		return invalidCode("err.subPathSameAsStatus", "путь подписки не может совпадать со страницей статуса")
+	}
+	if st.SubPageURL != "" && model.SubPageLoops(st.SubPageURL, cur.Host, st.SubPathOr()) {
+		return invalidCode("err.subPageLoop", "своя страница подписки не может быть ссылкой подписки этой панели")
 	}
 	return m.store.SetSubSettings(st)
 }

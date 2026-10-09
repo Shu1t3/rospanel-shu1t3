@@ -463,8 +463,9 @@ func (m *Manager) BuyFromBalance(ctx context.Context, userID int64, p Purchase, 
 	m.auditNamed(ctx, u.ID, u.Name, model.EventPaymentPaid, orderAudit(order, model.BalanceProvider))
 	adminLang := m.botLang()
 	m.notifyAdminEvent(model.AdminEventPayment, i18n.T(adminLang, "notify.paidBalance",
-		order.ID, escHTML(u.Name), escHTML(orderSubject(adminLang, order)), kopText(q.BalanceKop)))
-	m.EmitWebhook(model.WebhookPaymentPaid, order)
+		order.ID, m.adminUser(*u), escHTML(orderSubject(adminLang, order)), kopText(q.BalanceKop)))
+	m.emitPaymentWebhook(model.WebhookPaymentPaid, order, nil)
+	m.emitChangeBought(order)
 	return order, nil
 }
 
@@ -616,3 +617,37 @@ func (m *Manager) Addons(u model.User) AddonOffers {
 
 // Any reports whether there is anything to add.
 func (a AddonOffers) Any() bool { return a.DevicesMax > 0 || len(a.Packs) > 0 }
+
+// RequestPurchaseExternal opens an order an external system takes the money for
+// itself; it confirms it (ConfirmPayment) once paid. ref is its own payment id. Not
+// gated by manual payment: nothing is shown to the payer.
+func (m *Manager) RequestPurchaseExternal(ctx context.Context, userID int64, p Purchase, ref string) (*model.PaymentOrder, error) {
+	d, _, err := m.purchaseDraft(m.botLang(), userID, p)
+	if err != nil {
+		return nil, err
+	}
+	return m.externalOrder(ctx, d, ref)
+}
+
+// RequestTopupExternal is RequestPurchaseExternal for a balance top-up.
+func (m *Manager) RequestTopupExternal(ctx context.Context, userID int64, amountRub int, ref string) (*model.PaymentOrder, error) {
+	if err := m.checkTopup(userID, amountRub); err != nil {
+		return nil, err
+	}
+	return m.externalOrder(ctx, topupDraft(userID, amountRub), ref)
+}
+
+func (m *Manager) externalOrder(ctx context.Context, d store.OrderDraft, ref string) (*model.PaymentOrder, error) {
+	order, err := m.store.CreateOrder(d, time.Now().Unix())
+	if err != nil {
+		return nil, orderCreateErr(err)
+	}
+	if err := m.store.SetPaymentOrderProvider(order.ID, model.ExternalPayProvider, ref, ""); err != nil {
+		return nil, err
+	}
+	order.Provider, order.ProviderID = model.ExternalPayProvider, ref
+	m.supersedePromoOrders(ctx, d.UserID, d.PromoID, order.ID)
+	m.audit(ctx, d.UserID, model.EventPaymentCreated, orderAudit(order, model.ExternalPayProvider))
+	m.emitPaymentWebhook(model.WebhookPaymentCreated, order, nil)
+	return order, nil
+}

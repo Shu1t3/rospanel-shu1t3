@@ -15,12 +15,17 @@ type (
 	apiSignupReq struct {
 		// ExternalID is the site's own id for its client (an e-mail, an account
 		// number), compared exactly. Signing up again with it returns the same account.
-		ExternalID string `json:"external_id"`
+		ExternalID string `json:"external_id,omitempty"`
+		// TelegramID signs up a Telegram user instead — your own bot's — under the
+		// panel's rules for a Telegram: one trial per Telegram for good, the shared
+		// blacklist, and the Telegram linked to the account. One of the two.
+		TelegramID int64  `json:"telegram_id,omitempty"`
 		Name       string `json:"name,omitempty"`   // the account's name in the panel; external_id when empty
 		Source     string `json:"source,omitempty"` // where the client came from (utm, ad), as a /start tag
 		Ref        string `json:"ref,omitempty"`    // the invite code of the user who referred them
 		Invite     string `json:"invite,omitempty"` // the registration code, when sign-up is by invitation
 		IP         string `json:"ip,omitempty"`     // the client's address, for the per-address rate limit
+		Lang       string `json:"lang,omitempty"`   // ru | en: the language a new account (or one approved later) is written to in
 	}
 	// apiSignupResp is the account (created or existing) or the pending request.
 	apiSignupResp struct {
@@ -39,8 +44,8 @@ func (rt *Router) apiSignup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := rt.mgr.Signup(r.Context(), core.SignupRequest{
-		ExternalID: req.ExternalID, Name: req.Name, Source: req.Source,
-		Ref: req.Ref, Invite: req.Invite, IP: req.IP,
+		ExternalID: req.ExternalID, TelegramID: req.TelegramID, Name: req.Name, Source: req.Source,
+		Ref: req.Ref, Invite: req.Invite, IP: req.IP, Lang: req.Lang,
 	})
 	if errors.Is(err, core.ErrSignupBusy) {
 		w.Header().Set("Retry-After", "60")

@@ -127,3 +127,29 @@ func (s *Store) SetSubscriberUser(chatID, userID int64) error {
 	_, err := s.db.Exec(`UPDATE tg_subscribers SET user_id = ? WHERE chat_id = ?`, uid, chatID)
 	return err
 }
+
+// SubscriberOrigin is where a chat came from before it had an account: the /start
+// tag it arrived with and who invited it (0 = nobody).
+func (s *Store) SubscriberOrigin(chatID int64) (source string, refUserID int64) {
+	_ = s.rdb.QueryRow(`SELECT source, ref_user_id FROM tg_subscribers WHERE chat_id = ?`, chatID).
+		Scan(&source, &refUserID)
+	return source, refUserID
+}
+
+// OptedOutChats returns the chats that turned mailings off in the bot.
+func (s *Store) OptedOutChats() (map[int64]bool, error) {
+	rows, err := s.db.Query(`SELECT chat_id FROM tg_subscribers WHERE opt_out = 1`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}

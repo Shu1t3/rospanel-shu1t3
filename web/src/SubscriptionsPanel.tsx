@@ -56,9 +56,11 @@ const EMPTY_SUB: SubSettings = {
   sub_update_interval: 1,
   sub_announce: "",
   sub_show_configs: true,
+  sub_show_clash: true,
   sub_happ_crypt: false,
   sub_order_mode: "manual",
   sub_hide_offline: false,
+  sub_page_url: "",
 };
 
 // Requiring an id is the default: a cap a client can dodge by staying silent is not
@@ -125,9 +127,11 @@ export function SubscriptionsPanel() {
           sub_update_interval: d.sub_update_interval,
           sub_announce: d.sub_announce,
           sub_show_configs: d.sub_show_configs,
+          sub_show_clash: d.sub_show_clash ?? true,
           sub_happ_crypt: d.sub_happ_crypt ?? false,
           sub_order_mode: d.sub_order_mode ?? "manual",
           sub_hide_offline: d.sub_hide_offline ?? false,
+          sub_page_url: d.sub_page_url ?? "",
         };
         load(init);
         loadHwid(d.hwid ?? EMPTY_HWID);
@@ -160,6 +164,7 @@ export function SubscriptionsPanel() {
   const announceErr = announceLen > ANNOUNCE_MAX;
 
   const patchHwid = (p: Partial<HWIDSettings>) => setH((cur) => ({ ...cur, ...p }));
+  const hwidLocks = h.enabled && h.require;
 
   // One save button for the page: the two blocks are separate endpoints (device
   // binding doesn't touch the public path or the routing headers), but to the
@@ -277,11 +282,36 @@ export function SubscriptionsPanel() {
             onChange={(v) => patch({ sub_announce: v })}
           />
         </SettingRow>
+        <SettingRow
+          label={t("subs.pageURL")}
+          hint={t("subs.pageURLHint")}
+          wideField
+          field={
+            <TextInput
+              placeholder="https://example.com/cabinet?sub={token}"
+              value={s.sub_page_url}
+              mono
+              onChange={(v) => patch({ sub_page_url: v })}
+            />
+          }
+        />
+        {/* A required HWID hides both whatever they say: a raw link would bypass the
+            device cap, and the browser's download carries no device id, so it is refused.
+            Shown off and locked rather than as switches that seem to do nothing; the
+            stored choice comes back once the requirement is lifted. */}
         <ToggleRow
           label={t("subs.showConfigs")}
-          hint={t("subs.showConfigsHint")}
-          checked={s.sub_show_configs}
+          hint={hwidLocks ? t("subs.showConfigsLocked") : t("subs.showConfigsHint")}
+          checked={s.sub_show_configs && !hwidLocks}
+          disabled={hwidLocks}
           onChange={(v) => patch({ sub_show_configs: v })}
+        />
+        <ToggleRow
+          label={t("subs.showClash")}
+          hint={hwidLocks ? t("subs.showClashLocked") : t("subs.showClashHint")}
+          checked={s.sub_show_clash && !hwidLocks}
+          disabled={hwidLocks}
+          onChange={(v) => patch({ sub_show_clash: v })}
         />
         <ToggleRow
           label={t("subs.happCrypt")}

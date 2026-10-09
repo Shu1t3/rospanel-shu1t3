@@ -13,7 +13,7 @@ func TestWebRegistrationRollbackAndRetry(t *testing.T) {
 			}
 			var reqID int64
 			if moderated {
-				req, err := st.CreateWebRegistrationRequest("client", "Client", "website", ref.ID, 1)
+				req, err := st.CreateWebRegistrationRequest("client", "Client", "website", "", ref.ID, 1)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -75,7 +75,7 @@ func TestApproveWebRegistrationKeepsExistingAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req, err := st.CreateWebRegistrationRequest("client", "Other", "second", 0, 1)
+	req, err := st.CreateWebRegistrationRequest("client", "Other", "second", "", 0, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

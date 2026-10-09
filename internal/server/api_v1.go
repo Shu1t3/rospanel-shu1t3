@@ -72,6 +72,15 @@ type (
 		// note or an empty tag list clears the field; a missing one leaves it alone.
 		Note *string   `json:"note,omitempty"` // up to model.MaxUserNoteLen characters
 		Tags *[]string `json:"tags,omitempty"` // normalised: lower-cased, sorted, no commas
+		// ExternalID ties the account to the website's own id for the client (as
+		// POST /v1/signup does for a new one); "" takes it away. One account per id: an
+		// id another account holds is refused.
+		ExternalID *string `json:"external_id,omitempty"`
+		// Mailing switches broadcasts and automatic messages for the user, as the
+		// bot's own switch does (it shows the same state). Lang is the language to
+		// write to them in: ru | en, or "" for what their Telegram reports.
+		Mailing *bool   `json:"mailing,omitempty"`
+		Lang    *string `json:"lang,omitempty"`
 	}
 	// apiHappLinkResp is the answer of GET /v1/users/{id}/happ-link.
 	apiHappLinkResp struct {
@@ -94,8 +103,14 @@ type (
 		PlanID int64 `json:"plan_id"`
 		// Provider is the automatic payment method ("yookassa" | "cryptobot"). Empty
 		// ⇒ a manual order (admin confirms it); set ⇒ a hosted provider payment whose
-		// pay_url is returned.
+		// pay_url is returned; "external" ⇒ money you take yourself (Telegram Stars in
+		// your bot, your own checkout): confirm it with paid or .../confirm.
 		Provider string `json:"provider,omitempty"`
+		// Paid, with provider "external", confirms the order at once: the money is in.
+		Paid bool `json:"paid,omitempty"`
+		// ExternalRef, with provider "external", is your own payment id, kept on the
+		// order as provider_id.
+		ExternalRef string `json:"external_ref,omitempty"`
 		// FromBalance buys the plan from the user's balance (after their discount
 		// code) instead of opening an order to pay; refused when the balance falls short.
 		FromBalance bool `json:"from_balance,omitempty"`
@@ -120,7 +135,7 @@ type (
 		// Lang words the manual-payment instructions: ru | en (default en).
 		Lang string `json:"lang,omitempty"`
 		// ReturnURL is where a hosted payment sends the payer back to (http/https);
-		// left out, they are sent to Telegram.
+		// left out, to their subscription link (your own page, when one is set).
 		ReturnURL string `json:"return_url,omitempty"`
 	}
 )
@@ -347,6 +362,7 @@ func (rt *Router) apiMux() http.Handler {
 	// added here starts receiving user and payment data.
 	hf("GET /v1/webhooks", rt.apiListWebhooks)
 	hf("GET /v1/webhooks/events", rt.apiWebhookEvents)
+	hf("GET /v1/legal", rt.apiLegal)
 	nodeAudit("POST /v1/webhooks", "apiWebhookAdded", rt.apiCreateWebhook)
 	nodeAudit("POST /v1/webhooks/{id}", "apiWebhookChanged", idFn(rt.apiUpdateWebhook))
 	nodeAudit("DELETE /v1/webhooks/{id}", "apiWebhookDeleted", idFn(rt.apiDeleteWebhook))
@@ -733,9 +749,14 @@ func (rt *Router) apiListUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	groupsMap, _ := rt.mgr.Store().GroupsForUserIDs(userIDs)
 	accessMap, _ := rt.mgr.Store().AccessForUserIDs(userIDs)
+	contacts, cerr := rt.mgr.UserContacts(userIDs)
 	views := make([]userView, 0, len(window))
 	for _, u := range window {
-		views = append(views, makeUserView(u, set, "", custom, groupsMap[u.ID], model.AccessOf(accessMap, u.ID)))
+		v := makeUserView(u, set, "", custom, groupsMap[u.ID], model.AccessOf(accessMap, u.ID))
+		if c, ok := contacts[u.ID]; ok && cerr == nil {
+			v.ExternalID, v.Mailing, v.Lang = c.ExternalID, &c.Mailing, &c.Lang
+		}
+		views = append(views, v)
 	}
 	writeJSON(w, http.StatusOK, PageEnvelope[userView]{Data: views, Meta: meta})
 }
@@ -1026,16 +1047,9 @@ func (rt *Router) apiPatchUser(w http.ResponseWriter, r *http.Request, id int64)
 		writeAPIManagerErr(w, err)
 		return
 	}
-	if req.Name != nil {
-		name := strings.TrimSpace(*req.Name)
-		if name == "" {
-			writeAPIErr(w, http.StatusBadRequest, "bad_request", "name cannot be empty")
-			return
-		}
-		if err := rt.mgr.RenameUser(r.Context(), id, name); err != nil {
-			writeAPIManagerErr(w, err)
-			return
-		}
+	if req.Name != nil && strings.TrimSpace(*req.Name) == "" {
+		writeAPIErr(w, http.StatusBadRequest, "bad_request", "name cannot be empty")
+		return
 	}
 	// Every number is judged before the first write: a PATCH sets limits, speed and
 	// the plan in turn, and a bad value in a later field must not leave the earlier
@@ -1069,6 +1083,28 @@ func (rt *Router) apiPatchUser(w http.ResponseWriter, r *http.Request, id int64)
 			return
 		}
 	}
+	if req.Lang != nil {
+		switch strings.ToLower(strings.TrimSpace(*req.Lang)) {
+		case "", "ru", "en":
+		default:
+			writeAPIErr(w, http.StatusBadRequest, "bad_request", "lang is ru, en or empty")
+			return
+		}
+	}
+	// The first write, being the one field refused for another account's sake: a
+	// taken id must leave the rest of the PATCH unapplied.
+	if req.ExternalID != nil {
+		if err := rt.mgr.SetUserExternalID(r.Context(), id, *req.ExternalID); err != nil {
+			writeAPIManagerErr(w, err)
+			return
+		}
+	}
+	if req.Name != nil {
+		if err := rt.mgr.RenameUser(r.Context(), id, strings.TrimSpace(*req.Name)); err != nil {
+			writeAPIManagerErr(w, err)
+			return
+		}
+	}
 	// Unspecified fields keep the user's current value. The term is written only when
 	// the request names it: a PATCH of the quota alone must not post back the expiry
 	// read a moment ago, which a first connection may have replaced since.
@@ -1087,7 +1123,7 @@ func (rt *Router) apiPatchUser(w http.ResponseWriter, r *http.Request, id int64)
 		}
 		// expire_at 0 is documented as "never": a term waiting for the first connection
 		// would contradict it, so it goes too — unless hold_seconds sets a new one.
-		if *req.ExpireAt == 0 && req.HoldSeconds == nil {
+		if *req.ExpireAt == 0 && req.HoldSeconds == nil && cur.HoldSeconds != 0 {
 			if err := rt.mgr.SetUserHold(r.Context(), id, 0); err != nil {
 				writeAPIManagerErr(w, err)
 				return
@@ -1125,6 +1161,18 @@ func (rt *Router) apiPatchUser(w http.ResponseWriter, r *http.Request, id int64)
 	}
 	if req.Tags != nil {
 		if err := rt.mgr.SetUserTags(r.Context(), id, *req.Tags); err != nil {
+			writeAPIManagerErr(w, err)
+			return
+		}
+	}
+	if req.Mailing != nil {
+		if err := rt.mgr.SetUserMailing(r.Context(), id, *req.Mailing); err != nil {
+			writeAPIManagerErr(w, err)
+			return
+		}
+	}
+	if req.Lang != nil {
+		if err := rt.mgr.SetUserLang(r.Context(), id, *req.Lang); err != nil {
 			writeAPIManagerErr(w, err)
 			return
 		}
@@ -1253,6 +1301,19 @@ func (rt *Router) apiCreateOrder(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if (req.Paid || req.ExternalRef != "") && (req.Provider != model.ExternalPayProvider || req.FromBalance) {
+		writeAPIErr(w, http.StatusBadRequest, "bad_request", `paid and external_ref go with provider "external"`)
+		return
+	}
+	// Paid in the same call is the confirmation: only for a key that may confirm.
+	if req.Paid && !apiMayCall(apiAccessOf(r), "POST /v1/billing/orders/{id}/confirm") {
+		writeAPIErr(w, http.StatusForbidden, "forbidden", "paid needs the right to confirm orders")
+		return
+	}
+	if len(req.ExternalRef) > 200 {
+		writeAPIErr(w, http.StatusBadRequest, "bad_request", "external_ref is longer than 200 characters")
+		return
+	}
 	lang := i18n.EN
 	if req.Lang != "" {
 		lang = i18n.Normalize(req.Lang)
@@ -1294,6 +1355,11 @@ func (rt *Router) apiCreateOrder(w http.ResponseWriter, r *http.Request) {
 		writeAPIData(w, http.StatusCreated, map[string]any{"order": order})
 		return
 	}
+	if req.Provider == model.ExternalPayProvider {
+		order, err := rt.mgr.RequestPurchaseExternal(r.Context(), req.UserID, p, req.ExternalRef)
+		rt.apiExternalOrder(w, r, order, err, req.Paid)
+		return
+	}
 	if req.Provider == "" || req.Provider == sub.ManualPayKey {
 		order, msg, err := rt.mgr.RequestPurchaseManual(r.Context(), lang, req.UserID, p)
 		if err != nil {
@@ -1303,11 +1369,7 @@ func (rt *Router) apiCreateOrder(w http.ResponseWriter, r *http.Request) {
 		writeAPIData(w, http.StatusCreated, map[string]any{"order": toPaymentOrderDTO(order), "message": msg})
 		return
 	}
-	returnURL := req.ReturnURL
-	if returnURL == "" {
-		returnURL = "https://t.me/"
-	}
-	order, err := rt.mgr.StartPurchase(r.Context(), lang, req.UserID, p, req.Provider, returnURL)
+	order, err := rt.mgr.StartPurchase(r.Context(), lang, req.UserID, p, req.Provider, rt.apiReturnURL(req.ReturnURL, req.UserID))
 	if err != nil {
 		writeAPIManagerErr(w, err)
 		return
@@ -1315,9 +1377,51 @@ func (rt *Router) apiCreateOrder(w http.ResponseWriter, r *http.Request) {
 	writeAPIData(w, http.StatusCreated, map[string]any{"order": order, "pay_url": order.PayURL})
 }
 
+// apiExternalOrder answers an order whose money the caller takes itself, confirmed
+// at once when it says the money is in.
+func (rt *Router) apiExternalOrder(w http.ResponseWriter, r *http.Request, order *model.PaymentOrder, err error, paid bool) {
+	if err != nil {
+		writeAPIManagerErr(w, err)
+		return
+	}
+	if paid {
+		if err := rt.mgr.ConfirmPayment(r.Context(), order.ID); err != nil {
+			writeAPIManagerErr(w, err)
+			return
+		}
+		if o, err := rt.mgr.Store().GetPaymentOrder(order.ID); err == nil {
+			order = o
+		}
+	}
+	writeAPIData(w, http.StatusCreated, map[string]any{"order": order})
+}
+
+// apiReturnURL is where a hosted payment sends the payer back: the caller's own, or
+// the user's subscription link — a browser opening it lands on the operator's own
+// page when one is set (Telegram is blocked for many payers).
+func (rt *Router) apiReturnURL(given string, userID int64) string {
+	if given != "" {
+		return given
+	}
+	set, err := rt.mgr.Settings()
+	if err != nil {
+		return ""
+	}
+	u, err := rt.mgr.Store().GetUser(userID)
+	if err != nil {
+		return ""
+	}
+	return sub.URL(set, u.SubToken)
+}
+
 // apiCreateTopup opens a balance top-up: a manual one (instructions in the message,
 // an admin confirms it) or a hosted provider payment.
 func (rt *Router) apiCreateTopup(w http.ResponseWriter, r *http.Request, req apiCreateOrderReq, lang i18n.Lang) {
+	if req.Provider == model.ExternalPayProvider {
+		order, err := rt.mgr.RequestTopupExternal(r.Context(), req.UserID, req.AmountRub, req.ExternalRef)
+		rt.apiExternalOrder(w, r, order, err, req.Paid)
+		return
+	}
 	if req.Provider == "" || req.Provider == sub.ManualPayKey {
 		order, msg, err := rt.mgr.RequestTopupManual(r.Context(), lang, req.UserID, req.AmountRub)
 		if err != nil {
@@ -1327,7 +1431,7 @@ func (rt *Router) apiCreateTopup(w http.ResponseWriter, r *http.Request, req api
 		writeAPIData(w, http.StatusCreated, map[string]any{"order": order, "message": msg})
 		return
 	}
-	order, err := rt.mgr.StartTopup(r.Context(), lang, req.UserID, req.AmountRub, req.Provider, req.ReturnURL)
+	order, err := rt.mgr.StartTopup(r.Context(), lang, req.UserID, req.AmountRub, req.Provider, rt.apiReturnURL(req.ReturnURL, req.UserID))
 	if err != nil {
 		writeAPIManagerErr(w, err)
 		return
