@@ -14,6 +14,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/core"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/link"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/plugin"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/sub"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/telegram"
@@ -338,6 +339,8 @@ func (rt *Router) panelMux() http.Handler {
 	canGroupsList := on(model.PermGroupsView, model.PermUsersView, model.PermBillingView)
 	canUsersView := on(model.PermUsersView)
 	canWebhooks := on(model.PermWebhooks)
+	canPluginsView := on(model.PermPluginsView)
+	canPluginsManage := on(model.PermPluginsManage)
 	mux.HandleFunc("POST /api/login", rt.login)
 	mux.HandleFunc("POST /api/logout", rt.logout)
 	// Branding reads are unauthenticated: the login screen (under the secret path)
@@ -616,6 +619,38 @@ func (rt *Router) panelMux() http.Handler {
 	canServersView("GET /api/happ/nodes", rt.listHappNodes)
 	canServersManage("POST /api/happ/nodes/{id}/enabled", withID(rt.setHappNodeEnabled))
 	canServersManage("DELETE /api/happ/nodes/{id}", withID(rt.deleteHappNode))
+	// Plugins (panel_plugins.go): reading lists them, their logs and their code;
+	// everything else changes what code the panel runs.
+	canPluginsView("GET /api/plugins", rt.listPlugins)
+	canPluginsView("GET /api/plugins/{id}/logs", rt.pluginLogs)
+	canPluginsView("GET /api/plugins/{id}/code", rt.pluginCode)
+	canPluginsManage("POST /api/plugins/inspect", rt.inspectPlugin)
+	canPluginsManage("POST /api/plugins", rt.installPlugin)
+	canPluginsManage("POST /api/plugins/{id}/update", rt.updatePlugin)
+	canPluginsManage("POST /api/plugins/{id}/rollback", rt.rollbackPlugin)
+	canPluginsManage("POST /api/plugins/{id}/enable", rt.pluginAction((*plugin.Host).Enable))
+	canPluginsManage("POST /api/plugins/{id}/disable", rt.pluginAction((*plugin.Host).Disable))
+	canPluginsManage("POST /api/plugins/{id}/config", rt.configurePlugin)
+	canPluginsManage("DELETE /api/plugins/{id}", rt.uninstallPlugin)
+	// Drafts (panel_plugin_drafts.go): plugins written here. Running one, even in the
+	// sandbox, is running code — so all of it is plugins.manage.
+	canPluginsManage("GET /api/plugin-drafts", rt.listPluginDrafts)
+	canPluginsManage("GET /api/plugin-drafts/types", rt.pluginDraftTypes)
+	canPluginsManage("POST /api/plugin-drafts", rt.createPluginDraft)
+	canPluginsManage("GET /api/plugin-drafts/{id}", withID(rt.getPluginDraft))
+	canPluginsManage("PUT /api/plugin-drafts/{id}", withID(rt.savePluginDraft))
+	canPluginsManage("DELETE /api/plugin-drafts/{id}", withID(rt.deletePluginDraft))
+	canPluginsManage("POST /api/plugin-drafts/{id}/check", withID(rt.checkPluginDraft))
+	canPluginsManage("POST /api/plugin-drafts/{id}/test", withID(rt.testPluginDraft))
+	canPluginsManage("POST /api/plugin-drafts/{id}/run", withID(rt.runPluginDraft))
+	canPluginsManage("GET /api/plugin-drafts/{id}/download", withID(rt.downloadPluginDraft))
+	canPluginsManage("POST /api/plugin-drafts/{id}/inspect", withID(rt.inspectPluginDraft))
+	// What plugins add to the panel's own screens. A button is gated by its own
+	// permission inside the handler — each declares one — so the route takes any.
+	on(model.AllPerms()...)("GET /api/plugin-actions", rt.listPluginActions)
+	on(model.AllPerms()...)("POST /api/plugin-actions/{plugin}/{key}", rt.runPluginAction)
+	on(model.PermStatsView, model.PermPluginsView)("GET /api/plugin-widgets", rt.pluginWidgets)
+	on(model.PermUsersView)("GET /api/users/{id}/plugin-fields", withID(rt.userPluginFields))
 	canWebhooks("GET /api/webhooks", rt.listWebhooks)
 	canWebhooks("POST /api/webhooks", rt.createWebhook)
 	canWebhooks("POST /api/webhooks/{id}", withID(rt.updateWebhook))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -30,6 +31,8 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/migration"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/netinfo"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/payments"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/plugin"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/proxyproto"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/server"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
@@ -329,6 +332,7 @@ func runServer(dataDir string) {
 	if err != nil {
 		log.Fatalf("build router: %v", err)
 	}
+	startPlugins(runBG, handler.(*server.Router), mgr, st, dataDir)
 	// Serve HTTP/2 cleartext too: Xray's VLESS inbound offers ALPN h2, so non-VPN
 	// traffic arrives as HTTP/2 (prior-knowledge) over the plaintext fallback.
 	// UnencryptedHTTP2 lets the loopback panel speak both HTTP/1.1 and HTTP/2 —
@@ -846,4 +850,48 @@ func resolveXrayBin(bin, downloadDir string) string {
 	}
 	log.Printf("xray: ready — %s (downloaded in %s)", p, time.Since(t0).Round(time.Second))
 	return p
+}
+
+// startPlugins brings up the plugin host (internal/plugin). Nothing is compiled or
+// run until a plugin is enabled, so a panel without plugins pays nothing. Loading
+// runs in the background: a plugin is never a reason for the panel to start late,
+// and one that fails to load is marked and left for the operator.
+func startPlugins(runBG func(string, func(context.Context)), rt *server.Router, mgr *core.Manager, st *store.Store, dataDir string) {
+	host := plugin.New(plugin.Deps{
+		Store:        st,
+		DataDir:      dataDir,
+		PanelVersion: version.Version,
+		API:          rt.PluginAPI,
+		Fetch:        plugin.NewFetcher(),
+		Notify:       mgr.NotifyPluginPaused,
+		Stopped:      mgr.DropPluginDeliveries,
+		PublicURL:    mgr.PaymentWebhookURL,
+		Logger:       slog.Default(),
+	})
+	rt.SetPlugins(host)
+	// A plugin's payment method is one more provider in the registry.
+	payments.SetExtra(host.PaymentDescriptors)
+	st.OnCheckpoint(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		host.CheckpointAll(ctx)
+	})
+	runBG("plugins", func(ctx context.Context) {
+		// Connected first: an event raised while the plugins start is queued for them
+		// (and delivered once each is up), not lost.
+		mgr.SetPluginEvents(host)
+		mgr.SetPluginHooks(host)
+		mgr.SetPluginBot(host)
+		if err := host.Start(ctx); err != nil {
+			log.Printf("plugins: %v", err)
+		}
+		tick(ctx, 15*time.Second, func() {
+			safeTick("plugins cron", func() { host.RunCron(ctx, time.Now().In(mgr.Location())) })
+			safeTick("plugins retry", func() { host.RetryStopped(ctx, time.Now()) })
+		})
+		host.WaitCron(2 * time.Second)
+		closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = host.Close(closeCtx)
+	})
 }

@@ -25,6 +25,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/decoy"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/migration"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/plugin"
 	webui "github.com/Shu1t3/rospanel-shu1t3/web"
 )
 
@@ -40,9 +41,13 @@ type Router struct {
 	dataDir  string
 	panel    http.Handler
 	api      http.Handler // external REST API mux (key-authenticated), mounted under apiPath
-	assets   http.Handler
-	indexRaw []byte // index.html before <base href> injection
-	limiter  *loginLimiter
+	apiInner http.Handler // the /v1 routes without the key check, for plugins (see PluginAPI)
+	plugins  *plugin.Host // installed plugins (internal/plugin); set once before serving
+	// pluginUploads holds inspected packages between the consent screen and the install.
+	pluginUploads pluginUploads
+	assets        http.Handler
+	indexRaw      []byte // index.html before <base href> injection
+	limiter       *loginLimiter
 	// stepUp throttles wrong second factors on the irreversible actions. Its OWN
 	// counter, not the login one: sharing it meant a mistyped code in the delete dialog
 	// locked the admin out of the login form for fifteen minutes while doing nothing at
@@ -402,7 +407,12 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			decoy.ServeHTTP(w, r)
 			return
 		}
-		leaf, _ := firstSegment(rest)
+		leaf, after := firstSegment(rest)
+		if leaf == "x" { // /<paySecret>/x/<plugin id>/… — a plugin's onHttp
+			rt.handlePluginHTTP(w, r, after, decoy)
+			rt.writes.Add(1) // it may have changed users through panel.api
+			return
+		}
 		handlePaymentWebhook(rt, w, r, leaf)
 		rt.writes.Add(1) // a confirmed payment moves a user's plan and term
 		return

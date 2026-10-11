@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -75,6 +76,9 @@ type Store struct {
 	settings settingsCache
 	// clock, when set, is the time user statuses are derived at (SetClock).
 	clock func() int64
+	// alsoCheckpoint flushes the databases that live beside this one — the plugins'
+	// (see OnCheckpoint).
+	alsoCheckpoint atomic.Pointer[func()]
 }
 
 // invalidateSettingsCache clears the cached settings singleton so the next read
@@ -84,6 +88,11 @@ func (s *Store) invalidateSettingsCache() {
 	s.settings.val = nil
 	s.settings.mu.Unlock()
 }
+
+// OnCheckpoint registers what else Checkpoint flushes: the plugins' own databases
+// sit in the same data directory and go into the same backups, whose -wal files
+// the archive skips. Every backup path already checkpoints through here.
+func (s *Store) OnCheckpoint(fn func()) { s.alsoCheckpoint.Store(&fn) }
 
 // SetClock fixes the time user statuses are derived at, for a test whose reads must
 // all see one moment however long the machine takes. Set before the store is shared.
@@ -277,7 +286,11 @@ func InspectDB(path string) (users, admins int, secret string, err error) {
 // Without this a live backup would copy a near-empty .db with everything still in
 // the uncheckpointed .db-wal (which backups intentionally exclude).
 func (s *Store) Checkpoint() error {
-	return checkpoint(s.db)
+	err := checkpoint(s.db)
+	if fn := s.alsoCheckpoint.Load(); fn != nil {
+		(*fn)()
+	}
+	return err
 }
 
 // CheckpointFile flushes a running panel's database before a standalone CLI

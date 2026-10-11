@@ -1,3 +1,4 @@
+import { PluginWidgets } from "./PluginSurfaces";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -192,6 +193,9 @@ export function OverviewPanel() {
   const canServers = useCan("servers.view", "routing.view");
   const canUsers = useCan("users.view");
   const canStats = useCan("stats.view");
+  // The server shows plugin tiles to either permission; anyone else would get a 403
+  // every minute.
+  const canPluginWidgets = useCan("stats.view", "plugins.view");
   const canStatsOrUsers = useCan("stats.view", "users.view");
   const isOwner = useIsOwner(); // backups and restore, on the management card
   const canManagement = useCan("logs.view", "system.update") || isOwner;
@@ -502,6 +506,8 @@ export function OverviewPanel() {
       {/* Without a fleet there is no left column to fill, so the attention panel takes
           the width and the three read-outs sit side by side instead of stretching one
           sparkline across the screen. Same panels, placed by how many there are. */}
+      {canPluginWidgets && <PluginWidgets />}
+
       {!showServers && attentionPanel}
 
       <div
