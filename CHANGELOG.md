@@ -1,5 +1,28 @@
 # Changelog
 
+## [5.0.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v4.3.0...v5.0.0) (2026-10-12)
+
+
+### chore
+
+* release 5.0.0 ([ac62d48](https://github.com/Shu1t3/rospanel-shu1t3/commit/ac62d48e738c030116adf44bc772e6ce57304e58))
+
+
+### Features
+
+* **plugins:** community plugins — sandboxed engine, extension points, in-panel editor ([#108](https://github.com/Shu1t3/rospanel-shu1t3/issues/108)) ([4453864](https://github.com/Shu1t3/rospanel-shu1t3/commit/4453864e2044ebfc6322cf3f756018918fbe8f5f))
+* sync upstream v5.0.1 preserving fork safeguards ([2974d63](https://github.com/Shu1t3/rospanel-shu1t3/commit/2974d637002f258706adf615e3fdba01bdd91680))
+
+
+### Bug Fixes
+
+* **web:** open the editor's sources zip as a draft again ([eb96f84](https://github.com/Shu1t3/rospanel-shu1t3/commit/eb96f849ce4d12f3eab77dab48496b31110d5c56))
+
+
+### Refactoring
+
+* **plugin:** replace sha256 with maphash for transform cache keys ([f5dfea2](https://github.com/Shu1t3/rospanel-shu1t3/commit/f5dfea243d5ce3fed66b17c517f29b859bdaaf11))
+
 ## [4.3.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v4.2.0...v4.3.0) (2026-10-09)
 
 
