@@ -1,5 +1,32 @@
 # Changelog
 
+## [5.0.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v4.3.0...v5.0.0) (2026-10-12)
+
+
+### Features
+
+* **plugins:** community plugins — sandboxed engine, extension points, in-panel editor ([#108](https://github.com/Shu1t3/rospanel-shu1t3/issues/108)) ([4453864](https://github.com/Shu1t3/rospanel-shu1t3/commit/4453864e2044ebfc6322cf3f756018918fbe8f5f))
+  * Sandboxed WebAssembly / QuickJS runtime (`wazero`) with strict memory budgeting and syscall isolation.
+  * Extension points for Telegram bot commands, payment methods, HTTP webhooks, and subscription pages.
+  * Plugin Studio in-panel IDE: visual rule builder, CodeMirror editor, trial runs with mock events, and test harness.
+  * In-panel drafts workflow: live checks, package export, sources zip, and safe rollbacks.
+  * Migrations 0112-0118 and outbox-based plugin event delivery.
+* sync upstream v5.0.1 preserving fork safeguards ([2974d63](https://github.com/Shu1t3/rospanel-shu1t3/commit/2974d637002f258706adf615e3fdba01bdd91680))
+  * Integrated full community plugins subsystem into fork namespace `github.com/Shu1t3/rospanel-shu1t3`.
+  * Preserved Go 1.27.2 in `go.mod` and `Dockerfile`, fork versioning, and Russian documentation.
+  * Preserved master migration standby/fencing protections and Happ subscription routing.
+  * Integrated plugin WAL checkpointing with fork database checkpointer.
+
+
+### Bug Fixes
+
+* **web:** open the editor's sources zip as a draft again ([eb96f84](https://github.com/Shu1t3/rospanel-shu1t3/commit/eb96f849ce4d12f3eab77dab48496b31110d5c56))
+
+
+### Refactoring
+
+* **plugin:** replace sha256 with maphash for transform cache keys ([f5dfea2](https://github.com/Shu1t3/rospanel-shu1t3/commit/f5dfea243d5ce3fed66b17c517f29b859bdaaf11))
+
 ## [4.3.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v4.2.0...v4.3.0) (2026-10-09)
 
 
