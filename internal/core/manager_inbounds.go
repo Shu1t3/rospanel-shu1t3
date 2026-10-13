@@ -137,15 +137,24 @@ func (m *Manager) effectiveSettings(serverID int64) (*model.Settings, error) {
 // exists to prevent.
 func reservedPorts(set *model.Settings) model.ReservedPorts {
 	r := model.NewReservedPorts()
-	if set.VLESSEnabled || set.ServerID == model.LocalNodeID {
+	if set.VLESSEnabled || set.NaiveEnabled || set.ServerID == model.LocalNodeID {
 		r.HoldTCP(set.VLESSPort, "VLESS-Vision")
-		r.HoldTCP(xray.VLESSInnerPort, "VLESS-Vision behind the front")
 	}
 	if set.RealityEnabled {
 		r.HoldTCP(set.RealityPort, "VLESS-XHTTP-REALITY")
 	}
 	r.HoldUDP(set.HysteriaPort, "HYSTERIA-UDP")
 	r.Hold(xray.APIPort, "Xray internal API")
+	// Loopback ports only off Linux; abstract sockets there hold none (xray/inner.go).
+	if p := xray.InnerPort(xray.VLESSInnerAddr); p != 0 {
+		r.HoldTCP(p, "VLESS-Vision behind the front")
+	}
+	if p := xray.InnerPort(xray.NaiveInnerAddr); p != 0 {
+		r.HoldTCP(p, "NaiveProxy (internal)")
+	}
+	if p := xray.InnerPort(xray.MieruInnerAddr); p != 0 {
+		r.HoldTCP(p, "mieru (internal)")
+	}
 	if set.HopEnd > set.HysteriaPort {
 		// The built-in hop range is a UDP funnel onto the Hysteria port: anything
 		// inside it would have its traffic silently stolen by the nftables redirect.
@@ -169,6 +178,13 @@ func reservedPorts(set *model.Settings) model.ReservedPorts {
 	}
 	if set.AWGEnabled && set.AWGPort > 0 {
 		r.HoldUDP(set.AWGPort, "AmneziaWG")
+	}
+	if set.MieruEnabled && set.MieruPort > 0 {
+		if model.MieruTransportOr(set.MieruTransport) == model.MieruUDP {
+			r.HoldUDP(set.MieruPort, "mieru")
+		} else {
+			r.HoldTCP(set.MieruPort, "mieru")
+		}
 	}
 	return r
 }
@@ -255,7 +271,7 @@ func (m *Manager) UpdateInbound(ctx context.Context, in model.Inbound) (*Inbound
 	}
 	// And the WireGuard identity and loopback port: a new key would strand every
 	// imported config, and a new port would move the relay's target for nothing.
-	if in.Protocol == model.InbWireGuard && cur.Protocol == model.InbWireGuard {
+	if in.Protocol == model.InbTurnVK && cur.Protocol == model.InbTurnVK {
 		in.Opts.WGPrivateKey = cur.Opts.WGPrivateKey
 		in.Opts.WGPublicKey = cur.Opts.WGPublicKey
 		in.Opts.WGLocalPort = cur.Opts.WGLocalPort
@@ -429,7 +445,7 @@ func (m *Manager) validateAgainstSet(ctx context.Context, in model.Inbound, excl
 		}
 	}
 	// A WireGuard inbound's loopback listener is a second port on the same box.
-	if in.Enabled && in.Protocol == model.InbWireGuard &&
+	if in.Enabled && in.Protocol == model.InbTurnVK &&
 		(prev == nil || !prev.Enabled || prev.Opts.WGLocalPort != in.Opts.WGLocalPort) {
 		if err := m.probePort(ctx, in.ServerID, "udp", in.Opts.WGLocalPort); err != nil {
 			return err
@@ -691,6 +707,9 @@ func HostConnGuardPorts(st *store.Store) ([]int, error) {
 	if set.RealityEnabled {
 		ports = append(ports, set.RealityPort)
 	}
+	if set.MieruEnabled && set.MieruPort > 0 {
+		ports = append(ports, set.MieruPort) // TCP: see model.MieruTransportOr
+	}
 	list, err := st.EnabledInbounds(model.LocalNodeID)
 	if err != nil {
 		return nil, err
@@ -765,6 +784,9 @@ func HostFirewallRules(st *store.Store) ([]firewall.Rule, error) {
 	if set.AWGEnabled && set.AWGPort > 0 {
 		rules = append(rules, firewall.UDPRule(set.AWGPort, "awg"))
 	}
+	if set.MieruEnabled && set.MieruPort > 0 {
+		rules = append(rules, firewall.TCPRule(set.MieruPort, "mieru"))
+	}
 	list, err := st.EnabledInbounds(model.LocalNodeID)
 	if err != nil {
 		return nil, err
@@ -799,7 +821,6 @@ func EnsureHostFirewall(st *store.Store) error {
 	}
 	return firewall.Sync(context.Background(), rules)
 }
-
 
 // inboundNames is the display names already taken by a server's custom inbounds, so
 // renaming a built-in lane can't land on one of them.

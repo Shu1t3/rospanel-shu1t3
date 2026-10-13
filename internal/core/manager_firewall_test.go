@@ -42,6 +42,13 @@ func TestHostFirewallRules(t *testing.T) {
 		t.Fatalf("set awg config: %v", err)
 	}
 
+	if err := st.SetMieruConfig(19001, model.MieruTCP, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetProtocolEnabled("mieru", true); err != nil {
+		t.Fatal(err)
+	}
+
 	// Add custom inbounds
 	_, err = st.CreateInbound(model.Inbound{
 		ServerID: model.LocalNodeID,
@@ -84,6 +91,7 @@ func TestHostFirewallRules(t *testing.T) {
 		"10443/tcp",
 		"11443/udp",
 		"20000:25000/udp",
+		"19001/tcp",
 		"30000:35000/udp",
 		"40123/udp",
 		"443/tcp",

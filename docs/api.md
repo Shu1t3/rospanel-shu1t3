@@ -575,7 +575,7 @@ target machine** (`xray -test` + a port-bind probe) before it's saved.
 | `DELETE` | `/v1/inbounds/{id}` | Delete a custom inbound. |
 
 **Create / update** — the body mirrors the panel's inbound editor: `name`, `protocol`
-(`vless` / `trojan` / `hysteria2` / `shadowsocks`), `transport` (`tcp` / `ws` / `xhttp` /
+(`vless` / `trojan` / `hysteria2` / `shadowsocks` / `turn-vk`), `transport` (`tcp` / `ws` / `xhttp` /
 `grpc` / `httpupgrade`), `port`, `security` (`none` / `tls` / `reality`) with the matching
 keys (REALITY dest & keys, fingerprint, path/host, Hysteria2 hop range), plus optional
 advanced blocks (XHTTP `extra`, TCP HTTP masquerade, `sockopt`, extra TLS keys). The
@@ -583,6 +583,8 @@ full field list — and which combinations are valid — is in `openapi.json` / 
 `shadowsocks` is Shadowsocks-2022 (`method` picks the AEAD; the server key is generated,
 the per-user key derived from the UUID) — multi-user, so per-user stats and quotas work,
 but only modern clients (sing-box, mihomo, v2rayN, Shadowrocket, Streisand) speak it.
+`turn-vk` is WireGuard behind a TURN relay; the previous protocol name `wireguard`
+is still accepted on input. TURN call links are configured through the panel.
 Two formats the schema can only call `string`: `reality_dest` is a bare hostname
 (`www.microsoft.com` — a `host:port` form is rejected), and `hop_interval` is a range in
 seconds (`"5-10"`, not `"30"`).
@@ -624,8 +626,9 @@ link all expose only what's granted.
 
 A **grant token** names one connection:
 
-- `builtin:<server_id>:<lane>` — a built-in lane, where `<lane>` is `vless`, `reality`
-  or `hysteria2` and `<server_id>` is `0` for the master or a node id from `GET /v1/nodes`.
+- `builtin:<server_id>:<lane>` — a built-in lane, where `<lane>` is `vless`, `reality`,
+  `hysteria2`, `naive`, `mieru` or `awg` and `<server_id>` is `0` for the master or a node id
+  from `GET /v1/nodes`.
 - `inbound:<id>` — a custom inbound, by the id from `GET /v1/servers/{id}/inbounds`.
 
 An empty `grants` array is a real state, not a no-op: members of a group that grants

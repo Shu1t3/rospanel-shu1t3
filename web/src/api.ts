@@ -323,6 +323,12 @@ export interface ConnectionsStatus {
   awg_dns: string
   awg_running: boolean
   awg_error?: string
+  // mieru: its port and transport; mieru_running/mieru_error describe whether the
+  // lane listens (the master's own, or as the node last reported).
+  mieru_port: number
+  mieru_transport: string
+  mieru_running: boolean
+  mieru_error?: string
 }
 
 export interface AWGParams {
@@ -385,6 +391,8 @@ export interface ConnectionsUpdate {
   awg_dns: string
   awg_params?: AWGParams
   regen_awg_keys: boolean
+  mieru_port: number
+  mieru_transport: string
 }
 
 export const applyConnections = (u: ConnectionsUpdate) =>
@@ -605,6 +613,22 @@ export const getNodeTraffic = (p: { user_id?: number; from?: string; to?: string
   if (p.from) q.set('from', p.from)
   if (p.to) q.set('to', p.to)
   return api<NodeTraffic[]>('api/stats/nodes?' + q.toString())
+}
+// LaneTraffic is what one protocol of one server carried over a period. node_id 0 is
+// the panel's own server; name is the protocol (or the custom inbound's own name).
+export type LaneTraffic = {
+  node_id: number
+  node_name: string
+  lane: string
+  name: string
+  up: number
+  down: number
+}
+export const getLaneTraffic = (p: { from?: string; to?: string }) => {
+  const q = new URLSearchParams()
+  if (p.from) q.set('from', p.from)
+  if (p.to) q.set('to', p.to)
+  return api<LaneTraffic[]>('api/stats/lanes?' + q.toString())
 }
 export const getStatsByUser = (from?: string, to?: string) => {
   const q = new URLSearchParams()

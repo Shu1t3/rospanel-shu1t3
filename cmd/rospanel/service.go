@@ -30,6 +30,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/http80"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/migration"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/naive"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/netinfo"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/payments"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/plugin"
@@ -341,8 +342,10 @@ func runServer(dataDir string) {
 	protocols.SetHTTP1(true)
 	protocols.SetUnencryptedHTTP2(true)
 	httpSrv := &http.Server{
-		Handler:           handler,
+		// NaiveProxy tunnels arrive through the same fallback as the decoy (internal/naive).
+		Handler:           mgr.NaiveHandler(handler),
 		Protocols:         protocols,
+		HTTP2:             naive.HTTP2Config(),
 		ReadHeaderTimeout: 10 * time.Second,  // slowloris: bound how long request headers may dribble in
 		IdleTimeout:       120 * time.Second, // reap idle keep-alive connections so they can't be held open indefinitely
 		// ReadTimeout / WriteTimeout are intentionally unset: a server-wide read
@@ -387,6 +390,7 @@ func runServer(dataDir string) {
 	// anything is what keeps an ordinary restart from paging the operator.
 	sup.Stop()
 	mgr.StopAWG()
+	mgr.StopMieru()
 	mgr.StopTurn()
 
 	// Let the background loops finish what they are in the middle of — a flush, a
@@ -522,8 +526,8 @@ func safeTick(name string, fn func()) {
 }
 
 // statsPollLoop accounts per-user traffic once a minute and, in between, watches
-// the quotas of the local Xray's users (see Manager.TickStats). AmneziaWG is polled
-// once a minute.
+// the quotas of the local Xray's users (see Manager.TickStats). AmneziaWG is polled,
+// and a mieru listener that could not start is retried, once a minute.
 func statsPollLoop(mgr *core.Manager) func(context.Context) {
 	return func(ctx context.Context) {
 		var awgAt time.Time
@@ -543,6 +547,7 @@ func statsPollLoop(mgr *core.Manager) func(context.Context) {
 					log.Printf("awg poll: %v", err)
 				}
 			})
+			safeTick("mieru retry", mgr.RetryMieru)
 		})
 	}
 }
@@ -789,10 +794,15 @@ func printFirstRunBanner(host, secret, username, password string) {
 // for the VLESS default fallback (":8080" → "127.0.0.1:8080").
 // wantFront reports whether the TCP-TLS lane goes behind the front. Not when the
 // operator switched it off (ROSPANEL_TLS_FRONT=off), and not while a custom inbound from
-// before the inner port was reserved still holds it: Xray keeps the public port then.
+// before the inner port was reserved still holds it (where the inner address is a port,
+// see xray/inner.go): Xray keeps the public port then.
 func wantFront(st *store.Store, set *model.Settings) bool {
 	if env("ROSPANEL_TLS_FRONT", "on") == "off" || set.VLESSPort <= 0 {
 		return false
+	}
+	inner := xray.InnerPort(xray.VLESSInnerAddr)
+	if inner == 0 {
+		return true
 	}
 	list, err := st.EnabledInbounds(model.LocalNodeID)
 	if err != nil {
@@ -800,14 +810,14 @@ func wantFront(st *store.Store, set *model.Settings) bool {
 		return false
 	}
 	for _, in := range list {
-		if in.Port == xray.VLESSInnerPort {
-			log.Printf("tlsfront: custom inbound %q holds port %d, leaving :%d to Xray", in.Name, xray.VLESSInnerPort, set.VLESSPort)
+		if in.Port == inner {
+			log.Printf("tlsfront: custom inbound %q holds port %d, leaving :%d to Xray", in.Name, inner, set.VLESSPort)
 			return false
 		}
 	}
 	for _, p := range []int{set.RealityPort, set.ProxySocksPort, set.ProxyHTTPPort, set.OperaPortOr()} {
-		if p == xray.VLESSInnerPort {
-			log.Printf("tlsfront: port %d is taken by the settings, leaving :%d to Xray", xray.VLESSInnerPort, set.VLESSPort)
+		if p == inner {
+			log.Printf("tlsfront: port %d is taken by the settings, leaving :%d to Xray", inner, set.VLESSPort)
 			return false
 		}
 	}

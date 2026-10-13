@@ -330,6 +330,7 @@ const ru = {
     messageTooLong: "текст длиннее {{limit}} символов (сейчас {{count}}) — Telegram его не примет",
     needPngJpeg: "нужен PNG или JPEG",
     noAdminChats: "нет привязанных админ-чатов — привяжите чат в разделе Telegram, чтобы получать тесты",
+    nodeHostInvalid: "адрес ноды — домен или IP, без пробелов и спецсимволов",
     nodeNameTaken: "нода с таким названием уже есть — имя должно быть уникальным",
     nodeWarpFailed: "регистрация WARP для ноды не удалась: {{detail}}",
     notSupergroup: "указанный чат не является супергруппой — создайте группу и включите в ней «Темы»",
@@ -397,6 +398,8 @@ const ru = {
     nameEmpty: "имя не может быть пустым",
     noteTooLong: "заметка длиннее {{max}} символов",
     awgPortRange: "порт AmneziaWG вне диапазона 1–65535",
+    mieruPortRange: "порт mieru вне диапазона 1–65535",
+    mieruTransport: "mieru работает только по TCP",
     awgDNS: "DNS для AmneziaWG: IP-адреса через запятую",
     blockNotFound: "этот адрес не заблокирован",
     policyCountry: "страна «{{value}}»: две латинские буквы (RU, KZ)",
@@ -1101,6 +1104,8 @@ const ru = {
     unknownCountry: "Неизвестно",
     noCountryData: "Данных о подключениях пока нет.",
     byServer: "По серверам",
+    byProtocol: "По протоколам",
+    allServers: "Все серверы",
   },
 
   overview: {
@@ -3321,6 +3326,10 @@ const ru = {
     awgParams: "Параметры обфускации",
     awgHint: "AmneziaWG 3.1 — WireGuard с замаскированным рукопожатием и защитой заголовков (клиенты AmneziaVPN и AmneziaWG от 5.0.1.5). Ключи генерирует панель; после перегенерации выданные конфиги перестают работать.",
     enableAwg: "Включите AmneziaWG, чтобы задать порт и DNS.",
+    mieruPort: "Порт",
+    mieruHint: "mieru на своём TCP-порту, логин u<id> и UUID пользователя. Порт должен быть открыт в фаерволе сервера.",
+    enableMieru: "Включите mieru, чтобы задать порт.",
+    naiveHint: "NaiveProxy на порту VLESS-TCP-TLS: тот же сертификат и сайт-приманка, логин u<id> и UUID пользователя. Ссылка выдаётся, когда сертификат сервера доверенный.",
     off: "выключен",
     name: "Название подключения",
     nameHint:

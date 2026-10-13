@@ -49,7 +49,7 @@ func TestResetNodeConnectionsRestoresTheFactoryState(t *testing.T) {
 		t.Fatalf("transport not reset: %+v", st)
 	}
 	for _, p := range st.Protocols {
-		want := p.Key != "awg"
+		want := p.Key == "vless" || p.Key == "reality" || p.Key == "hysteria2"
 		if p.Enabled != want {
 			t.Errorf("protocol %s enabled=%v, want %v", p.Key, p.Enabled, want)
 		}

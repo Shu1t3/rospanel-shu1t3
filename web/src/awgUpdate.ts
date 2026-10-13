@@ -45,5 +45,7 @@ export function buildAwgConnectionsUpdate(
     awg_dns: values.dns,
     awg_params: values.params,
     regen_awg_keys: values.regenKeys,
+    mieru_port: status.mieru_port,
+    mieru_transport: status.mieru_transport,
   };
 }

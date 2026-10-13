@@ -83,6 +83,9 @@ const status: ConnectionsStatus = {
   awg_params: awgParams,
   awg_dns: "",
   awg_running: false,
+  mieru_port: 19001,
+  mieru_transport: "TCP",
+  mieru_running: true,
 };
 
 test("enabling AWG preserves the main connection settings", () => {
@@ -121,4 +124,6 @@ test("enabling AWG preserves the main connection settings", () => {
   assert.equal(update.tls_fragment, true);
   assert.equal(update.tls_min13, true);
   assert.equal(update.block_quic, true);
+  assert.equal(update.mieru_port, 19001);
+  assert.equal(update.mieru_transport, "TCP");
 });

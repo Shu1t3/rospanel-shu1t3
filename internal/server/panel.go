@@ -101,11 +101,17 @@ func makeUserView(u model.User, set *model.Settings, userBotUsername string, cus
 		v.Hysteria2 = link.Hysteria2(u, set)
 		v.Links = append(v.Links, namedLink{set.ProtoLabelFor(model.ProtoHysteria, &u), v.Hysteria2})
 	}
+	if link.NaiveOn(set) && access.AllowsBuiltin(model.LocalNodeID, model.LaneNaive) {
+		v.Links = append(v.Links, namedLink{set.ProtoLabelFor(model.ProtoNaive, &u), link.Naive(u, set)})
+	}
+	if link.MieruOn(set) && access.AllowsBuiltin(model.LocalNodeID, model.LaneMieru) {
+		v.Links = append(v.Links, namedLink{set.ProtoLabelFor(model.ProtoMieru, &u), link.Mieru(u, set)})
+	}
 	for _, in := range custom {
 		if !access.AllowsInbound(in.ID) {
 			continue
 		}
-		if in.Protocol == model.InbWireGuard {
+		if in.Protocol == model.InbTurnVK {
 			// No share-link form either: the config file, as for AmneziaWG below.
 			v.Links = append(v.Links, namedLink{link.CustomLabelFor(in, u, set), sub.TurnConfURL(set, u.SubToken, in.ID)})
 			continue
@@ -139,10 +145,11 @@ func (rt *Router) userViewFor(u model.User, set *model.Settings, bot string) use
 	return v
 }
 
-// applyTLSHints fills the per-request TLS fields used by link/sub generation. When
-// the active cert isn't CA-trusted (a self-signed fallback), it flags TLSInsecure
-// and attaches the cert pin so Xray links can pin it (pinnedPeerCertSha256); a
-// trusted CA cert leaves verification on.
+// applyTLSHints fills in what link/sub generation needs and the stored settings cannot
+// say. When the active cert isn't CA-trusted (a self-signed fallback), it flags
+// TLSInsecure and attaches the cert pin so Xray links can pin it (pinnedPeerCertSha256);
+// a trusted CA cert leaves verification on. It also drops mieru while this process's
+// listener for it is not up.
 func (rt *Router) applyTLSHints(set *model.Settings) {
 	// The master's own placement, which the subscription path fills in when it builds
 	// the per-server settings. Every other consumer of a bare GetSettings() value is
@@ -150,6 +157,13 @@ func (rt *Router) applyTLSHints(set *model.Settings) {
 	// {country} renders as "unknown" on the admin's user card while the subscription
 	// renders it properly — the same name, two answers.
 	set.ServerPlacement = set.MasterPlacement
+	// mieru's listener is this process's own; while it is not up (its port taken, say)
+	// a link to it would be a dead entry in every client.
+	if set.MieruEnabled {
+		if up, _ := rt.mgr.MieruStatus(); !up {
+			set.MieruEnabled = false
+		}
+	}
 	if rt.mgr.HasValidCert() {
 		return
 	}
@@ -560,6 +574,7 @@ func (rt *Router) panelMux() http.Handler {
 	canBillingManage("GET /api/payments/callbacks", rt.listPaymentCallbacks)
 	canStatsOrUsersView("GET /api/stats/series", rt.statsSeries)
 	canStatsOrUsersView("GET /api/stats/nodes", rt.statsNodes)
+	canStatsView("GET /api/stats/lanes", rt.statsLanes)
 	canStatsView("GET /api/stats/users", rt.statsByUser)
 	canStatsView("GET /api/stats/abuse", rt.statsAbuse)
 	canStatsView("GET /api/stats/countries", rt.statsCountries)

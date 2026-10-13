@@ -17,7 +17,9 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/geo"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/ipblock"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/logbuf"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/mieru"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/naive"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/nodeapi"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/opera"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/shaper"
@@ -169,6 +171,9 @@ type Manager struct {
 	quota       quotaWatch
 	quotaStale  atomic.Bool // a user changed since the watch was read
 	statsSource func() (map[string]xray.Traffic, error)
+	// lanesUnsaved is lane traffic read off Xray's counters (which the read resets) that
+	// the database refused; the next write carries it. Under statsMu.
+	lanesUnsaved map[string]xray.Traffic
 	// clock, when set, is the time the enforcement pass judges users at (now).
 	clock func() time.Time
 
@@ -382,6 +387,8 @@ type Manager struct {
 	nodeAWGRunning map[int64]bool
 	nodeAWGErr     map[int64]string
 	nodeComponents map[int64][]nodeapi.ComponentStatus
+	// nodeMieruErr is each node's last-reported mieru listener error ("" ⇒ fine).
+	nodeMieruErr map[int64]string
 	// online is who is connected to which server right now (see manager_online.go).
 	online onlineGauge
 
@@ -411,6 +418,13 @@ type Manager struct {
 
 	// turn runs the master's TURN relays, one per WireGuard inbound (manager_wireguard.go).
 	turn *turnrelay.Relay
+
+	// naive answers NaiveProxy tunnels in front of the decoy (manager_naive.go).
+	naive *naive.Server
+	// mieru is the master's mieru lane (internal/mieru), mieruErr its listener's last
+	// error ("" when it listens or is off).
+	mieru    *mieru.Server
+	mieruErr atomic.Pointer[string]
 
 	// nodeLogs holds the most recent log tail reported by each node, plus which
 	// nodes an operator is currently viewing (so the panel asks them for logs).
@@ -491,6 +505,8 @@ func New(st *store.Store, sup *xray.Supervisor, opts xray.Options, tls TLSPaths,
 		nodeAWGErr:     map[int64]string{},
 		nodeComponents: map[int64][]nodeapi.ComponentStatus{},
 		awg:            awg.New(),
+		naive:          naive.New(xray.NaiveInnerAddr),
+		mieru:          mieru.New(xray.MieruInnerAddr),
 		turn:           turnrelay.New(),
 		probeBlock:     ipblock.New(ipblock.TableProbes),
 		policyBlock:    ipblock.New(ipblock.TablePolicy),
@@ -1045,6 +1061,8 @@ func (m *Manager) syncUsers(ws *workingSet, wsErr error) (bool, error) {
 		return true, err
 	}
 	m.syncAWGLocked(set, users)
+	m.syncNaive(cfg)
+	m.syncMieru(set, cfg)
 	return true, m.store.MarkConfigApplied()
 }
 
@@ -1116,6 +1134,8 @@ func (m *Manager) reconcileLocked() error {
 	logInfo("reconcile: config applied", "users", len(users))
 	m.syncTurnLocked(opts.Custom)
 	m.syncAWGLocked(set, users)
+	m.syncNaive(cfg)
+	m.syncMieru(set, cfg)
 	return m.store.MarkConfigApplied()
 }
 

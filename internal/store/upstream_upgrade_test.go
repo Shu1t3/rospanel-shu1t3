@@ -84,6 +84,9 @@ func testUpgradeFromFork(t *testing.T, version string) {
 		if set.Host != "vpn.example" || !set.BillingEnabled || set.AutoUpdateCron != "" {
 			t.Errorf("settings changed: %+v", set)
 		}
+		if set.NaiveEnabled || set.MieruEnabled {
+			t.Error("upgrade enabled a new listener without an operator choosing it")
+		}
 		u, err := st.GetUser(1)
 		if err != nil {
 			st.Close()

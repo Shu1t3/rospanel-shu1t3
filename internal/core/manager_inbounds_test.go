@@ -79,6 +79,13 @@ func TestReservedPortsNodeHoldsEnabledPorts(t *testing.T) {
 	}
 }
 
+func TestReservedPortsNaiveOnlyNodeHoldsTLSPort(t *testing.T) {
+	r := reservedPorts(&model.Settings{ServerID: 10, VLESSPort: 443, NaiveEnabled: true})
+	if _, held := r.OnTCP(443); !held {
+		t.Fatal("Naive-only node must reserve the TLS fallback port")
+	}
+}
+
 func TestApplyNodeConnectionsRejectsCollisionWithCustomInbound(t *testing.T) {
 	t.Parallel()
 	m := nodeTestManager(t)
@@ -119,18 +126,24 @@ func TestApplyNodeConnectionsRejectsCollisionWithCustomInbound(t *testing.T) {
 	// 1. Enabling VLESS (which defaults to port 443) should fail due to collision with Custom-TCP-443
 	err = m.ApplyNodeConnections(node.ID, ConnectionsUpdate{
 		Protocols:    map[string]bool{"vless": true, "hysteria2": false, "reality": false},
-		HopStart:    20000,
-		HopEnd:      30000,
+		HopStart:     20000,
+		HopEnd:       30000,
 		HysteriaPort: 8443,
 		RealityPort:  8444,
+	})
+	checkCode(err, "err.portTakenByInbound")
+
+	err = m.ApplyNodeConnections(node.ID, ConnectionsUpdate{
+		Protocols: map[string]bool{"naive": true},
+		HopStart:  20000, HopEnd: 30000, HysteriaPort: 8443, RealityPort: 8444,
 	})
 	checkCode(err, "err.portTakenByInbound")
 
 	// 2. Enabling REALITY with RealityPort = 443 should also fail
 	err = m.ApplyNodeConnections(node.ID, ConnectionsUpdate{
 		Protocols:    map[string]bool{"vless": false, "hysteria2": false, "reality": true},
-		HopStart:    20000,
-		HopEnd:      30000,
+		HopStart:     20000,
+		HopEnd:       30000,
 		HysteriaPort: 8443,
 		RealityPort:  443,
 	})
@@ -139,8 +152,8 @@ func TestApplyNodeConnectionsRejectsCollisionWithCustomInbound(t *testing.T) {
 	// 3. Enabling REALITY on a non-conflicting port (e.g. 8444) should succeed
 	err = m.ApplyNodeConnections(node.ID, ConnectionsUpdate{
 		Protocols:    map[string]bool{"vless": false, "hysteria2": false, "reality": true},
-		HopStart:    20000,
-		HopEnd:      30000,
+		HopStart:     20000,
+		HopEnd:       30000,
 		HysteriaPort: 8443,
 		RealityPort:  8444,
 	})

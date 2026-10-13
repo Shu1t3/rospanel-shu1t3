@@ -307,7 +307,23 @@ func (m *Manager) NodeLinkSettings() ([]*model.Settings, error) {
 		if n.CertSelfSigned && n.CertSHA256 == "" {
 			continue
 		}
+		// A host saved before hosts were checked could carry a newline into every line
+		// and config of this server's; it stays out until it is corrected.
+		if !model.ValidServerHost(n.Host) {
+			if m.siteNotice.should(fmt.Sprintf("node-host-invalid:%d", n.ID), time.Now()) {
+				logErr("subscription: a node's address is not a valid host; left out until corrected", "node", n.ID)
+			}
+			continue
+		}
 		ns := nodeSettings(set, n)
+		// NaiveProxy needs the agent to answer it, and a certificate the client trusts:
+		// the client cannot be told to skip verification.
+		ns.NaiveEnabled = ns.NaiveEnabled && !ns.TLSInsecure && n.ServesNaive
+		// mieru needs the agent to answer it, a port, and its listener up (as last said).
+		m.nodeGeoMu.Lock()
+		mieruDown := m.nodeMieruErr[n.ID] != ""
+		m.nodeGeoMu.Unlock()
+		ns.MieruEnabled = ns.MieruEnabled && n.ServesMieru && ns.MieruPort > 0 && !mieruDown
 		// Uniqueness is enforced on create/edit, but defend the subscription anyway:
 		// a duplicate label would collide Clash proxy names / sing-box tags and make a
 		// client reject the whole config. Disambiguate any collision with the node id.

@@ -4,6 +4,7 @@ go 1.27.2
 
 require (
 	github.com/amnezia-vpn/amneziawg-go/v3 v3.1.20260828
+	github.com/enfein/mieru/v3 v3.38.1
 	github.com/go-acme/lego/v4 v4.35.2
 	github.com/google/uuid v1.6.0
 	github.com/pion/dtls/v3 v3.1.10
@@ -22,6 +23,7 @@ require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
+	github.com/google/btree v1.1.3 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/miekg/dns v1.1.73 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect

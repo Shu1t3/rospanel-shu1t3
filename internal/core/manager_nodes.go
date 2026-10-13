@@ -30,6 +30,9 @@ func (m *Manager) GetNode(id int64) (*model.Node, error) { return m.store.GetNod
 // ensuring the node-API surface exists. The returned node carries RawJoinToken.
 // The name must be unique (it becomes a subscription proxy name/tag).
 func (m *Manager) CreateNode(name, host string) (*model.Node, error) {
+	if !model.ValidServerHost(host) {
+		return nil, invalidCode("err.nodeHostInvalid", "адрес ноды — домен или IP, без пробелов и спецсимволов")
+	}
 	if taken, err := m.store.NodeNameTaken(name, 0); err != nil {
 		return nil, err
 	} else if taken {
@@ -47,6 +50,9 @@ func (m *Manager) CreateNode(name, host string) (*model.Node, error) {
 
 // UpdateNode edits a node and wakes it so config/link changes apply promptly.
 func (m *Manager) UpdateNode(id int64, e store.NodeEdit) error {
+	if !model.ValidServerHost(e.Host) {
+		return invalidCode("err.nodeHostInvalid", "адрес ноды — домен или IP, без пробелов и спецсимволов")
+	}
 	if taken, err := m.store.NodeNameTaken(e.Name, id); err != nil {
 		return err
 	} else if taken {
@@ -217,7 +223,12 @@ func (m *Manager) NodeConnectionsInfo(id int64) (*ConnectionsStatus, error) {
 	if n == nil {
 		return nil, invalidCode("err.nodeNotFound", "нода не найдена")
 	}
-	return buildConnectionsStatus(nodeSettings(set, n)), nil
+	st := buildConnectionsStatus(nodeSettings(set, n))
+	m.nodeGeoMu.Lock()
+	st.MieruError = m.nodeMieruErr[id]
+	m.nodeGeoMu.Unlock()
+	st.MieruRunning = n.ServesMieru && st.MieruError == "" && derefBool(n.MieruEnabled)
+	return st, nil
 }
 
 // ApplyNodeConnections applies a full connections update to a node: its protocols,
@@ -295,7 +306,11 @@ func (m *Manager) ApplyNodeConnections(id int64, u ConnectionsUpdate) error {
 			awgPort = pickAWGPort()
 		}
 	}
-	if u.Protocols["vless"] || u.Protocols["reality"] {
+	naiveOn, naiveAsked := u.Protocols["naive"]
+	if !naiveAsked {
+		naiveOn = derefBool(n.NaiveEnabled)
+	}
+	if u.Protocols["vless"] || naiveOn || u.Protocols["reality"] {
 		inbounds, err := m.store.Inbounds(id)
 		if err != nil {
 			return err
@@ -312,7 +327,7 @@ func (m *Manager) ApplyNodeConnections(id int64, u ConnectionsUpdate) error {
 			if !in.Enabled || model.ProtoOf(in.Protocol) != "tcp" {
 				continue
 			}
-			if u.Protocols["vless"] && in.Port == vlessPort {
+			if (u.Protocols["vless"] || naiveOn) && in.Port == vlessPort {
 				return invalidCode("err.portTakenByInbound", "порт {{port}} уже занят подключением «{{who}}»", map[string]any{"port": in.Port, "who": in.Name})
 			}
 			if u.Protocols["reality"] && in.Port == u.RealityPort {
@@ -321,12 +336,48 @@ func (m *Manager) ApplyNodeConnections(id int64, u ConnectionsUpdate) error {
 		}
 	}
 
+	nodeCustom, err := m.store.Inbounds(id)
+	if err != nil {
+		return err
+	}
+	masterSet, err := m.store.GetSettings()
+	if err != nil {
+		return err
+	}
+	curMieruPort, curMieruTransport := 0, model.MieruTCP
+	if n.Connections != nil {
+		curMieruPort, curMieruTransport = n.Connections.MieruPort, model.MieruTransportOr(n.Connections.MieruTransport)
+	}
+	if curMieruPort == 0 {
+		curMieruPort = nodeSettings(masterSet, n).MieruPort // the default the node has been told so far
+	}
+	mieruOn, mieruAsked := u.Protocols["mieru"]
+	if !mieruAsked {
+		mieruOn = derefBool(n.MieruEnabled)
+	}
+	mieruPort, mieruTransport, err := resolveMieruPort(u.MieruPort, u.MieruTransport,
+		mieruOn, derefBool(n.MieruEnabled), curMieruPort, curMieruTransport,
+		mieruHeldOn(withConnPorts(*nodeSettings(masterSet, n), u, awgPort), nodeCustom), false)
+	if err != nil {
+		return err
+	}
 	if err := m.store.SetNodeProtocols(id,
 		u.Protocols["vless"], u.Protocols["hysteria2"], u.Protocols["reality"]); err != nil {
 		return err
 	}
 	if err := m.store.SetNodeAWGEnabled(id, u.Protocols["awg"]); err != nil {
 		return err
+	}
+	// Only when asked: a caller that predates the lane leaves it as it is.
+	if on, ok := u.Protocols["naive"]; ok {
+		if err := m.store.SetNodeNaiveEnabled(id, on); err != nil {
+			return err
+		}
+	}
+	if mieruAsked {
+		if err := m.store.SetNodeMieruEnabled(id, mieruOn); err != nil {
+			return err
+		}
 	}
 	if u.Protocols["awg"] || u.RegenAWGKeys {
 		if err := m.ensureNodeAWGIdentity(n, u.RegenAWGKeys); err != nil {
@@ -374,6 +425,10 @@ func (m *Manager) ApplyNodeConnections(id int64, u ConnectionsUpdate) error {
 		AWGPort:            awgPort,
 		AWGName:            connNames["awg"],
 		AWGDNS:             awgDNS,
+		NaiveName:          connNames["naive"],
+		MieruPort:          mieruPort,
+		MieruTransport:     mieruTransport,
+		MieruName:          connNames["mieru"],
 	}
 	if err := m.store.SetNodeConnections(id, blob); err != nil {
 		return err

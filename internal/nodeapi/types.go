@@ -85,6 +85,13 @@ type SyncRequest struct {
 	StateTag    string `json:"state_tag,omitempty"`
 	NodeVersion string `json:"node_version"`
 	XrayVersion string `json:"xray_version"`
+	// Naive ⇒ this agent answers NaiveProxy tunnels behind its decoy (internal/naive).
+	// An older agent does not, and the panel hands out no NaiveProxy link for it.
+	Naive bool `json:"naive,omitempty"`
+	// Mieru ⇒ this agent answers mieru on the port the panel gives it (MieruState),
+	// and MieruError is why its listener is not up, when it is not.
+	Mieru       bool   `json:"mieru,omitempty"`
+	MieruError  string `json:"mieru_error,omitempty"`
 	XrayRunning bool   `json:"xray_running"`
 	// Revoked ⇒ this node already knows the panel switched it off and has stopped
 	// serving. It changes how the panel answers: a node that has yet to hear the bad
@@ -136,6 +143,11 @@ type SyncRequest struct {
 	// quick round trips instead of one chunk per hold. A panel too old to know the
 	// field holds as before, which only drains more slowly.
 	TrafficMore bool `json:"traffic_more,omitempty"`
+
+	// Lanes are what each lane of the node carried since its last report — Xray's
+	// per-inbound counters and the AmneziaWG tunnel — in the same report as Traffic, so
+	// the same ReportID dedupes them. An older agent sends none.
+	Lanes []LaneDelta `json:"lanes,omitempty"`
 
 	// QuotaUsers are the users whose traffic moved on this node since its last request.
 	// The panel answers with what each of them has left of their quota (QuotaLeft), and
@@ -356,6 +368,13 @@ type GeoFile struct {
 	ModifiedAt int64  `json:"modified_at"`
 }
 
+// LaneDelta is one lane's traffic since the last report: an Xray inbound tag, or "awg".
+type LaneDelta struct {
+	Lane string `json:"lane"`
+	Up   int64  `json:"up"`
+	Down int64  `json:"down"`
+}
+
 // TrafficDelta is one user's up/down bytes on this node since the last ack.
 type TrafficDelta struct {
 	UserID int64 `json:"user_id"`
@@ -540,6 +559,16 @@ type NodeMeta struct {
 	// obfuscation parameters and every peer allowed on it. nil ⇒ the lane is off
 	// on this node and any running tunnel comes down. See internal/awg.
 	AWG *AWGState `json:"awg,omitempty"`
+
+	// Mieru is where the node's mieru lane listens; nil ⇒ the lane is off on this node.
+	// Its users are mieru-in's clients in the Xray config. See internal/mieru.
+	Mieru *MieruState `json:"mieru,omitempty"`
+}
+
+// MieruState is one server's mieru listener.
+type MieruState struct {
+	Port      int    `json:"port"`
+	Transport string `json:"transport"`
 }
 
 // AWGState is one server's tunnel: what the node feeds to awg.Device.Apply.
