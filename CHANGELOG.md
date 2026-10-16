@@ -1,5 +1,47 @@
 # Changelog
 
+## [5.1.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.0.0...v5.1.0) (2026-10-16)
+
+
+### Features
+
+* AnyTLS lane, VLESS Encryption/CDN/pinned cert, UUID reset, per-client protocol rules ([64f96b6](https://github.com/Shu1t3/rospanel-shu1t3/commit/64f96b6d8840c60f839fc26e8ac994e0b744cac4))
+* **dns:** more presets, grouped by provider with IP/DoH variants ([7bb4c1f](https://github.com/Shu1t3/rospanel-shu1t3/commit/7bb4c1ff4f394b6312a55dff205af382c9b6ef18))
+* **hostfw:** open the server's ports in ufw, iptables and firewalld ([4453d0f](https://github.com/Shu1t3/rospanel-shu1t3/commit/4453d0fd69787fdf8233be2abb06bd103d0edca8))
+* **i18n:** Persian, right to left ([f318d93](https://github.com/Shu1t3/rospanel-shu1t3/commit/f318d9358f7780057ce9b36be6834d2f5b0279aa))
+* **i18n:** Simplified Chinese and Arabic, with a right-to-left layout ([060c82f](https://github.com/Shu1t3/rospanel-shu1t3/commit/060c82f5d24ea7f641db42dc4523ce4314ffbf1f))
+* **masquerade:** serve the decoy over HTTP/3, draw REALITY's donor and port ([8ab3128](https://github.com/Shu1t3/rospanel-shu1t3/commit/8ab3128f168426fa3227f3620b7b769bc172d1ae))
+* **mieru:** mieru lane on a port of its own ([2655978](https://github.com/Shu1t3/rospanel-shu1t3/commit/26559789e2a52acb3041bddedcf13a0242cd4a9b))
+* **mtproto:** Telegram proxy on a port of its own ([d7c5c2a](https://github.com/Shu1t3/rospanel-shu1t3/commit/d7c5c2a82bb1fe24c6c9becc7265b25042e7ce66))
+* **naive:** NaiveProxy lane through the :443 decoy ([24ece96](https://github.com/Shu1t3/rospanel-shu1t3/commit/24ece965d7cbbb3bd285e6efbc0a5f105f4b2d9d))
+* **notify:** tell the admins when a lane leaves or rejoins subscriptions ([3b4918f](https://github.com/Shu1t3/rospanel-shu1t3/commit/3b4918fb75f7a0f3b40c77b2488e443ee70544ac))
+* **reach:** check servers from other countries through Globalping ([c247167](https://github.com/Shu1t3/rospanel-shu1t3/commit/c24716790bb8945f961fd4310fb55232ab03c6b6))
+* **routing:** cascade — leave through our own servers ([9bf91cc](https://github.com/Shu1t3/rospanel-shu1t3/commit/9bf91ccf3e55d5627e6a1b67ca7523e407efcd41))
+* **stats:** traffic by protocol, per server ([24ece96](https://github.com/Shu1t3/rospanel-shu1t3/commit/24ece965d7cbbb3bd285e6efbc0a5f105f4b2d9d))
+* **sub:** AmneziaWG 3.1 in the Clash profile for mihomo 1.19.30+ and FlClash 0.8.99+, and an amneziawg:// line for INCY ([24ece96](https://github.com/Shu1t3/rospanel-shu1t3/commit/24ece965d7cbbb3bd285e6efbc0a5f105f4b2d9d))
+* **sub:** leave a lane that is down out of subscriptions ([d1b41e7](https://github.com/Shu1t3/rospanel-shu1t3/commit/d1b41e7b7d3d068db53ee27b3bb5d0bb53c95a8d))
+* **sub:** NaiveProxy for Throne (with UDP), Exclave and husi; AmneziaWG 3.1 for ClashMi, ClashMetaForAndroid, Clash Verge Rev, Mihomo Party, Koala Clash and Throne ([2655978](https://github.com/Shu1t3/rospanel-shu1t3/commit/26559789e2a52acb3041bddedcf13a0242cd4a9b))
+* sync upstream NaiveProxy and Mieru preserving fork safeguards ([d795291](https://github.com/Shu1t3/rospanel-shu1t3/commit/d795291c4fa466d96030ea99613f992086ada9c6))
+* sync upstream v5.7.0 preserving fork safeguards ([60a4e39](https://github.com/Shu1t3/rospanel-shu1t3/commit/60a4e39dab15201cbfa6cca1e48b0456ee44c4bf))
+* **update:** follow node updates, update the master from Servers, schedule only in settings ([3355f9c](https://github.com/Shu1t3/rospanel-shu1t3/commit/3355f9cce2c052de874700e0d3cad99e712cbbd4))
+* **web:** the language picker in the top bar, and a row on the phone ([f12e496](https://github.com/Shu1t3/rospanel-shu1t3/commit/f12e4960653aace5e2a86b311ca558a846256bbd))
+
+
+### Bug Fixes
+
+* **awg:** open iptables FORWARD for the tunnel on Docker/ufw hosts ([0ce5b19](https://github.com/Shu1t3/rospanel-shu1t3/commit/0ce5b19acd43f5b96d2213919c971edf13ce66a2))
+* **i18n:** reword the daily scanner digest ([fc2860d](https://github.com/Shu1t3/rospanel-shu1t3/commit/fc2860d5866113d1654250ed824ac17756d70f28))
+* **mtproto:** bound the DC port to 16 bits and reuse one record buffer ([616313e](https://github.com/Shu1t3/rospanel-shu1t3/commit/616313e5409dd4c43393d79d4ba7ed7377e312b7))
+* **nodes:** validate a server's host on create and edit ([24ece96](https://github.com/Shu1t3/rospanel-shu1t3/commit/24ece965d7cbbb3bd285e6efbc0a5f105f4b2d9d))
+* **sub:** the Telegram proxy's Copy takes the tg:// link ([ee68384](https://github.com/Shu1t3/rospanel-shu1t3/commit/ee68384b88f22cda8f1340dda546bfbd5a22fa27))
+* **update:** offer a release only once its binaries are uploaded ([28b8a32](https://github.com/Shu1t3/rospanel-shu1t3/commit/28b8a32a84ed3a06625b0c11cd27d8d34e488e1e))
+
+
+### Refactoring
+
+* **inbounds:** the WireGuard-over-TURN inbound is called TURN-VK (turn-vk) ([24ece96](https://github.com/Shu1t3/rospanel-shu1t3/commit/24ece965d7cbbb3bd285e6efbc0a5f105f4b2d9d))
+* optimize benchmarks, improve sql error handling, and clean up manager method signatures ([0826969](https://github.com/Shu1t3/rospanel-shu1t3/commit/08269692ab3722de869ffa27c6832666dac08863))
+
 ## [5.0.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v4.3.0...v5.0.0) (2026-10-12)
 
 
