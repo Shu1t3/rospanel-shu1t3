@@ -140,16 +140,16 @@ func BackupAdminTOTPSecrets(dir string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
 	var enc []string
 	for rows.Next() {
 		var s string
 		if err := rows.Scan(&s); err != nil {
-			rows.Close()
 			return nil, err
 		}
 		enc = append(enc, s)
 	}
-	if err := rows.Close(); err != nil {
+	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	if len(enc) == 0 {

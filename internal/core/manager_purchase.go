@@ -374,7 +374,7 @@ func (m *Manager) StartPurchase(ctx context.Context, lang i18n.Lang, userID int6
 	if err != nil {
 		return nil, err
 	}
-	return m.startProviderOrder(ctx, lang, d, provider, returnURL, func(id int64) string {
+	return m.startProviderOrder(ctx, d, provider, returnURL, func(id int64) string {
 		return i18n.T(lang, "order.description", subject, id)
 	})
 }
@@ -632,7 +632,7 @@ func (m *Manager) RequestPurchaseExternal(ctx context.Context, userID int64, p P
 
 // RequestTopupExternal is RequestPurchaseExternal for a balance top-up.
 func (m *Manager) RequestTopupExternal(ctx context.Context, userID int64, amountRub int, ref string) (*model.PaymentOrder, error) {
-	if err := m.checkTopup(userID, amountRub); err != nil {
+	if err := m.checkTopup(amountRub); err != nil {
 		return nil, err
 	}
 	return m.externalOrder(ctx, topupDraft(userID, amountRub), ref)

@@ -70,6 +70,9 @@ func TestHeldUsersAreFoundThroughTheirIndex(t *testing.T) {
 		}
 		plan += detail + "; "
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
 	if plan == "" {
 		t.Fatal("empty query plan")
 	}

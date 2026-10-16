@@ -61,6 +61,7 @@ func (e purchaseEnv) user(t *testing.T) model.User {
 }
 
 func (e purchaseEnv) balance(t *testing.T) int64 {
+	t.Helper()
 	w, _ := e.st.GetWalletLite(e.userID)
 	return w.BalanceKop
 }

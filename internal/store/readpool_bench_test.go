@@ -119,8 +119,7 @@ func BenchmarkWritesUnderPacedReads(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
-	b.ResetTimer()
-	for range b.N {
+	for b.Loop() {
 		stop := make(chan struct{})
 		var writes atomic.Int64
 		var mu sync.Mutex

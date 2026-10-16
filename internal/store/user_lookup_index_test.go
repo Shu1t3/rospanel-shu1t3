@@ -131,6 +131,9 @@ func TestDeviceCountOfFewUsesTheirRows(t *testing.T) {
 		}
 		plan = append(plan, detail)
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
 	got := strings.Join(plan, " | ")
 	if !strings.Contains(got, "(user_id=?") {
 		t.Fatalf("plan does not look users up by key: %s", got)

@@ -367,10 +367,10 @@ func (m *Manager) supersedePromoOrders(ctx context.Context, userID, promoID, kee
 
 // StartTopup opens a provider payment that puts amountRub on the balance.
 func (m *Manager) StartTopup(ctx context.Context, lang i18n.Lang, userID int64, amountRub int, provider, returnURL string) (*model.PaymentOrder, error) {
-	if err := m.checkTopup(userID, amountRub); err != nil {
+	if err := m.checkTopup(amountRub); err != nil {
 		return nil, err
 	}
-	return m.startProviderOrder(ctx, lang, topupDraft(userID, amountRub), provider, returnURL, func(id int64) string {
+	return m.startProviderOrder(ctx, topupDraft(userID, amountRub), provider, returnURL, func(id int64) string {
 		return i18n.T(lang, "order.topupDescription", id)
 	})
 }
@@ -380,14 +380,14 @@ func (m *Manager) RequestTopupManual(ctx context.Context, lang i18n.Lang, userID
 	if !m.ManualPayment() {
 		return nil, "", invalidCode("err.payMethodUnavailable", "способ оплаты недоступен")
 	}
-	if err := m.checkTopup(userID, amountRub); err != nil {
+	if err := m.checkTopup(amountRub); err != nil {
 		return nil, "", err
 	}
 	set, _ := m.Settings()
 	return m.manualOrder(ctx, lang, topupDraft(userID, amountRub), i18n.T(lang, "order.topupSubject"), set)
 }
 
-func (m *Manager) checkTopup(userID int64, amountRub int) error {
+func (m *Manager) checkTopup(amountRub int) error {
 	set, err := m.Settings()
 	if err != nil {
 		return err

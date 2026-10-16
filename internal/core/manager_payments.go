@@ -391,7 +391,7 @@ func planSubject(lang i18n.Lang, plan string, periods int) string {
 
 // startProviderOrder creates an order and the provider payment that collects it.
 // describe renders the invoice description once the order has its number.
-func (m *Manager) startProviderOrder(ctx context.Context, lang i18n.Lang, d store.OrderDraft, provider, returnURL string, describe func(orderID int64) string) (*model.PaymentOrder, error) {
+func (m *Manager) startProviderOrder(ctx context.Context, d store.OrderDraft, provider, returnURL string, describe func(orderID int64) string) (*model.PaymentOrder, error) {
 	methods := m.PaymentMethods()
 	if len(methods) == 0 {
 		return nil, invalidCode("err.autoPayNotConfigured", "автоматическая оплата не настроена")

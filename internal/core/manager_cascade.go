@@ -542,7 +542,14 @@ func publicInterfaceAddrs() []netip.Addr {
 func bridgesKey(bridges []xray.Bridge) string {
 	var b strings.Builder
 	for _, x := range bridges {
-		b.WriteString(x.Email + "|" + x.Lane + "|" + x.UUID + "|" + strings.Join(x.Sources, ",") + ";")
+		b.WriteString(x.Email)
+		b.WriteByte('|')
+		b.WriteString(x.Lane)
+		b.WriteByte('|')
+		b.WriteString(x.UUID)
+		b.WriteByte('|')
+		b.WriteString(strings.Join(x.Sources, ","))
+		b.WriteByte(';')
 	}
 	return b.String()
 }
