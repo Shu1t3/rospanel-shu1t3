@@ -2,9 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import i18n from "./i18n";
 import { useTranslation } from "react-i18next";
 import {
+  applyUpdate,
+  checkUpdate,
   getAutoUpdate,
+  listNodes,
   saveAutoUpdate,
   type AutoUpdate,
+  type UpdateInfo,
   getMe,
   getSettings,
   getConnPolicy,
@@ -35,10 +39,11 @@ import {
 } from "./CronPicker";
 import { useAction } from "./hooks";
 import { ConnPolicyCard, EMPTY_POLICY } from "./ConnPolicyCard";
-import { notifySuccess } from "./notify";
+import { errMessage, notifyError, notifySuccess } from "./notify";
 import { useCan, useIsOwner } from "./role";
 import { browserTimezone, setPanelTimezone, tzOptions } from "./tz";
 import { fmtStamp } from "./format";
+import { reloadOnVersion } from "./update";
 import {
   ReadOnly,
   Button,
@@ -48,10 +53,12 @@ import {
   IconButton,
   IconRestart,
   Modal,
+  Mono,
   Panel,
   SaveBar,
   Select,
   SettingRow,
+  Spinner,
   Switch,
   TagsInput,
   TextInput,
@@ -137,6 +144,7 @@ export function GeneralSettings() {
   const canSecManage = useCan("security.manage");
   // The local backup schedule is the owner's, like backups themselves.
   const canBackup = useIsOwner();
+  const canServers = useCan("servers.view");
   const [loaded, setLoaded] = useState(false);
   const [timezone, setTimezone] = useState("");
   const [savedTz, setSavedTz] = useState("");
@@ -145,6 +153,12 @@ export function GeneralSettings() {
   const [savedBk, setSavedBk] = useState<LocalBackup>(EMPTY_BK);
   const [autoDel, setAutoDel] = useState(0);
   const [savedAutoDel, setSavedAutoDel] = useState(0);
+  const [version, setVersion] = useState("");
+  const [upd, setUpd] = useState<UpdateInfo | null>(null);
+  const [updating, setUpdating] = useState(false);
+  // How many nodes an update could take along, and whether the one running does.
+  const [nodeCount, setNodeCount] = useState(0);
+  const [updNodes, setUpdNodes] = useState(false);
   // The auto-update schedule, a draft behind the page's SaveBar like the backups.
   const [au, setAu] = useState<{ schedule: Schedule; nodes: boolean }>({ schedule: detectPreset(""), nodes: true });
   const [savedAu, setSavedAu] = useState(au);
@@ -184,11 +198,24 @@ export function GeneralSettings() {
           const tz = m.timezone || browserTimezone();
           setTimezone(tz);
           setSavedTz(tz);
+          setVersion(m.version);
         })
         .catch(() => {
           setTimezone(browserTimezone());
           setSavedTz(browserTimezone());
         }),
+      canUpdate &&
+        checkUpdate()
+          .then((info) => {
+            setUpd(info);
+            if (info.current) setVersion(info.current);
+            if (info.available && canServers) {
+              listNodes()
+                .then((r) => setNodeCount(r.nodes.length))
+                .catch(() => setNodeCount(0));
+            }
+          })
+          .catch(() => {}),
       canUpdate &&
         getAutoUpdate()
           .then((a) => {
@@ -344,14 +371,107 @@ export function GeneralSettings() {
   };
 
 
+  const doCheckUpdate = () =>
+    run(
+      async () => {
+        const info = await checkUpdate();
+        setUpd(info);
+        setVersion(info.current);
+        // The node list is the servers' to read; without it the nodes are not offered
+        // an update from here (they still update from the servers page).
+        if (info.available && canServers) {
+          listNodes()
+            .then((r) => setNodeCount(r.nodes.length))
+            .catch(() => setNodeCount(0));
+        }
+        if (info.error) notifyError(info.error);
+        else if (!info.available) notifySuccess(t("general.upToDate"));
+      },
+      { key: "upd-check" },
+    );
+
+  const doUpdate = async (withNodes: boolean) => {
+    if (!upd?.latest) return;
+    const ok = await confirm({
+      title: t("general.updateTitle", { version: upd.latest }),
+      body: t(withNodes ? "general.updateBodyNodes" : "general.updateBody"),
+      confirmLabel: t("general.update"),
+    });
+    if (!ok) return;
+    setUpdNodes(withNodes);
+    setUpdating(true);
+    try {
+      const r = await applyUpdate(withNodes);
+      if (withNodes) {
+        if (r.nodes_error) notifyError(t("general.updateNodesFailed"));
+        else notifySuccess(t("nodes.updateStarted", { count: r.nodes ?? 0 }));
+      }
+    } catch (e) {
+      setUpdating(false);
+      notifyError(errMessage(e));
+      return;
+    }
+    reloadOnVersion(upd.latest, (why) => {
+      setUpdating(false);
+      notifyError(t(why === "slow" ? "general.updateSlow" : "general.noAnswer"));
+    });
+  };
+
   if (!loaded) return <CenterLoader />;
 
   return (
     <div className="flex flex-1 flex-col gap-3.5">
-      {/* When the panel updates itself, and its servers with it. Updating by hand is
-          on the Servers page, next to the servers it touches. */}
+      {/* What is running, and what could be. The check is a section action: it
+          answers the whole section, not one of its rows. */}
       {canUpdate && (
-      <Panel title={t("general.updateSection")}>
+      <Panel
+        title={t("general.updateSection")}
+        aside={
+          <Button
+            size="xs"
+            variant="light"
+            color="gray"
+            loading={isBusy("upd-check")}
+            disabled={updating}
+            onClick={doCheckUpdate}
+          >
+            {t("general.checkUpdates")}
+          </Button>
+        }
+      >
+        <SettingRow
+          label={t("general.currentVersion")}
+          control={<Mono className="text-xs text-ink">v{version || "—"}</Mono>}
+        />
+        {upd?.available && upd.latest && (
+          <SettingRow
+            label={t("general.availableVersion")}
+            control={
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <Mono className="text-xs text-accent">v{upd.latest}</Mono>
+                <Button
+                  size="xs"
+                  loading={updating && !updNodes}
+                  disabled={updating}
+                  onClick={() => doUpdate(false)}
+                >
+                  {t("general.updatePanel")}
+                </Button>
+                {nodeCount > 0 && (
+                  <Button
+                    size="xs"
+                    variant="light"
+                    loading={updating && updNodes}
+                    disabled={updating}
+                    onClick={() => doUpdate(true)}
+                  >
+                    {t("general.updatePanelAndNodes")}
+                  </Button>
+                )}
+              </div>
+            }
+          />
+        )}
         <SettingRow label={t("general.autoUpdate")} hint={t("general.autoUpdateHint")}>
           <CronPicker
             value={au.schedule}
@@ -367,6 +487,17 @@ export function GeneralSettings() {
             </p>
           ) : null}
         </SettingRow>
+        <Modal
+          open={updating}
+          onClose={() => {}}
+          dismissible={false}
+          title={t("general.updateSection")}
+        >
+          <div className="flex items-start gap-3">
+            <Spinner size={22} className="mt-0.5 shrink-0" />
+            <p className="text-sm text-ink">{t("general.updatingHint")}</p>
+          </div>
+        </Modal>
       </Panel>
       )}
 
