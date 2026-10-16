@@ -387,6 +387,20 @@ func (s *Store) migrate() error {
 		_, _ = s.db.Exec(`INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES ('0069_happ_subscriptions.sql', unixepoch())`)
 	}
 
+	var mtprotoColCount, mtprotoNodeColCount int
+	_ = s.db.QueryRow(`SELECT COUNT(1) FROM pragma_table_info('settings') WHERE name = 'mtproto_enabled'`).Scan(&mtprotoColCount)
+	_ = s.db.QueryRow(`SELECT COUNT(1) FROM pragma_table_info('nodes') WHERE name = 'mtproto_enabled'`).Scan(&mtprotoNodeColCount)
+	if mtprotoColCount > 0 || mtprotoNodeColCount > 0 {
+		_, _ = s.db.Exec(`ALTER TABLE settings ADD COLUMN mtproto_enabled INTEGER NOT NULL DEFAULT 1`)
+		_, _ = s.db.Exec(`ALTER TABLE settings ADD COLUMN mtproto_port INTEGER NOT NULL DEFAULT 0`)
+		_, _ = s.db.Exec(`ALTER TABLE settings ADD COLUMN mtproto_name TEXT NOT NULL DEFAULT ''`)
+		_, _ = s.db.Exec(`ALTER TABLE settings ADD COLUMN mtproto_domain TEXT NOT NULL DEFAULT ''`)
+		_, _ = s.db.Exec(`ALTER TABLE nodes ADD COLUMN mtproto_enabled INTEGER NOT NULL DEFAULT 1`)
+		_, _ = s.db.Exec(`ALTER TABLE nodes ADD COLUMN serves_mtproto INTEGER NOT NULL DEFAULT 0`)
+		_, _ = s.db.Exec(`ALTER TABLE nodes ADD COLUMN mtproto_domain TEXT NOT NULL DEFAULT ''`)
+		_, _ = s.db.Exec(`INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES ('0126_mtproto.sql', unixepoch())`)
+	}
+
 	entries, err := migrationsFS.ReadDir("migrations")
 	if err != nil {
 		return err
@@ -418,8 +432,24 @@ func (s *Store) migrate() error {
 			return err
 		}
 		if _, err := tx.Exec(string(body)); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("apply %s: %w", name, err)
+			if strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+				_ = tx.Rollback()
+				tx, err = s.db.Begin()
+				if err != nil {
+					return err
+				}
+				for _, stmt := range splitSQLStatements(string(body)) {
+					if _, stmtErr := tx.Exec(stmt); stmtErr != nil {
+						if !strings.Contains(strings.ToLower(stmtErr.Error()), "duplicate column name") {
+							_ = tx.Rollback()
+							return fmt.Errorf("apply %s (%s): %w", name, stmt, stmtErr)
+						}
+					}
+				}
+			} else {
+				_ = tx.Rollback()
+				return fmt.Errorf("apply %s: %w", name, err)
+			}
 		}
 		if _, err := tx.Exec(
 			`INSERT INTO schema_migrations (version) VALUES (?)`, name,
@@ -432,6 +462,84 @@ func (s *Store) migrate() error {
 		}
 	}
 	return nil
+}
+
+func splitSQLStatements(sql string) []string {
+	var stmts []string
+	var cur strings.Builder
+	inQuote := false
+	inLineComment := false
+	inBlockComment := false
+
+	chars := []rune(sql)
+	n := len(chars)
+	for i := 0; i < n; i++ {
+		c := chars[i]
+		if inLineComment {
+			if c == '\n' {
+				inLineComment = false
+			}
+			cur.WriteRune(c)
+			continue
+		}
+		if inBlockComment {
+			if c == '*' && i+1 < n && chars[i+1] == '/' {
+				inBlockComment = false
+				cur.WriteRune(c)
+				cur.WriteRune('/')
+				i++
+				continue
+			}
+			cur.WriteRune(c)
+			continue
+		}
+		if inQuote {
+			if c == '\'' {
+				if i+1 < n && chars[i+1] == '\'' {
+					cur.WriteRune('\'')
+					cur.WriteRune('\'')
+					i++
+					continue
+				}
+				inQuote = false
+			}
+			cur.WriteRune(c)
+			continue
+		}
+
+		if c == '-' && i+1 < n && chars[i+1] == '-' {
+			inLineComment = true
+			cur.WriteRune(c)
+			cur.WriteRune('-')
+			i++
+			continue
+		}
+		if c == '/' && i+1 < n && chars[i+1] == '*' {
+			inBlockComment = true
+			cur.WriteRune(c)
+			cur.WriteRune('*')
+			i++
+			continue
+		}
+		if c == '\'' {
+			inQuote = true
+			cur.WriteRune(c)
+			continue
+		}
+		if c == ';' {
+			stmt := strings.TrimSpace(cur.String())
+			if stmt != "" {
+				stmts = append(stmts, stmt)
+			}
+			cur.Reset()
+			continue
+		}
+		cur.WriteRune(c)
+	}
+	if stmt := strings.TrimSpace(cur.String()); stmt != "" {
+		stmts = append(stmts, stmt)
+	}
+	return stmts
 }
 
 // migrationNumber pulls the leading 4-digit ordinal out of a migration filename
