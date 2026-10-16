@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.2.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.1.1...v5.2.0) (2026-10-16)
+
+
+### Features
+
+* **update:** restore manual update check and update buttons in general settings ([83d1b86](https://github.com/Shu1t3/rospanel-shu1t3/commit/83d1b86902e1894d86cb0a388b6fcb4645b28bde))
+
 ## [5.1.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.1.0...v5.1.1) (2026-10-16)
 
 
