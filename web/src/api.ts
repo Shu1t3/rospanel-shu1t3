@@ -1,6 +1,6 @@
 // API client. All paths are RELATIVE so they resolve against <base href="/<secret>/">
 // injected by the Go server — the SPA never needs to know its own secret path.
-import i18n from './i18n'
+import i18n, { currentLang } from './i18n'
 
 export interface User {
   id: number
@@ -329,6 +329,12 @@ export interface ConnectionsStatus {
   mieru_transport: string
   mieru_running: boolean
   mieru_error?: string
+  // MTProto (Telegram proxy): its port, the domain its secrets carry, and whether it
+  // listens (the master's own, or as the node last reported).
+  mtproto_port: number
+  mtproto_domain: string
+  mtproto_running: boolean
+  mtproto_error?: string
 }
 
 export interface AWGParams {
@@ -393,6 +399,11 @@ export interface ConnectionsUpdate {
   regen_awg_keys: boolean
   mieru_port: number
   mieru_transport: string
+  mtproto_port: number
+  // "" keeps it; another domain gives every user a new link; reset goes back to the
+  // default one.
+  mtproto_domain: string
+  mtproto_domain_reset?: boolean
 }
 
 export const applyConnections = (u: ConnectionsUpdate) =>
@@ -584,6 +595,8 @@ export const setResetPeriod = (id: number, period: string) =>
   })
 export const rotateSubToken = (id: number) =>
   api<User>(`api/users/${id}/rotate-sub`, { method: 'POST' })
+export const resetUserUUID = (id: number) =>
+  api<User>(`api/users/${id}/reset-uuid`, { method: 'POST' })
 export const unlinkUserTelegram = (id: number) =>
   api<{ ok: boolean }>(`api/users/${id}/telegram/unlink`, { method: 'POST' })
 export const genUserTelegramLink = (id: number) =>
@@ -1006,6 +1019,8 @@ export const getAdminAuditCatalog = () =>
 export interface UpdateInfo {
   current: string
   latest?: string
+  // The latest release carries its binaries (it is published before they are uploaded).
+  ready?: boolean
   available: boolean
   notes?: string
   error?: string
@@ -1177,6 +1192,9 @@ export interface EgressLane {
   manual: string[]
   domains: string[]
   ips: string[]
+  // A cascade: our own servers as the upstreams (0 = the master), each reached over
+  // one of its built-in lanes (reality / vision / hysteria2).
+  via?: { server: number; bridge?: string }[]
 }
 
 export interface RoutingConfig {
@@ -1317,13 +1335,52 @@ export const saveSubSettings = (s: SubSettings) =>
   })
 
 // Subscription response rules: evaluated in order before format auto-detection.
+// SubProto is a protocol a response rule can give or hide (model.SubProtoKeys).
+export const SUB_PROTOS = [
+  'vless',
+  'reality',
+  'hysteria2',
+  'naive',
+  'anytls',
+  'mieru',
+  'awg',
+  'custom',
+  'vless_enc',
+] as const
+export type SubProto = (typeof SUB_PROTOS)[number]
+
 export interface SubRule {
   field: 'user_agent' | 'device_os' | 'ver_os' | 'device_model'
   op: 'contains' | 'equals' | 'prefix' | 'regex' | 'not_contains'
   value: string
-  action: 'v2ray' | 'clash' | 'singbox' | 'xray-json' | 'block'
+  // auto keeps the format the client is detected as: a rule that only changes protocols.
+  action: 'auto' | 'v2ray' | 'clash' | 'singbox' | 'xray-json' | 'block'
   enabled: boolean
+  // A protocol not named is decided by the client's User-Agent.
+  protocols?: Partial<Record<SubProto, 'on' | 'off'>>
 }
+
+// SubRulePreview is what a client with given headers is answered with under the rules
+// being edited: the rule that fires (-1 none), the format and the protocols it carries.
+export interface SubRulePreview {
+  rule: number
+  blocked?: boolean
+  format?: string
+  protocols?: Record<SubProto, boolean>
+}
+
+// SubRuleHeaders are the request attributes besides the User-Agent a rule can test.
+export interface SubRuleHeaders {
+  device_os?: string
+  ver_os?: string
+  device_model?: string
+}
+
+export const previewSubRules = (rules: SubRule[], userAgent: string, headers: SubRuleHeaders = {}) =>
+  api<SubRulePreview>('api/settings/sub-rules/preview', {
+    method: 'POST',
+    body: JSON.stringify({ rules, user_agent: userAgent, ...headers }),
+  })
 
 export const getSubRules = () =>
   api<{ rules: SubRule[] }>('api/settings/sub-rules').then((r) => r.rules)
@@ -2595,6 +2652,8 @@ export interface NodeView {
   // happened, then 'done' (or 'timeout' if we gave up) for a few seconds, then gone.
   // Absent for the master, whose restart is synchronous.
   xray_restart?: 'pending' | 'done' | 'timeout'
+  // Why the self-update asked of this node did not happen, as it last said.
+  update_error?: string
   vless_enabled: boolean
   hysteria_enabled: boolean
   reality_enabled: boolean
@@ -2646,8 +2705,63 @@ export interface NodeView {
   reality_short_id: string
   reality_path: string
   master_label?: string // config-label name of the master (local node only)
+  // The connections a cascade can reach this server over, its names for them, and
+  // whether each is on there.
+  bridges?: { bridge: string; name: string; enabled: boolean }[]
   proxy: SystemProxy // this server's system proxy (SOCKS/HTTP forward listeners)
+  // The last check of this server from other countries; absent until one ran.
+  reach?: ReachSummary
 }
+
+// Reachability from other countries (Globalping): a TCP ping to the server's main
+// port from probes in each country. A probe that failed on its own side is "failed"
+// and counts toward neither side.
+export interface ReachSummary {
+  at: number
+  countries: { code: string; ok: number; answered: number; blocked: boolean }[]
+}
+
+export interface ReachProbe {
+  country: string
+  city: string
+  network: string
+  asn: number
+  state: 'ok' | 'blocked' | 'failed'
+  rtt_ms?: number
+  resolved?: string
+}
+
+export interface ReachCountry {
+  code: string
+  ok: number
+  blocked: number
+  failed: number
+  probes: ReachProbe[]
+}
+
+export interface ReachReport {
+  server_id: number
+  host: string
+  port: number
+  at: number // 0 = not checked since the panel started
+  countries: ReachCountry[]
+}
+
+export interface ReachConfig {
+  countries: string[]
+  probes: number // per country
+  every: number // minutes between monitor rounds; 0 = only on demand
+  threshold: number // percent
+  has_token: boolean
+}
+
+export const getReachConfig = () => api<ReachConfig>('api/reach')
+// token: undefined keeps the stored one, "" clears it.
+export const setReachConfig = (c: Omit<ReachConfig, 'has_token'>, token?: string) =>
+  api<ReachConfig>('api/reach', { method: 'POST', body: JSON.stringify({ ...c, token }) })
+export const getNodeReach = (id: number) => api<ReachReport>(`api/nodes/${id}/reach`)
+export const checkNodeReach = (id: number) =>
+  api<ReachReport>(`api/nodes/${id}/reach`, { method: 'POST' })
 
 // SystemProxy is one server's forward proxy: SOCKS5 and/or HTTP listeners for
 // traffic that is NOT a VPN client (a scraper, a bot, another panel chaining its
@@ -3006,6 +3120,15 @@ export interface InboundOpts {
   wg_public_key?: string
   wg_local_port?: number
   turn_link?: string
+  // VLESS Encryption: the mode ("" / absent = off) and the clients' half, which goes
+  // into their links. The server's half carries its private key and is never sent.
+  enc_mode?: string
+  encryption?: string
+  // Behind a CDN: the domain clients connect to, and its port (443 when 0/absent).
+  cdn_host?: string
+  cdn_port?: number
+  // Clients check the certificate by fingerprint, so SNI may be any name.
+  pin_cert?: boolean
   // Advanced. header_* / authority / multi_mode are simple mirrored-into-links knobs.
   // The three JSON sections travel as typed forms, not on opts — see the *_form fields
   // on Inbound below (the server nils the raw blobs out of opts).
@@ -3140,6 +3263,12 @@ export interface InboundInput {
   method: string
   // WireGuard's VK call invite link; ignored for the others.
   turn_link: string
+  // VLESS Encryption mode, "" = off; ignored for the others.
+  enc_mode: string
+  // The CDN clients reach the inbound through ("" = none) and its port (0 = 443).
+  cdn_host: string
+  cdn_port: number
+  pin_cert: boolean
   // The three advanced sections as typed forms; the server assembles them into the
   // JSON blob Xray reads and validates that.
   xhttp_extra: XHTTPExtraForm
@@ -3872,7 +4001,7 @@ export interface PluginAction {
 }
 
 export const listPluginActions = () =>
-  api<{ actions: PluginAction[] }>(`api/plugin-actions?lang=${i18n.language === 'en' ? 'en' : 'ru'}`)
+  api<{ actions: PluginAction[] }>(`api/plugin-actions?lang=${currentLang()}`)
 
 export const runPluginAction = (plugin: string, key: string, userIds: number[]) =>
   api<{ ok: boolean; message: string }>(
@@ -3894,7 +4023,7 @@ export interface PluginWidget {
 }
 
 export const getPluginWidgets = () =>
-  api<{ widgets: PluginWidget[] }>(`api/plugin-widgets?lang=${i18n.language === 'en' ? 'en' : 'ru'}`)
+  api<{ widgets: PluginWidget[] }>(`api/plugin-widgets?lang=${currentLang()}`)
 
 export interface PluginFieldsBlock {
   plugin: string
@@ -3904,5 +4033,5 @@ export interface PluginFieldsBlock {
 
 export const getUserPluginFields = (userId: number) =>
   api<{ plugins: PluginFieldsBlock[] }>(
-    `api/users/${userId}/plugin-fields?lang=${i18n.language === 'en' ? 'en' : 'ru'}`,
+    `api/users/${userId}/plugin-fields?lang=${currentLang()}`,
   )

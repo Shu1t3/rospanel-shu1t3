@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import type { CascadeServer } from "./RoutingEditor";
 import i18n from "./i18n";
 import {
   deleteNode,
@@ -7,7 +8,6 @@ import {
   setNodeEnabled,
   restartNodeXray,
   restartXray,
-  updateNodeVersion,
   type GeoCategories,
   type NodeView,
 } from "./api";
@@ -28,6 +28,7 @@ import {
   IconButton,
   IconDots,
   IconGear,
+  IconGlobe,
   IconPulse,
   IconRestart,
   IconTerminal,
@@ -43,6 +44,7 @@ import { MasterSettingsDialog } from "./MasterSettingsDialog";
 import { NodeSettingsDialog } from "./NodeSettingsDialog";
 import { useCan } from "./role";
 import { agentSkew, nodeState, serverName } from "./NodeStatus";
+import { ReachBadges, ReachDialog } from "./ReachPanel";
 
 function fmtSeen(unix: number): string {
   if (!unix) return i18n.t("nodes.neverJoined");
@@ -78,15 +80,25 @@ export function NodeCard({
   decoys,
   geo,
   panelVersion,
+  reachOn,
+  servers,
   onChanged,
   onRegen,
+  onUpdate,
 }: {
   node: NodeView;
   decoys: string[];
   geo: GeoCategories;
   panelVersion: string;
+  // Whether the check from other countries is on (its settings list countries).
+  reachOn: boolean;
+  // Every server, for a cascade lane's exits (CascadeServer).
+  servers?: CascadeServer[];
   onChanged: () => void;
   onRegen: (command: string) => void;
+  // Asks this node to update; the list confirms it and follows the progress. Absent
+  // while the node already runs the newest release.
+  onUpdate?: () => void;
 }) {
   const { t } = useTranslation();
   const canServers = useCan("servers.view");
@@ -99,6 +111,7 @@ export function NodeCard({
   const [showingLogs, setShowingLogs] = useState(false);
   const [showingConfig, setShowingConfig] = useState(false);
   const [showingHealth, setShowingHealth] = useState(false);
+  const [showingReach, setShowingReach] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [removeOpen, setRemoveOpen] = useState(false);
   const [removeCreds, setRemoveCreds] = useState<StepUp>(EMPTY_STEP_UP);
@@ -160,15 +173,6 @@ export function NodeCard({
       </div>
     </Modal>
   );
-
-  const doUpdate = async () => {
-    try {
-      await updateNodeVersion(node.id);
-      notifySuccess(t("nodes.updating"));
-    } catch (e) {
-      notifyError(errMessage(e));
-    }
-  };
 
   // Bouncing Xray drops every live connection on THAT server, so it is confirmed
   // first. On the master it happens right away; on a node the panel can only ask —
@@ -240,6 +244,11 @@ export function NodeCard({
           </Badge>
         )}
         <RestartChip node={node} />
+        {node.update_error && (
+          <Badge size="xs" color="red" className="shrink-0" title={node.update_error}>
+            {t("nodes.updateFailed")}
+          </Badge>
+        )}
         {skew && (
           <Badge
             size="xs"
@@ -253,13 +262,18 @@ export function NodeCard({
         {/* Six actions, as icons. Spelled out they crowded the row and pushed the
             server's own name off a narrow screen; the words live on as the
             accessible name and the hover title. */}
-        <span className="ml-auto flex shrink-0 items-center gap-0.5">
+        <span className="ms-auto flex shrink-0 items-center gap-0.5">
           <IconButton title={t("nav.settings")} onClick={() => setEditingRouting(true)}>
             <IconGear size={16} />
           </IconButton>
           {canServers && (
             <IconButton title={t("nodes.diagnostics")} onClick={() => setShowingHealth(true)}>
               <IconPulse size={16} />
+            </IconButton>
+          )}
+          {canServers && reachOn && (
+            <IconButton title={t("reach.cardAction")} onClick={() => setShowingReach(true)}>
+              <IconGlobe size={16} />
             </IconButton>
           )}
           {/* The generated config carries the server's private keys: servers.manage. */}
@@ -314,8 +328,8 @@ export function NodeCard({
                   {t(node.enabled ? "usersPanel.disable" : "usersPanel.enable")}
                 </DropdownItem>
               )}
-              {canUpdate && (
-                <DropdownItem onClick={doUpdate}>
+              {canUpdate && onUpdate && (
+                <DropdownItem onClick={onUpdate}>
                   {t("nodes.update")}{node.version_skew ? ` ${t("nodes.newVersionSuffix")}` : ""}
                 </DropdownItem>
               )}
@@ -363,9 +377,27 @@ export function NodeCard({
               </span>
               {sublineTail && ` · ${sublineTail}`}
             </span>
+            {/* At least one badge's height whether or not the server has been checked, so
+                the card does not grow when the first badges arrive; more countries wrap. */}
+            {canServers && reachOn && (
+              <span className="flex min-h-5 items-center">
+                {node.reach && node.reach.countries.length > 0 ? (
+                  <ReachBadges summary={node.reach} onClick={() => setShowingReach(true)} />
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setShowingReach(true)}
+                    className="flex items-center gap-1 text-[11px] text-ink-muted transition hover:text-accent"
+                  >
+                    <IconGlobe size={12} />
+                    {t("reach.cardAction")}
+                  </button>
+                )}
+              </span>
+            )}
           </span>
 
-          <span className="flex shrink-0 flex-col items-end lg:order-3 lg:ml-auto">
+          <span className="flex shrink-0 flex-col items-end lg:order-3 lg:ms-auto">
             <Mono className="text-sm text-ink">{fmtBytes(traffic)}</Mono>
             <span className="text-[11px] text-ink-muted">{t("nodes.trafficToday")}</span>
           </span>
@@ -411,6 +443,7 @@ export function NodeCard({
             node={node}
             decoys={decoys}
             geo={geo}
+            servers={servers}
             onClose={() => setEditingRouting(false)}
             onRefresh={onChanged}
           />
@@ -419,6 +452,7 @@ export function NodeCard({
             node={node}
             decoys={decoys}
             geo={geo}
+            servers={servers}
             onClose={() => setEditingRouting(false)}
             onRefresh={onChanged}
           />
@@ -438,6 +472,9 @@ export function NodeCard({
       >
         <HealthPanel nodeId={node.id} />
       </Modal>
+      {showingReach && (
+        <ReachDialog node={node} onClose={() => setShowingReach(false)} onChecked={onChanged} />
+      )}
       {showingConfig && (
         <XrayConfigView
           nodeId={node.id}

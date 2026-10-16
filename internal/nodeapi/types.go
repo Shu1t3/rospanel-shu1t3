@@ -90,9 +90,21 @@ type SyncRequest struct {
 	Naive bool `json:"naive,omitempty"`
 	// Mieru ⇒ this agent answers mieru on the port the panel gives it (MieruState),
 	// and MieruError is why its listener is not up, when it is not.
-	Mieru       bool   `json:"mieru,omitempty"`
-	MieruError  string `json:"mieru_error,omitempty"`
-	XrayRunning bool   `json:"xray_running"`
+	Mieru bool `json:"mieru,omitempty"`
+	// AnyTLS ⇒ this agent answers AnyTLS behind its decoy (internal/anytls).
+	AnyTLS     bool   `json:"anytls,omitempty"`
+	MieruError string `json:"mieru_error,omitempty"`
+	// MTProto ⇒ this agent answers the Telegram proxy on the port the panel gives it
+	// (MTProtoState), and MTProtoError is why its listener is not up, when it is not.
+	MTProto      bool   `json:"mtproto,omitempty"`
+	MTProtoError string `json:"mtproto_error,omitempty"`
+	XrayRunning  bool   `json:"xray_running"`
+	// UpdateError is why the self-update the operator asked for did not happen; empty
+	// once it does, or while there is nothing to report.
+	UpdateError string `json:"update_error,omitempty"`
+	// TurnDown is the TURN relay ports this node was told to run and could not listen
+	// on; the panel leaves their inbounds out of its subscriptions while they stay down.
+	TurnDown []int `json:"turn_down,omitempty"`
 	// Revoked ⇒ this node already knows the panel switched it off and has stopped
 	// serving. It changes how the panel answers: a node that has yet to hear the bad
 	// news is told at once, but one that already knows has its request HELD like any
@@ -505,6 +517,9 @@ type NodeMeta struct {
 	// ConnGuardPorts are the public TCP ports the per-IP connection guard should
 	// protect (VLESS, and REALITY when enabled).
 	ConnGuardPorts []int `json:"connguard_ports,omitempty"`
+	// ConnGuardExempt are addresses the guard leaves alone: the cascade entries this
+	// node is the exit of (connguard.Limits.Exempt).
+	ConnGuardExempt []string `json:"connguard_exempt,omitempty"`
 
 	// TurnRelays are the relays the node's WireGuard inbounds need, the complete set:
 	// the agent stops any it runs that is not listed. An older agent ignores it, and
@@ -563,6 +578,18 @@ type NodeMeta struct {
 	// Mieru is where the node's mieru lane listens; nil ⇒ the lane is off on this node.
 	// Its users are mieru-in's clients in the Xray config. See internal/mieru.
 	Mieru *MieruState `json:"mieru,omitempty"`
+
+	// MTProto is where the node's Telegram proxy listens; nil ⇒ the lane is off on this
+	// node. Its users are mtproto-in's clients in the Xray config. See internal/mtproto.
+	MTProto *MTProtoState `json:"mtproto,omitempty"`
+}
+
+// MTProtoState is one server's Telegram proxy listener: the port, the domain its
+// secrets carry, and where a connection that is not a client of it is handed.
+type MTProtoState struct {
+	Port   int    `json:"port"`
+	Domain string `json:"domain"`
+	Front  string `json:"front"`
 }
 
 // MieruState is one server's mieru listener.

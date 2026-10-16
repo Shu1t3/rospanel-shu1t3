@@ -86,6 +86,9 @@ const status: ConnectionsStatus = {
   mieru_port: 19001,
   mieru_transport: "TCP",
   mieru_running: true,
+  mtproto_port: 20000,
+  mtproto_domain: "",
+  mtproto_running: false,
 };
 
 test("enabling AWG preserves the main connection settings", () => {

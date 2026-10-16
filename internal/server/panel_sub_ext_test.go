@@ -120,6 +120,7 @@ func TestSubServersExternalAttachedWhenMasterFull(t *testing.T) {
 	noProtoSet.VLESSEnabled = false
 	noProtoSet.HysteriaEnabled = false
 	noProtoSet.RealityEnabled = false
+	noProtoSet.AnyTLSEnabled = false
 	emptyPhysical := []sub.Server{{
 		Set:      &noProtoSet,
 		External: extServers,

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ru">
+<html lang="{{.Lang}}" dir="{{.Lang.Dir}}">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -225,7 +225,7 @@
       }
       .plugin-block p { margin: 0 0 0.5em; }
       .plugin-block p:last-child { margin: 0; }
-      .plugin-block.notice { border-left: 3px solid var(--brand); }
+      .plugin-block.notice { border-inline-start: 3px solid var(--brand); }
       .card {
         background: var(--surface);
         border: 1px solid var(--line);
@@ -431,6 +431,110 @@
         color: #0f9d6b;
         font-size: 0.85rem;
         font-weight: 600;
+        margin-top: 2px;
+      }
+      /* The plans dialog: a plan is a card; the picked one opens its term, devices
+         and the button. */
+      .pick {
+        border: 1px solid color-mix(in srgb, var(--brand) 14%, transparent);
+        border-radius: 14px;
+        margin-top: 8px;
+        transition: border-color 0.15s;
+      }
+      .pick.on {
+        border-color: var(--brand);
+        box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 12%, transparent);
+      }
+      .pick-head {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        width: 100%;
+        padding: 12px 14px;
+        border: 0;
+        background: none;
+        color: var(--ink);
+        font: inherit;
+        text-align: start;
+        cursor: pointer;
+      }
+      .pick-head .plan-info {
+        display: flex;
+        flex-direction: column;
+      }
+      .pick .pname {
+        font-weight: 700;
+        overflow-wrap: anywhere;
+      }
+      .pick .pprice {
+        color: var(--muted);
+        font-size: 0.85rem;
+        margin-top: 2px;
+      }
+      .pick .ppromo {
+        color: #0f9d6b;
+        font-size: 0.85rem;
+        font-weight: 600;
+        margin-top: 2px;
+      }
+      .pick-dot {
+        flex: none;
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        border: 2px solid var(--line);
+      }
+      .pick.on .pick-dot {
+        border: 5px solid var(--brand);
+      }
+      .pick-body {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 0 14px 14px;
+      }
+      .pick-body[hidden] {
+        display: none;
+      }
+      .pick-body .btn {
+        margin-top: 2px;
+      }
+      /* Renew and change side by side; on a phone, or wherever both labels do not
+         fit on one line each, every button gets a row of its own instead of breaking
+         its label. */
+      .btn-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 14px;
+      }
+      .btn-row .btn {
+        flex: 1 1 0;
+        margin: 0;
+        white-space: nowrap;
+      }
+      @media (max-width: 440px) {
+        .btn-row {
+          flex-direction: column;
+        }
+        .btn-row .btn {
+          flex: none;
+        }
+      }
+      .sect-dlg {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .sect-dlg .sect-hint {
+        margin: 0;
+      }
+      .sect-dlg .ppromo {
+        color: #0f9d6b;
+        font-size: 0.85rem;
+        font-weight: 600;
+      }
+      .sect-dlg .btn {
         margin-top: 2px;
       }
       /* The sections of an active plan: renewal, a move, add-ons. */
@@ -643,11 +747,15 @@
       select.periods {
         -webkit-appearance: none;
         appearance: none;
-        padding-right: 36px;
+        padding-inline-end: 36px;
         background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%238a94a6' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
         background-repeat: no-repeat;
         background-position: right 14px center;
         background-size: 12px 8px;
+      }
+      [dir="rtl"] .inline-form select,
+      [dir="rtl"] select.periods {
+        background-position: left 14px center;
       }
       .inline-form select:focus,
       select.periods:focus,
@@ -718,7 +826,7 @@
         content: "";
         position: absolute;
         top: 3px;
-        left: 3px;
+        inset-inline-start: 3px;
         width: 18px;
         height: 18px;
         border-radius: 50%;
@@ -728,6 +836,9 @@
       }
       .check input:checked {
         background: var(--brand);
+      }
+      [dir="rtl"] .check input:checked::after {
+        transform: translateX(-18px);
       }
       .check input:checked::after {
         transform: translateX(18px);
@@ -853,6 +964,9 @@
         font-size: 0.85rem;
       }
       code {
+        /* Links and keys read left to right on an Arabic page too. */
+        direction: ltr;
+        unicode-bidi: isolate;
         word-break: break-all;
         font-size: 0.78rem;
         color: var(--muted);
@@ -968,7 +1082,7 @@
         font-size: 0.72rem;
         font-weight: 600;
         opacity: 0.7;
-        text-align: right;
+        text-align: end;
       }
     </style>
     {{if .Access.ThemeCSS}}<link rel="stylesheet" href="{{.Access.ThemeCSS}}" />{{end}}
@@ -979,7 +1093,7 @@
         <img class="logomark" src="{{.SubURL}}/logo.svg" alt="" />
         {{if .IsDefault}}<span class="b">{{.L.DefaultBrand}}</span>{{else}}<span class="b">{{.BrandName}}</span>{{end}}
       </div>
-      <h1>{{.L.Greeting}}{{if .Name}}, {{.Name}}{{end}} 👋</h1>
+      <h1>{{if .Name}}{{printf .L.GreetingName .Name}}{{else}}{{.L.Greeting}}{{end}} 👋</h1>
 
       <div class="badges">
         <span class="badge {{.StatusClass}}">{{.StatusLabel}}</span>
@@ -988,7 +1102,7 @@
           >{{.L.Offline}}{{if .LastSeen}} · {{.LastSeen}}{{end}}</span
         >{{end}}
         <span class="badge brand"
-          >{{.L.Traffic}}: {{.Used}}{{if .HasLimit}} / {{.Limit}}{{end}}</span
+          >{{.L.Traffic}}{{.L.Colon}}<bdi>{{.Used}}{{if .HasLimit}} / {{.Limit}}{{end}}</bdi></span
         >
         {{if .HasReset}}<span class="badge gray">{{.L.TrafficUntil}} {{.ResetText}}</span>{{end}}
         {{if .HasExpire}}<span class="badge gray">{{.Expire}}</span>{{end}}
@@ -1012,7 +1126,7 @@
       <section class="pane" data-pane="sub">
         {{range .Access.Blocks}}
         {{if eq .Type "button"}}<a class="btn alt" style="margin: 0 0 12px" href="{{.URL}}" target="_blank" rel="noopener noreferrer">{{.Label}}</a>
-        {{else}}<div class="card plugin-block{{if eq .Type "notice"}} notice{{end}}" style="margin-bottom: 12px">{{.HTML}}</div>{{end}}
+        {{else}}<div class="card plugin-block{{if eq .Type "notice"}} notice{{end}}" dir="auto" style="margin-bottom: 12px">{{.HTML}}</div>{{end}}
         {{end}}
         {{if .DeepLinks}}
         <button class="btn" style="margin: 0 0 12px" onclick="openWizard()">{{.L.WzOpen}}</button>
@@ -1160,6 +1274,23 @@
         </div>
         {{end}}
 
+        {{if .Telegram}}
+        <div class="card">
+          <details class="fold">
+          <summary><span>{{.L.TGProxyTitle}} <span class="fold-count">· {{len .Telegram}}</span></span></summary>
+          <p class="muted" style="margin: 0 0 10px">{{.L.TGProxyHint}}</p>
+          {{range .Telegram}}
+          <details>
+            <summary>{{.Label}}</summary>
+            <div class="qr"><img src="{{.QRURL}}" alt="QR" loading="lazy" /></div>
+            <a class="btn" href="{{.Link}}" onclick="return tgProxy(event, '{{.WebLink}}')">{{$.L.TGProxyAdd}}</a>
+            <button class="btn alt" onclick="copy('{{.Link}}', this)">{{$.L.Copy}}</button>
+          </details>
+          {{end}}
+          </details>
+        </div>
+        {{end}}
+
         <!-- The page's own address is the key to it: say so, and offer the bot to whoever
              has not linked it. -->
         <div class="card" id="access-card">
@@ -1195,59 +1326,17 @@
           </div>
           {{end}}
           {{if .Billing.Locked}}
-          <!-- An active plan: its renewal, a move to another plan, what can be added,
-               and — quietly, last — cancelling it. -->
-          {{range .Billing.Plans}}
-          <div class="sect">
-            <div class="sect-title">{{$.L.RenewTitle}}</div>
-            {{if not .Options}}<div class="sect-hint">{{if .OldPrice}}<s>{{.OldPrice}}</s> {{end}}{{.Label}}</div>{{else}}<div class="sect-hint"></div>{{end}}
-            {{if .Promo}}<div class="ppromo">{{.Promo}}</div>{{end}}
-            {{if .Options}}
-            <select class="periods" id="per-{{.ID}}" autocomplete="off" onchange="periodPicked({{.ID}})">
-              {{range .Options}}<option value="{{.Periods}}" data-fb="{{if .FromBalance}}1{{end}}" data-btn="{{.Button}}">{{.Label}}</option>{{end}}
-            </select>
-            {{end}}
-            <button class="btn" id="paybtn-{{.ID}}" data-fb="{{if .FromBalance}}1{{end}}" onclick="buyPlan({{.ID}}, this)">{{if .Button}}{{.Button}}{{else}}{{$.L.Renew}}{{end}}</button>
+          <!-- An active plan: its renewal and a move to another plan, each in a dialog;
+               what can be added, and — quietly, last — cancelling it. -->
+          {{if or .Billing.Plans .Billing.Changes}}
+          <div class="btn-row">
+            {{if .Billing.Plans}}<button class="btn" onclick="showModal('renewmodal')">{{.L.Renew}}</button>{{end}}
+            {{if .Billing.Changes}}<button class="btn alt" onclick="showModal('changemodal')">{{.L.ChangeTitle}}</button>{{end}}
           </div>
           {{end}}
-          {{else}}
-          {{range .Billing.Plans}}
-          <div class="plan">
-            <div class="plan-info">
-              <div class="pname">{{.Name}}</div>
-              <div class="pprice">{{if .OldPrice}}<s>{{.OldPrice}}</s> {{end}}{{.Label}}</div>
-              {{if .Promo}}<div class="ppromo">{{.Promo}}</div>{{end}}
-            </div>
-            <button class="btn" id="paybtn-{{.ID}}" data-fb="{{if .FromBalance}}1{{end}}" onclick="buyPlan({{.ID}}, this)">{{if .Button}}{{.Button}}{{else}}{{$.L.Pay}}{{end}}</button>
-            {{if .Options}}
-            <!-- The term on its own line under the plan and its button, full width. -->
-            <select class="periods" id="per-{{.ID}}" autocomplete="off" onchange="periodPicked({{.ID}})">
-              {{range .Options}}<option value="{{.Periods}}" data-fb="{{if .FromBalance}}1{{end}}" data-btn="{{.Button}}">{{.Label}}</option>{{end}}
-            </select>
-            {{end}}
-            {{if .Devices}}
-            <select class="periods" id="dev-{{.ID}}" autocomplete="off" onchange="devPicked({{.ID}})">
-              {{range .Devices}}<option value="{{.Extra}}">{{.Label}}</option>{{end}}
-            </select>
-            {{end}}
-          </div>
-          {{end}}
-          {{end}}
-          {{if .Billing.Changes}}
-          <div class="sect">
-            <div class="sect-title">{{.L.ChangeTitle}}</div>
-            <div class="sect-hint">{{.L.ChangeHint}}</div>
-            {{range .Billing.Changes}}
-            <div class="opt">
-              <div class="opt-info">
-                <div class="opt-name">{{.Name}}</div>
-                <div class="opt-sub">{{.Sub}}</div>
-                <span class="badge{{if .Up}} up{{else}} down{{end}}">{{.Badge}}</span>
-              </div>
-              <button class="btn alt" onclick="var b = this; askThen({{$.L.ChangeConfirm}} + '\n' + {{.Label}}, function () { buyExtra('{{.Kind}}', {{.PlanID}}, 0, '{{if .FromBalance}}1{{end}}', b); })">{{$.L.ChangeBtn}}</button>
-            </div>
-            {{end}}
-          </div>
+          {{else if .Billing.Plans}}
+          <!-- The plans open in a dialog: one is picked, then its term and devices. -->
+          <button class="btn" onclick="openPlans()">{{if .Billing.CurrentPlan}}{{.L.PlanChange}}{{else}}{{.L.PlanPick}}{{end}}</button>
           {{end}}
           {{if .Billing.Addons}}
           <div class="sect">
@@ -1443,6 +1532,96 @@
     </div>
     {{end}}
 
+    {{if and .Billing.Show .Billing.Locked .Billing.Plans}}
+    <div id="renewmodal" class="modal" onclick="if (event.target === this) this.classList.remove('show');">
+      <div class="modal-card">
+        <div class="modal-head">
+          <b>{{.L.RenewTitle}}</b>
+          <button class="x" onclick="document.getElementById('renewmodal').classList.remove('show')">✕</button>
+        </div>
+        {{range .Billing.Plans}}
+        <div class="sect-dlg">
+          {{if not .Options}}<div class="sect-hint">{{if .OldPrice}}<s>{{.OldPrice}}</s> {{end}}{{.Label}}</div>{{end}}
+          {{if .Promo}}<div class="ppromo">{{.Promo}}</div>{{end}}
+          {{if .Options}}
+          <select class="periods" id="per-{{.ID}}" autocomplete="off" onchange="periodPicked({{.ID}})">
+            {{range .Options}}<option value="{{.Periods}}" data-fb="{{if .FromBalance}}1{{end}}" data-btn="{{.Button}}">{{.Label}}</option>{{end}}
+          </select>
+          {{end}}
+          <button class="btn" id="paybtn-{{.ID}}" data-fb="{{if .FromBalance}}1{{end}}" onclick="buyPlan({{.ID}}, this)">{{if .Button}}{{.Button}}{{else}}{{$.L.Renew}}{{end}}</button>
+        </div>
+        {{end}}
+      </div>
+    </div>
+    {{end}}
+
+    {{if and .Billing.Show .Billing.Changes}}
+    <div id="changemodal" class="modal" onclick="if (event.target === this) this.classList.remove('show');">
+      <div class="modal-card">
+        <div class="modal-head">
+          <b>{{.L.ChangeTitle}}</b>
+          <button class="x" onclick="document.getElementById('changemodal').classList.remove('show')">✕</button>
+        </div>
+        <div class="sect-hint">{{.L.ChangeHint}}</div>
+        {{range .Billing.Changes}}
+        <div class="opt">
+          <div class="opt-info">
+            <div class="opt-name">{{.Name}}</div>
+            <div class="opt-sub">{{.Sub}}</div>
+            <span class="badge{{if .Up}} up{{else}} down{{end}}">{{.Badge}}</span>
+          </div>
+          <button class="btn alt" onclick="var b = this; askThen({{$.L.ChangeConfirm}} + '\n' + {{.Label}}, function () { buyExtra('{{.Kind}}', {{.PlanID}}, 0, '{{if .FromBalance}}1{{end}}', b); })">{{$.L.ChangeBtn}}</button>
+        </div>
+        {{end}}
+      </div>
+    </div>
+    {{end}}
+
+    {{if and .Billing.Show (not .Billing.Locked) .Billing.Plans}}
+    <div
+      id="plansmodal"
+      class="modal"
+      onclick="if (event.target === this) this.classList.remove('show');"
+    >
+      <div class="modal-card">
+        <div class="modal-head">
+          <b>{{.L.PlansTitle}}</b>
+          <button
+            class="x"
+            onclick="document.getElementById('plansmodal').classList.remove('show')"
+          >
+            ✕
+          </button>
+        </div>
+        {{range .Billing.Plans}}
+        <div class="pick" id="pick-{{.ID}}">
+          <button type="button" class="pick-head" onclick="pickPlan({{.ID}})">
+            <span class="plan-info">
+              <span class="pname">{{.Name}}</span>
+              <span class="pprice">{{if .OldPrice}}<s>{{.OldPrice}}</s> {{end}}{{.Label}}</span>
+              {{if .Promo}}<span class="ppromo">{{.Promo}}</span>{{end}}
+            </span>
+            <span class="pick-dot"></span>
+          </button>
+          <div class="pick-body" hidden>
+            {{if .Options}}
+            <select class="periods" id="per-{{.ID}}" autocomplete="off" onchange="periodPicked({{.ID}})">
+              {{range .Options}}<option value="{{.Periods}}" data-fb="{{if .FromBalance}}1{{end}}" data-btn="{{.Button}}">{{.Label}}</option>{{end}}
+            </select>
+            {{end}}
+            {{if .Devices}}
+            <select class="periods" id="dev-{{.ID}}" autocomplete="off" onchange="devPicked({{.ID}})">
+              {{range .Devices}}<option value="{{.Extra}}">{{.Label}}</option>{{end}}
+            </select>
+            {{end}}
+            <button class="btn" id="paybtn-{{.ID}}" data-fb="{{if .FromBalance}}1{{end}}" onclick="buyPlan({{.ID}}, this)">{{if .Button}}{{.Button}}{{else}}{{$.L.Pay}}{{end}}</button>
+          </div>
+        </div>
+        {{end}}
+      </div>
+    </div>
+    {{end}}
+
     {{if and .Billing.Providers (gt (len .Billing.Providers) 1)}}
     <div
       id="paymodal"
@@ -1484,7 +1663,7 @@
             ✕
           </button>
         </div>
-        <p id="msgmodal-body" class="msgbody"></p>
+        <p id="msgmodal-body" class="msgbody" dir="auto"></p>
       </div>
     </div>
     {{end}}
@@ -1553,6 +1732,14 @@
           tgEvent("web_app_ready");
           tgEvent("web_app_expand");
         }
+      }
+      // The Telegram proxy button: in a browser tg:// opens the app; inside Telegram's own
+      // webview a custom scheme goes nowhere, so the host opens the t.me form of it.
+      function tgProxy(e, url) {
+        if (!INTG) return true;
+        e.preventDefault();
+        if (!tgOpen(url)) window.location = url;
+        return false;
       }
       // Open a URL the right way: in Telegram hand it to the host (external browser);
       // in a normal browser just navigate.
@@ -1848,8 +2035,8 @@
         } catch (e) {}
         if (!TG.BackButton || !(TG.isVersionAtLeast && TG.isVersionAtLeast("6.1"))) return;
         var openModal = function () {
-          var m = document.querySelector(".modal.show");
-          return m || null;
+          var open = document.querySelectorAll(".modal.show");
+          return open.length ? open[open.length - 1] : null;
         };
         var onFirstTab = function () {
           var t = document.querySelector(".tab.active");
@@ -1924,6 +2111,27 @@
       // what a change or an add-on buys. The server pays from the balance whatever it
       // covers.
       var PAY_EXTRA = {};
+      function showModal(id) {
+        var m = document.getElementById(id);
+        if (m) m.classList.add("show");
+      }
+      // openPlans shows the plans; with one there is nothing to pick, so it opens.
+      function openPlans() {
+        var m = document.getElementById("plansmodal");
+        if (!m) return;
+        var picks = m.querySelectorAll(".pick");
+        if (picks.length === 1) pickPlan(picks[0].id.slice(5));
+        m.classList.add("show");
+      }
+      function pickPlan(planId) {
+        var picks = document.querySelectorAll("#plansmodal .pick");
+        for (var i = 0; i < picks.length; i++) {
+          var on = picks[i].id === "pick-" + planId;
+          picks[i].classList.toggle("on", on);
+          picks[i].querySelector(".pick-body").hidden = !on;
+        }
+        haptic();
+      }
       function buyPlan(planId, el) {
         var n = planPeriods(planId);
         var d = document.getElementById("dev-" + planId);

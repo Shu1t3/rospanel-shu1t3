@@ -47,5 +47,7 @@ export function buildAwgConnectionsUpdate(
     regen_awg_keys: values.regenKeys,
     mieru_port: status.mieru_port,
     mieru_transport: status.mieru_transport,
+    mtproto_port: status.mtproto_port,
+    mtproto_domain: status.mtproto_domain,
   };
 }

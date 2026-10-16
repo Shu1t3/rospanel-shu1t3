@@ -6,18 +6,22 @@ import {
 } from "./api";
 import { useAction, useShowMore } from "./hooks";
 import { useCan } from "./role";
-import { currentLang } from "./i18n";
+import { locale } from "./i18n";
+import { inPanelTz } from "./tz";
 import { errMessage, notifyError, notifySuccess } from "./notify";
 import { Button, EmptyState, Mono, Panel, ShowMore } from "./ui";
 
 function fmtDateTime(unix: number): string {
   if (!unix) return "—";
-  return new Date(unix * 1000).toLocaleString(currentLang(), {
-    day: "2-digit",
-    month: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return new Date(unix * 1000).toLocaleString(
+    locale(),
+    inPanelTz({
+      day: "2-digit",
+      month: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }),
+  );
 }
 
 // RegistrationsPanel is the "Requests" sub-tab: the moderated self-registration queue

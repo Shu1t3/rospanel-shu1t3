@@ -1,6 +1,9 @@
 package model
 
-import "slices"
+import (
+	"maps"
+	"slices"
+)
 
 // Clone returns a copy of the settings that shares no memory with them: every slice,
 // and every slice inside a slice, is a new one. The store keeps one decoded copy of the
@@ -14,9 +17,13 @@ func (s *Settings) Clone() *Settings {
 	c := *s
 	c.ProxyAccounts = slices.Clone(s.ProxyAccounts)
 	c.SubRules = slices.Clone(s.SubRules)
+	for i := range c.SubRules {
+		c.SubRules[i].Protocols = maps.Clone(c.SubRules[i].Protocols)
+	}
 	c.BillingPeriods = slices.Clone(s.BillingPeriods)
 	c.TrafficPacks = slices.Clone(s.TrafficPacks)
 	c.ConnPolicy.Countries = slices.Clone(s.ConnPolicy.Countries)
+	c.Reach.Countries = slices.Clone(s.Reach.Countries)
 	c.Routing = s.Routing.clone()
 	return &c
 }
@@ -42,6 +49,7 @@ func (rc RoutingConfig) clone() RoutingConfig {
 			l.Manual = slices.Clone(l.Manual)
 			l.Domains = slices.Clone(l.Domains)
 			l.IPs = slices.Clone(l.IPs)
+			l.Via = slices.Clone(l.Via) // CascadeExit holds no references
 			lanes[i] = l
 		}
 		rc.Lanes = lanes

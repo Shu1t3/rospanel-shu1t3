@@ -45,6 +45,9 @@ func (m *Manager) CreateNode(name, host string) (*model.Node, error) {
 	if errors.Is(err, store.ErrNodeNameTaken) {
 		return nil, invalidCode("err.nodeNameTaken", "нода с таким названием уже есть — имя должно быть уникальным")
 	}
+	if err == nil {
+		m.claimNodeMTProtoDomain(n)
+	}
 	return n, err
 }
 
@@ -73,6 +76,13 @@ func (m *Manager) UpdateNode(id int64, e store.NodeEdit) error {
 		if err := e.Routing.ValidateLanes(); err != nil {
 			return fromFieldErr(err)
 		}
+		var prev *model.RoutingConfig
+		if cur, err := m.store.GetNode(id); err == nil && cur != nil {
+			prev = cur.Routing
+		}
+		if err := m.validateCascade(id, e.Routing, prev); err != nil {
+			return err
+		}
 	}
 	// WARP is a per-node Cloudflare registration: provision one BEFORE persisting the
 	// edit the first time WARP is enabled on this node, so a failed registration
@@ -81,6 +91,9 @@ func (m *Manager) UpdateNode(id int64, e store.NodeEdit) error {
 		if err := m.ensureNodeWarp(id); err != nil {
 			return err
 		}
+	}
+	if err := m.nodeEditKeepsBridges(id, e); err != nil {
+		return err
 	}
 	if err := m.store.UpdateNode(id, e); err != nil {
 		if errors.Is(err, store.ErrNodeNameTaken) {
@@ -94,6 +107,8 @@ func (m *Manager) UpdateNode(id int64, e store.NodeEdit) error {
 		m.resolveNodeProxies(n)
 	}
 	m.nodes.wakeOne(id)
+	// Its exits take its bridge in or let it go; its entries follow its host and lanes.
+	m.cascadeChanged()
 	return nil
 }
 
@@ -175,6 +190,7 @@ func (m *Manager) SetNodeReality(id int64, dest string, regen bool) error {
 		}
 	}
 	m.nodes.wakeOne(id)
+	m.cascadeChanged() // its entries reach it with its REALITY key
 	return nil
 }
 
@@ -228,6 +244,10 @@ func (m *Manager) NodeConnectionsInfo(id int64) (*ConnectionsStatus, error) {
 	st.MieruError = m.nodeMieruErr[id]
 	m.nodeGeoMu.Unlock()
 	st.MieruRunning = n.ServesMieru && st.MieruError == "" && derefBool(n.MieruEnabled)
+	m.nodeGeoMu.Lock()
+	st.MTProtoError = m.nodeMTProtoErr[id]
+	m.nodeGeoMu.Unlock()
+	st.MTProtoRunning = n.ServesMTProto && st.MTProtoError == "" && derefBool(n.MTProtoEnabled)
 	return st, nil
 }
 
@@ -351,6 +371,9 @@ func (m *Manager) ApplyNodeConnections(id int64, u ConnectionsUpdate) error {
 	if curMieruPort == 0 {
 		curMieruPort = nodeSettings(masterSet, n).MieruPort // the default the node has been told so far
 	}
+	if err := m.exitKeepsBridges(id, masterSet, withConnPorts(*nodeSettings(masterSet, n), u, awgPort)); err != nil {
+		return err
+	}
 	mieruOn, mieruAsked := u.Protocols["mieru"]
 	if !mieruAsked {
 		mieruOn = derefBool(n.MieruEnabled)
@@ -358,6 +381,30 @@ func (m *Manager) ApplyNodeConnections(id int64, u ConnectionsUpdate) error {
 	mieruPort, mieruTransport, err := resolveMieruPort(u.MieruPort, u.MieruTransport,
 		mieruOn, derefBool(n.MieruEnabled), curMieruPort, curMieruTransport,
 		mieruHeldOn(withConnPorts(*nodeSettings(masterSet, n), u, awgPort), nodeCustom), false)
+	if err != nil {
+		return err
+	}
+	curMTProtoPort := 0
+	if n.Connections != nil {
+		curMTProtoPort = n.Connections.MTProtoPort
+	}
+	if curMTProtoPort == 0 {
+		curMTProtoPort = nodeSettings(masterSet, n).MTProtoPort // the default the node has been told so far
+	}
+	mtprotoOn, mtprotoAsked := u.Protocols["mtproto"]
+	if !mtprotoAsked {
+		mtprotoOn = derefBool(n.MTProtoEnabled)
+	}
+	mtprotoHeld := mtprotoHeldOn(withConnPorts(*nodeSettings(masterSet, n), u, awgPort), nodeCustom)
+	if mieruOn && mieruPort > 0 {
+		mtprotoHeld.HoldTCP(mieruPort, "mieru")
+	}
+	mtprotoPort, err := resolveMTProtoPort(u.MTProtoPort, mtprotoOn, derefBool(n.MTProtoEnabled),
+		curMTProtoPort, mtprotoHeld, false)
+	if err != nil {
+		return err
+	}
+	mtprotoDomain, err := resolveMTProtoDomain(u.MTProtoDomain)
 	if err != nil {
 		return err
 	}
@@ -377,6 +424,28 @@ func (m *Manager) ApplyNodeConnections(id int64, u ConnectionsUpdate) error {
 	if mieruAsked {
 		if err := m.store.SetNodeMieruEnabled(id, mieruOn); err != nil {
 			return err
+		}
+	}
+	if on, ok := u.Protocols["anytls"]; ok {
+		if err := m.store.SetNodeAnyTLSEnabled(id, on); err != nil {
+			return err
+		}
+	}
+	if mtprotoAsked {
+		if err := m.store.SetNodeMTProtoEnabled(id, mtprotoOn); err != nil {
+			return err
+		}
+	}
+	if u.MTProtoDomainReset {
+		mtprotoDomain = nodeSettings(masterSet, n).MTProtoAutoDomain()
+	}
+	if mtprotoDomain != "" && mtprotoDomain != n.MTProtoDomain {
+		if err := m.store.SetNodeMTProtoDomain(id, mtprotoDomain); err != nil {
+			return err
+		}
+	} else if mtprotoOn {
+		if cur, err := m.store.GetNode(id); err == nil {
+			m.claimNodeMTProtoDomain(cur) // switched on just now: keep what it runs with
 		}
 	}
 	if u.Protocols["awg"] || u.RegenAWGKeys {
@@ -429,16 +498,25 @@ func (m *Manager) ApplyNodeConnections(id int64, u ConnectionsUpdate) error {
 		MieruPort:          mieruPort,
 		MieruTransport:     mieruTransport,
 		MieruName:          connNames["mieru"],
+		AnyTLSName:         connNames["anytls"],
+		MTProtoPort:        mtprotoPort,
+		MTProtoName:        nodeMTProtoName(n),
 	}
 	if err := m.store.SetNodeConnections(id, blob); err != nil {
 		return err
 	}
 	m.nodes.wakeOne(id)
+	m.cascadeChanged() // its entries reach it on its ports
 	return nil
 }
 
 // SetNodeEnabled toggles a node and wakes it (a disabled node is told to stop).
 func (m *Manager) SetNodeEnabled(id int64, enabled bool) error {
+	if !enabled {
+		if err := m.exitInUse(id); err != nil {
+			return err
+		}
+	}
 	if err := m.store.SetNodeEnabled(id, enabled); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return invalidCode("err.nodeNotFound", "нода не найдена")
@@ -451,6 +529,7 @@ func (m *Manager) SetNodeEnabled(id int64, enabled bool) error {
 	// auto-refresh is "never"). RefreshNodeProxies also wakes the node on any change.
 	m.runAsync(m.RefreshNodeProxies)
 	m.nodes.wakeOne(id)
+	m.cascadeChanged()
 	return nil
 }
 
@@ -465,6 +544,9 @@ func (m *Manager) SetNodeEnabled(id int64, enabled bool) error {
 // node-agent PR, where it first becomes reachable. Until then, disabling a node
 // (which keeps the token and answers revoked) is the reliable "stop now" control.
 func (m *Manager) DeleteNode(id int64) error {
+	if err := m.exitInUse(id); err != nil {
+		return err
+	}
 	if err := m.store.DeleteNode(id); err != nil {
 		return err
 	}
@@ -488,6 +570,7 @@ func (m *Manager) DeleteNode(id int64) error {
 	}
 	m.nodes.dropWaiter(id)
 	m.served.forget(id)
+	m.cascadeChanged() // its cascade lanes leave the exits
 	return nil
 }
 
@@ -661,4 +744,12 @@ func validateDNSList(dns *string) error {
 		}
 	}
 	return nil
+}
+
+// nodeMTProtoName keeps a node's MTProto name as it was: the editor has no field for it.
+func nodeMTProtoName(n *model.Node) string {
+	if n.Connections != nil {
+		return n.Connections.MTProtoName
+	}
+	return ""
 }

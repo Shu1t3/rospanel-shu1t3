@@ -12,13 +12,16 @@ import (
 	"time"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/abuse"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/anytls"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/awg"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/connguard"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/decoy"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/geo"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/ipblock"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/logbuf"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/mieru"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/mtproto"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/naive"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/nodeapi"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/opera"
@@ -154,6 +157,12 @@ type Manager struct {
 
 	appliedMu sync.Mutex
 	applied   map[int64]struct{} // user IDs currently in the applied config
+	// rekeyed are users whose credentials changed while they stayed in the working set
+	// (ResetUserUUID), by the rekeySeq of the change: the live sync takes them off Xray
+	// and puts them back, cutting what the old key holds open. An apply clears the
+	// entries it read the credentials after.
+	rekeyed  map[int64]uint64
+	rekeySeq uint64
 
 	// enforceMu runs one traffic enforcement pass at a time, and enforcePending marks a
 	// pass already scheduled for node reports to share (see enforceTrafficSoon).
@@ -389,6 +398,19 @@ type Manager struct {
 	nodeComponents map[int64][]nodeapi.ComponentStatus
 	// nodeMieruErr is each node's last-reported mieru listener error ("" ⇒ fine).
 	nodeMieruErr map[int64]string
+	// nodeMTProtoErr is nodeMieruErr for the MTProto lane.
+	nodeMTProtoErr map[int64]string
+	// nodeUpdateErr is why each node's requested self-update did not happen, as it last
+	// reported ("" ⇒ nothing to report). Cleared when the operator asks again.
+	nodeUpdateErr map[int64]string
+	// nodeTurnDown is each node's last-reported TURN relay ports that failed to listen.
+	nodeTurnDown map[int64][]int
+	// lanesDown tracks which lanes of which server are down and since when, to leave
+	// them out of subscriptions (manager_lanes_down.go).
+	lanesDown lanesDown
+	// appliedBridges is bridgesKey of the cascade bridges the running config was fully
+	// applied with (see syncUsers).
+	appliedBridges atomic.Value
 	// online is who is connected to which server right now (see manager_online.go).
 	online onlineGauge
 
@@ -425,6 +447,12 @@ type Manager struct {
 	// error ("" when it listens or is off).
 	mieru    *mieru.Server
 	mieruErr atomic.Pointer[string]
+	// mtproto is the master's Telegram proxy (internal/mtproto), mtprotoErr its
+	// listener's last error ("" ⇒ fine).
+	mtproto    *mtproto.Server
+	mtprotoErr atomic.Pointer[string]
+	// anytls is the master's AnyTLS lane (internal/anytls), behind the :443 fallback.
+	anytls *anytls.Server
 
 	// nodeLogs holds the most recent log tail reported by each node, plus which
 	// nodes an operator is currently viewing (so the panel asks them for logs).
@@ -452,6 +480,11 @@ type Manager struct {
 	nodeAlerts  map[int64]*nodeAlertState
 
 	fenced atomic.Bool
+
+	// reach is the reachability monitor's state (manager_reach.go); reachAPI points it
+	// at another Globalping endpoint ("" = the real one), for tests.
+	reach    reachState
+	reachAPI string
 }
 
 // nodeLogEntry is a node's last-reported log tail.
@@ -482,6 +515,7 @@ func New(st *store.Store, sup *xray.Supervisor, opts xray.Options, tls TLSPaths,
 		abusePending:   make(map[abusePendingKey]store.AbuseHit),
 		abuseAlerted:   make(map[abuseAlertKey]struct{}),
 		applied:        make(map[int64]struct{}),
+		rekeyed:        make(map[int64]uint64),
 		tz:             time.Local,
 		guard:          newBruteGuard(),
 		shaper:         shaper.New(),
@@ -507,6 +541,7 @@ func New(st *store.Store, sup *xray.Supervisor, opts xray.Options, tls TLSPaths,
 		awg:            awg.New(),
 		naive:          naive.New(xray.NaiveInnerAddr),
 		mieru:          mieru.New(xray.MieruInnerAddr),
+		mtproto:        mtproto.New(xray.MTProtoInnerAddr),
 		turn:           turnrelay.New(),
 		probeBlock:     ipblock.New(ipblock.TableProbes),
 		policyBlock:    ipblock.New(ipblock.TablePolicy),
@@ -547,7 +582,9 @@ func New(st *store.Store, sup *xray.Supervisor, opts xray.Options, tls TLSPaths,
 	// is started with a bare `go` is one Close cannot account for, and the failure is
 	// invisible until something it writes to has already been torn down.
 	m.runAsync(func() { m.guard.cleanupLoop(m.done) })
+	m.claimNodeMTProtoDomains() // before the first node state is built
 	m.runAsync(m.nodeWatchLoop)
+	m.runAsync(m.reachLoop)
 	m.runAsync(m.reconcileLoop)
 	m.runAsync(m.proxyLoop)
 	m.runAsync(m.geoLoop)         // auto-refresh geo databases on the operator's cadence
@@ -569,6 +606,11 @@ func New(st *store.Store, sup *xray.Supervisor, opts xray.Options, tls TLSPaths,
 	// NOTE: the initial proxy-pool load is done synchronously by main.go via
 	// SeedProxies() before the first reconcile, so Xray starts once (with proxies)
 	// rather than starting empty and restarting when a background fetch lands.
+	if at, err := anytls.New(xray.AnyTLSInnerAddr); err == nil {
+		m.anytls = at
+	} else {
+		logErr("anytls: lane not started", "err", err)
+	}
 	return m
 }
 
@@ -970,6 +1012,7 @@ func (m *Manager) syncUsers(ws *workingSet, wsErr error) (bool, error) {
 	if !m.workingIDsChanged(ids) {
 		return false, nil
 	}
+	seq := m.rekeyedUpTo()
 	set, err := m.store.GetSettings()
 	if err != nil {
 		return false, err
@@ -995,13 +1038,23 @@ func (m *Manager) syncUsers(ws *workingSet, wsErr error) (bool, error) {
 		}
 	}
 	for i := range users {
-		if _, ok := m.applied[users[i].ID]; !ok {
+		_, had := m.applied[users[i].ID]
+		if s, rk := m.rekeyed[users[i].ID]; had && rk && s <= seq {
+			// A new key: off with the old one (and what it holds open), on with the new.
+			removedEmails = append(removedEmails, model.UserEmail(users[i].ID))
+			had = false
+		}
+		if !had {
 			added = append(added, users[i])
 		}
 	}
 	m.appliedMu.Unlock()
 
 	if len(added) == 0 && len(removedEmails) == 0 {
+		// A rekey of someone out of the set (disabled, expired, deleted) changes nothing
+		// here: their new credentials are read when they come back. Done with, or every
+		// sync after would read every credential again for it.
+		m.clearRekeyed(seq)
 		return false, nil
 	}
 	logInfo("user sync (live)", "added", len(added), "removed", len(removedEmails))
@@ -1013,6 +1066,12 @@ func (m *Manager) syncUsers(ws *workingSet, wsErr error) (bool, error) {
 	opts, err := m.genOptsFor(model.LocalNodeID)
 	if err != nil {
 		return true, err
+	}
+	// A cascade entry's bridge is added with its source rule, which only a full apply
+	// writes: added here it would reach the running Hysteria inbound with no rule, and
+	// be let in from anywhere.
+	if bridgesKey(opts.Bridges) != m.appliedBridges.Load() {
+		return true, m.reconcileLocked()
 	}
 	custom := opts.Custom
 	// A user added here may have no tunnel identity yet, and a WireGuard inbound they are
@@ -1039,7 +1098,7 @@ func (m *Manager) syncUsers(ws *workingSet, wsErr error) (bool, error) {
 	if err := m.sup.WriteConfig(cfg); err != nil {
 		return true, err
 	}
-	m.setApplied(users)
+	m.setApplied(users, seq)
 	// Who a relayed external server lets through follows the users (xray/relay.go);
 	// first, so a Hysteria2 cut-off below rebuilds the rules with the new lists.
 	if err := m.sup.SyncRelayRules(apiAddr, cfg); err != nil {
@@ -1063,6 +1122,9 @@ func (m *Manager) syncUsers(ws *workingSet, wsErr error) (bool, error) {
 	m.syncAWGLocked(set, users)
 	m.syncNaive(cfg)
 	m.syncMieru(set, cfg)
+	m.syncMTProto(set, cfg)
+	m.syncAnyTLS(cfg)
+	m.syncHostFW(set, cfg) // a tunnel that failed to start may have come up here
 	return true, m.store.MarkConfigApplied()
 }
 
@@ -1104,6 +1166,7 @@ func (m *Manager) Reconcile() error {
 
 // reconcileLocked is the body of Reconcile; the caller must hold applyMu.
 func (m *Manager) reconcileLocked() error {
+	seq := m.rekeyedUpTo()
 	set, err := m.store.GetSettings()
 	if err != nil {
 		return err
@@ -1130,17 +1193,28 @@ func (m *Manager) reconcileLocked() error {
 		_ = m.store.SetConfigError(err.Error())
 		return err
 	}
-	m.setApplied(users)
+	m.appliedBridges.Store(bridgesKey(opts.Bridges))
+	m.setApplied(users, seq)
 	logInfo("reconcile: config applied", "users", len(users))
 	m.syncTurnLocked(opts.Custom)
 	m.syncAWGLocked(set, users)
 	m.syncNaive(cfg)
 	m.syncMieru(set, cfg)
+	m.syncMTProto(set, cfg)
+	m.syncAnyTLS(cfg)
+	m.syncHostFW(set, cfg)
+	// HTTP/3 advertised where Hysteria2 shares the front's port, as Caddy would.
+	if set.HysteriaEnabled && set.HysteriaPort == set.VLESSPort {
+		decoy.SetAltSvc(set.HysteriaPort)
+	} else {
+		decoy.SetAltSvc(0)
+	}
 	return m.store.MarkConfigApplied()
 }
 
-// setApplied records which user IDs are in the freshly-applied config.
-func (m *Manager) setApplied(users []model.User) {
+// setApplied records which user IDs are in the freshly-applied config, whose
+// credentials were read after rekey seq: the rekeys up to it are in.
+func (m *Manager) setApplied(users []model.User, seq uint64) {
 	ids := make(map[int64]struct{}, len(users))
 	for _, u := range users {
 		ids[u.ID] = struct{}{}
@@ -1148,6 +1222,40 @@ func (m *Manager) setApplied(users []model.User) {
 	m.appliedMu.Lock()
 	m.applied = ids
 	m.appliedMu.Unlock()
+	m.clearRekeyed(seq)
+}
+
+// clearRekeyed forgets the rekeys up to seq: an apply that read the credentials after
+// them has them.
+func (m *Manager) clearRekeyed(seq uint64) {
+	m.appliedMu.Lock()
+	defer m.appliedMu.Unlock()
+	for id, s := range m.rekeyed {
+		if s <= seq {
+			delete(m.rekeyed, id)
+		}
+	}
+}
+
+// markRekeyed records that a user's credentials changed in the store (call it after
+// the write): the next sync replaces them on Xray, and the nodes are sent the new ones.
+func (m *Manager) markRekeyed(id int64) {
+	m.appliedMu.Lock()
+	if m.rekeyed == nil {
+		m.rekeyed = make(map[int64]uint64)
+	}
+	m.rekeySeq++
+	m.rekeyed[id] = m.rekeySeq
+	m.appliedMu.Unlock()
+	// The node inputs keep the credentials of an unchanged id set (readNodeInputsLocked).
+	m.dropNodeInputs()
+}
+
+// rekeyedUpTo is the latest rekey: credentials read after this call carry it.
+func (m *Manager) rekeyedUpTo() uint64 {
+	m.appliedMu.Lock()
+	defer m.appliedMu.Unlock()
+	return m.rekeySeq
 }
 
 // workingIDsChanged reports whether the given working set differs from what's
@@ -1156,7 +1264,7 @@ func (m *Manager) setApplied(users []model.User) {
 func (m *Manager) workingIDsChanged(ids []int64) bool {
 	m.appliedMu.Lock()
 	defer m.appliedMu.Unlock()
-	if len(ids) != len(m.applied) {
+	if len(ids) != len(m.applied) || len(m.rekeyed) > 0 {
 		return true
 	}
 	for _, id := range ids {

@@ -78,7 +78,7 @@ type (
 		ExternalID *string `json:"external_id,omitempty"`
 		// Mailing switches broadcasts and automatic messages for the user, as the
 		// bot's own switch does (it shows the same state). Lang is the language to
-		// write to them in: ru | en, or "" for what their Telegram reports.
+		// write to them in: ru | en | zh | ar, or "" for what their Telegram reports.
 		Mailing *bool   `json:"mailing,omitempty"`
 		Lang    *string `json:"lang,omitempty"`
 	}
@@ -132,7 +132,7 @@ type (
 		// it moved by the first and buys nothing. Left out, every request buys. For
 		// devices and traffic it is the stamp from GET /v1/users/{id}/extras.
 		ExpectExpireAt *int64 `json:"expect_expire_at,omitempty"`
-		// Lang words the manual-payment instructions: ru | en (default en).
+		// Lang words the manual-payment instructions: ru | en | zh | ar (default en).
 		Lang string `json:"lang,omitempty"`
 		// ReturnURL is where a hosted payment sends the payer back to (http/https);
 		// left out, to their subscription link (your own page, when one is set).
@@ -331,6 +331,10 @@ func (rt *Router) apiMux() http.Handler {
 	nodeAudit("POST /v1/nodes/{id}/proxy", "apiSystemProxy", idFn(rt.apiSetServerProxy))
 	nodeAudit("POST /v1/nodes/{id}/placement", "apiPlacement", idFn(rt.apiSetServerPlacement))
 	id("GET /v1/nodes/{id}/health", rt.apiNodeHealth)
+	id("GET /v1/nodes/{id}/reach", rt.apiNodeReach)
+	id("POST /v1/nodes/{id}/reach", rt.apiCheckNodeReach)
+	hf("GET /v1/reach", rt.apiGetReach)
+	nodeAudit("POST /v1/reach", "apiReach", rt.apiSetReach)
 	id("GET /v1/nodes/{id}/logs", rt.apiNodeLogs)
 
 	// Custom inbounds. Every mutation opens, changes or closes a public listener on a
@@ -1088,10 +1092,8 @@ func (rt *Router) apiPatchUser(w http.ResponseWriter, r *http.Request, id int64)
 		}
 	}
 	if req.Lang != nil {
-		switch strings.ToLower(strings.TrimSpace(*req.Lang)) {
-		case "", "ru", "en":
-		default:
-			writeAPIErr(w, http.StatusBadRequest, "bad_request", "lang is ru, en or empty")
+		if l := strings.ToLower(strings.TrimSpace(*req.Lang)); l != "" && !i18n.IsLang(l) {
+			writeAPIErr(w, http.StatusBadRequest, "bad_request", "lang is ru, en, zh, ar, fa or empty")
 			return
 		}
 	}

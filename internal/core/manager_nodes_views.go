@@ -44,7 +44,10 @@ type NodeView struct {
 	// XrayRestart is the state of an operator-requested Xray bounce: "pending" while
 	// the node has yet to prove it happened, then "done" or "timeout" briefly, then
 	// "". Always "" for the master, whose restart is synchronous — nothing to wait for.
-	XrayRestart     string `json:"xray_restart,omitempty"`
+	XrayRestart string `json:"xray_restart,omitempty"`
+	// UpdateError is why the self-update the operator asked of this node did not
+	// happen, as the node last said. Always "" for the master.
+	UpdateError     string `json:"update_error,omitempty"`
 	VLESSEnabled    bool   `json:"vless_enabled"`
 	HysteriaEnabled bool   `json:"hysteria_enabled"`
 	RealityEnabled  bool   `json:"reality_enabled"`
@@ -109,10 +112,15 @@ type NodeView struct {
 	// MasterLabel is the master server's config-label name (local node only), so the
 	// UI can edit it. Empty for remote nodes (they use their own Name).
 	MasterLabel string `json:"master_label,omitempty"`
+	// Bridges are the connections a cascade can reach this server over (EgressLane.Via).
+	Bridges []BridgeOption `json:"bridges"`
 	// Placement (country, weight, capacity) and the live online-user count the
 	// subscription orders servers by; see model.Placement and sub.Order.
 	model.Placement
 	OnlineUsers int `json:"online_users"`
+	// Reach is the last check of this server from other countries (nil ⇒ never
+	// checked since the panel started).
+	Reach *ReachSummary `json:"reach,omitempty"`
 }
 
 // NodeViews returns the local server (node 0) followed by every remote node, each
@@ -151,6 +159,7 @@ func (m *Manager) NodeViews() ([]NodeView, error) {
 		RealityEnabled:  set.RealityEnabled,
 		DecoyTemplate:   set.DecoyTemplate,
 		MasterLabel:     set.MasterLabel,
+		Bridges:         bridgeOptions(set),
 		Placement:       set.MasterPlacement,
 		OnlineUsers:     online[model.LocalNodeID],
 		// The master's own routing/DNS/egress, so the relocated per-server editor edits
@@ -217,6 +226,7 @@ func (m *Manager) NodeViews() ([]NodeView, error) {
 			NodeStatus:         m.NodeAggregatedStatus(n),
 			VersionSkew:        n.XrayVersion != "" && !xray.VersionMatchesPinned(n.XrayVersion),
 			XrayRestart:        m.NodeRestartState(n.ID),
+			UpdateError:        m.NodeUpdateError(n.ID),
 			VLESSEnabled:       derefBool(n.VLESSEnabled),
 			HysteriaEnabled:    derefBool(n.HysteriaEnabled),
 			RealityEnabled:     derefBool(n.RealityEnabled),
@@ -231,6 +241,7 @@ func (m *Manager) NodeViews() ([]NodeView, error) {
 			WarpRegistered:     n.WarpRegistered(),
 			OperaEnabled:       n.OperaEnabled,
 			OperaCountry:       n.OperaCountry,
+			Bridges:            bridgeOptions(nodeSettings(set, n)),
 			TrafficCoefficient: model.NodeCoefficientOr(n.TrafficCoefficient),
 			Placement:          n.Placement,
 			OnlineUsers:        online[n.ID],
@@ -256,6 +267,10 @@ func (m *Manager) NodeViews() ([]NodeView, error) {
 			v.HostUptime = h.HostUptime
 		}
 		views = append(views, v)
+	}
+	reach := m.reachSummaries(set.Reach.Threshold)
+	for i := range views {
+		views[i].Reach = reach[views[i].ID]
 	}
 	return views, nil
 }
@@ -319,11 +334,16 @@ func (m *Manager) NodeLinkSettings() ([]*model.Settings, error) {
 		// NaiveProxy needs the agent to answer it, and a certificate the client trusts:
 		// the client cannot be told to skip verification.
 		ns.NaiveEnabled = ns.NaiveEnabled && !ns.TLSInsecure && n.ServesNaive
+		// AnyTLS likewise (link.AnyTLSOn wants a trusted certificate too).
+		ns.AnyTLSEnabled = ns.AnyTLSEnabled && !ns.TLSInsecure && n.ServesAnyTLS
 		// mieru needs the agent to answer it, a port, and its listener up (as last said).
 		m.nodeGeoMu.Lock()
 		mieruDown := m.nodeMieruErr[n.ID] != ""
+		mtprotoDown := m.nodeMTProtoErr[n.ID] != ""
 		m.nodeGeoMu.Unlock()
 		ns.MieruEnabled = ns.MieruEnabled && n.ServesMieru && ns.MieruPort > 0 && !mieruDown
+		// The Telegram proxy likewise.
+		ns.MTProtoEnabled = ns.MTProtoEnabled && n.ServesMTProto && ns.MTProtoPort > 0 && !mtprotoDown
 		// Uniqueness is enforced on create/edit, but defend the subscription anyway:
 		// a duplicate label would collide Clash proxy names / sing-box tags and make a
 		// client reject the whole config. Disambiguate any collision with the node id.

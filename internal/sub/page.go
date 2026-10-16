@@ -56,14 +56,14 @@ var pageTmpl = template.Must(template.New("sub").Parse(pageHTML))
 // Telegram webview — but the browser it lands in resolves the scheme and opens
 // the app. Href is template.URL so the scheme survives html/template's URL filter.
 var appRedirectTmpl = template.Must(template.New("appredir").Parse(
-	`<!doctype html><html lang="{{.Lang}}"><head><meta charset="utf-8">` +
+	`<!doctype html><html lang="{{.Lang}}" dir="{{.Dir}}"><head><meta charset="utf-8">` +
 		`<meta name="viewport" content="width=device-width,initial-scale=1">` +
 		`<title>{{.Opening}}</title>` +
 		`<script>location.replace("{{.Href}}")</script>` +
 		`<meta http-equiv="refresh" content="0;url={{.Href}}"></head>` +
 		`<body style="font-family:sans-serif;padding:24px;color:#333">` +
 		`<p>{{.Opening}}<br>{{.IfNotOpened}} ` +
-		`<a href="{{.Href}}">{{.ClickHere}}</a>.</p></body></html>`))
+		`<a href="{{.Href}}">{{.ClickHere}}</a>{{.Stop}}</p></body></html>`))
 
 // AppRedirect renders the deep-link hand-off page for one client's share link.
 func AppRedirect(href template.URL, lang i18n.Lang) ([]byte, error) {
@@ -71,15 +71,19 @@ func AppRedirect(href template.URL, lang i18n.Lang) ([]byte, error) {
 	data := struct {
 		Href        template.URL
 		Lang        string
+		Dir         string
 		Opening     string
 		IfNotOpened string
 		ClickHere   string
+		Stop        string
 	}{
 		Href:        href,
 		Lang:        string(lang),
+		Dir:         lang.Dir(),
 		Opening:     i18n.T(lang, "sub.openingApp"),
 		IfNotOpened: i18n.T(lang, "sub.ifNotOpened"),
 		ClickHere:   i18n.T(lang, "sub.clickHere"),
+		Stop:        i18n.T(lang, "sub.fullStop"),
 	}
 	if err := appRedirectTmpl.Execute(&buf, data); err != nil {
 		return nil, err
@@ -94,12 +98,17 @@ type pageText struct {
 	Title          string
 	DefaultBrand   string
 	Greeting       string
+	GreetingName   string // Greeting with the user's name, a %s
 	Online         string
 	Offline        string
 	Traffic        string
+	Colon          string // ": ", or the full-width "：" in Chinese
 	TrafficUntil   string
 	PayProcessing  string
 	CurrentPlan    string
+	PlanChange     string
+	PlanPick       string
+	PlansTitle     string
 	Pay            string
 	Renew          string
 	CancelSub      string
@@ -147,6 +156,9 @@ type pageText struct {
 	TurnLink       string
 	TurnNoLink     string
 	TurnManual     string
+	TGProxyTitle   string
+	TGProxyHint    string
+	TGProxyAdd     string
 	AppLink        string
 	Copy           string
 	Copied         string
@@ -194,12 +206,17 @@ func text(lang i18n.Lang) pageText {
 		Title:          t("sub.title"),
 		DefaultBrand:   t("sub.defaultBrand"),
 		Greeting:       t("sub.greeting"),
+		GreetingName:   t("sub.greetingName"),
 		Online:         t("sub.online"),
 		Offline:        t("sub.offline"),
 		Traffic:        t("sub.traffic"),
+		Colon:          t("sub.colon"),
 		TrafficUntil:   t("sub.trafficUntilPrefix"),
 		PayProcessing:  t("sub.payProcessing"),
 		CurrentPlan:    t("sub.currentPlan"),
+		PlanChange:     t("sub.planChange"),
+		PlanPick:       t("sub.planPick"),
+		PlansTitle:     t("sub.plansTitle"),
 		Pay:            t("sub.pay"),
 		Renew:          t("sub.renew"),
 		CancelSub:      t("sub.cancelSub"),
@@ -247,6 +264,9 @@ func text(lang i18n.Lang) pageText {
 		TurnLink:       t("sub.turnLink"),
 		TurnNoLink:     t("sub.turnNoLink"),
 		TurnManual:     t("sub.turnManual"),
+		TGProxyTitle:   t("sub.tgProxyTitle"),
+		TGProxyHint:    t("sub.tgProxyHint"),
+		TGProxyAdd:     t("sub.tgProxyAdd"),
 		AppLink:        t("sub.appLink"),
 		Copy:           t("sub.copy"),
 		Copied:         t("sub.copied"),
@@ -320,6 +340,25 @@ type turnApp struct {
 	AppLink string
 }
 
+// tgProxyLabel names a server's Telegram proxy on the page: the server's own name (its
+// flag and name), else its address — the card is titled already, so the protocol's
+// label would only repeat it.
+func tgProxyLabel(s *model.Settings) string {
+	if s.NodeLabel != "" {
+		return s.NodeLabel
+	}
+	return s.Host
+}
+
+// tgProxyCard is one server's Telegram proxy: the tg:// link that adds it in one tap,
+// and the https://t.me form of it to copy.
+type tgProxyCard struct {
+	Label   string
+	Link    template.URL
+	WebLink string
+	QRURL   string
+}
+
 // awgCard is one server's AmneziaWG config on the page.
 type awgCard struct {
 	Label   string
@@ -328,6 +367,7 @@ type awgCard struct {
 }
 
 type pageData struct {
+	Lang      i18n.Lang
 	L         pageText
 	Name      string
 	BrandName string // panel display name (defaults to the stock RosPanel name)
@@ -353,6 +393,8 @@ type pageData struct {
 	AWG []awgCard
 	// Turn lists one card per WireGuard inbound behind a TURN relay the user may use.
 	Turn []turnCard
+	// Telegram lists one card per server whose Telegram proxy the user may use.
+	Telegram []tgProxyCard
 
 	StatusLabel string
 	StatusClass string
@@ -613,8 +655,17 @@ func buildPageData(u model.User, local *model.Settings, servers []Server, billin
 	var protoLinks, extLinks []protoLink
 	var awgCards []awgCard
 	var turnCards []turnCard
+	var tgCards []tgProxyCard
 	for _, srv := range servers {
 		s := srv.Set
+		if link.MTProtoOn(s) && srv.allowsBuiltin(model.LaneMTProto) {
+			tgCards = append(tgCards, tgProxyCard{
+				Label:   tgProxyLabel(s),
+				Link:    template.URL(link.MTProto(u, s)), // tg:// — html/template would refuse the scheme
+				WebLink: link.MTProtoWeb(u, s),
+				QRURL:   fmt.Sprintf("%s/tg/%d.png", subURL, s.ServerID),
+			})
+		}
 		if s.AWGEnabled && s.AWGPort != 0 && srv.allowsBuiltin(model.LaneAWG) {
 			awgCards = append(awgCards, awgCard{
 				Label: s.ProtoLabelFor(model.ProtoAWG, &u),
@@ -635,6 +686,9 @@ func buildPageData(u model.User, local *model.Settings, servers []Server, billin
 		}
 		if link.NaiveOn(s) && srv.allowsBuiltin(model.LaneNaive) {
 			protoLinks = append(protoLinks, protoLink{s.ProtoLabelFor(model.ProtoNaive, &u), link.Naive(u, s)})
+		}
+		if link.AnyTLSOn(s) && srv.allowsBuiltin(model.LaneAnyTLS) {
+			protoLinks = append(protoLinks, protoLink{s.ProtoLabelFor(model.ProtoAnyTLS, &u), link.AnyTLS(u, s)})
 		}
 		if link.MieruOn(s) && srv.allowsBuiltin(model.LaneMieru) {
 			protoLinks = append(protoLinks, protoLink{s.ProtoLabelFor(model.ProtoMieru, &u), link.Mieru(u, s)})
@@ -700,6 +754,7 @@ func buildPageData(u model.User, local *model.Settings, servers []Server, billin
 	}
 	theme := branding.ParseTheme(local.PanelTheme)
 	data := pageData{
+		Lang:        lang,
 		L:           text(lang),
 		Name:        u.Name,
 		BrandName:   brandName,
@@ -719,6 +774,7 @@ func buildPageData(u model.User, local *model.Settings, servers []Server, billin
 		Links:       protoLinks,
 		AWG:         awgCards,
 		Turn:        turnCards,
+		Telegram:    tgCards,
 		DeepLinks:   DeepLinks(subURL, lang, local.SubHappCrypt),
 		Wizard:      Wizard(lang),
 		StatusLabel: statusLabel,

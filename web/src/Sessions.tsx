@@ -3,7 +3,8 @@ import { useTranslation } from 'react-i18next'
 import { listSessions, revokeOtherSessions, revokeSession, type AdminSession } from './api'
 import { fmtLastSeen } from './format'
 import { useAction } from './hooks'
-import { currentLang } from './i18n'
+import { locale } from './i18n'
+import { inPanelTz } from './tz'
 import { notifySuccess } from './notify'
 import { Badge, IconButton, IconClose, IconLogout, useConfirm } from './ui'
 
@@ -33,7 +34,7 @@ export function clientLabel(ua: string): string {
 }
 
 function fmtDate(unix: number): string {
-  return unix ? new Date(unix * 1000).toLocaleDateString(currentLang()) : '—'
+  return unix ? new Date(unix * 1000).toLocaleDateString(locale(), inPanelTz()) : '—'
 }
 
 // Sessions is the admin's own list of open sessions, inside the account dialog next

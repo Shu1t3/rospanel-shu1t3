@@ -115,6 +115,7 @@ type RouteRule struct {
 	// UUID they sent (see relay.go).
 	User        []string `json:"user,omitempty"`
 	VlessRoute  string   `json:"vlessRoute,omitempty"`
+	Source      []string `json:"source,omitempty"` // the client's address, CIDRs
 	OutboundTag string   `json:"outboundTag,omitempty"`
 	BalancerTag string   `json:"balancerTag,omitempty"`
 	// RuleTag names the rule to Xray's routing API, so the running rules can be
@@ -279,7 +280,7 @@ type WireGuardPeer struct {
 // VLESSInboundSettings is the "settings" object for a VLESS inbound.
 type VLESSInboundSettings struct {
 	Clients    []VLESSClient `json:"clients"`
-	Decryption string        `json:"decryption"` // always "none" for VLESS
+	Decryption string        `json:"decryption"` // "none", or a custom inbound's VLESS Encryption
 	Fallbacks  []Fallback    `json:"fallbacks,omitempty"`
 }
 
@@ -482,7 +483,15 @@ func salamanderUDP(password string) *FinalMask {
 // streamSettings transport (network "hysteria"); per-user auth lives in the
 // inbound's settings.clients[].auth.
 type HysteriaSettings struct {
-	Version int `json:"version"` // must be 2
+	Version    int                 `json:"version"` // must be 2
+	Masquerade *HysteriaMasquerade `json:"masquerade,omitempty"`
+}
+
+// HysteriaMasquerade is what a Hysteria2 inbound answers an HTTP/3 request that is not
+// a Hysteria2 client with: here the decoy, proxied (see decoy/h3.go).
+type HysteriaMasquerade struct {
+	Type string `json:"type"`
+	URL  string `json:"url,omitempty"`
 }
 
 // TrojanInboundSettings is the "settings" object for a Trojan inbound.

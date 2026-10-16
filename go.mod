@@ -9,6 +9,8 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/pion/dtls/v3 v3.1.10
 	github.com/pion/transport/v5 v5.1.1
+	github.com/sagernet/sing v0.8.14
+	github.com/sagernet/sing-anytls v0.0.0-20260928104022-580984e4d8cb
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/tetratelabs/wazero v1.12.0
 	github.com/yuin/goldmark v1.8.6

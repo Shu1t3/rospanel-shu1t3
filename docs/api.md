@@ -185,7 +185,7 @@ monitor pointed here keeps working.
 | `POST` | `/v1/signup` | Sign up a client from an external system or your own bot under the self-registration rules (see below). |
 | `POST` | `/v1/users/bulk` | Apply one action to many users at once. |
 | `GET` | `/v1/users/{id}` | Get one user. |
-| `PATCH` | `/v1/users/{id}` | Update name / limits / expiry or a term from the first connection / device limit / speed limit / enabled / the external system's `external_id` / `mailing` (broadcasts and automatic messages on or off — the bot's switch shows the same) / `lang` (`ru`, `en`, or `""` for what the Telegram reports). |
+| `PATCH` | `/v1/users/{id}` | Update name / limits / expiry or a term from the first connection / device limit / speed limit / enabled / the external system's `external_id` / `mailing` (broadcasts and automatic messages on or off — the bot's switch shows the same) / `lang` (`ru`, `en`, `zh`, `ar`, or `""` for what the Telegram reports). |
 | `DELETE` | `/v1/users/{id}` | Delete a user. |
 | `POST` | `/v1/users/{id}/reset` | Reset the user's traffic counters. |
 | `POST` | `/v1/users/{id}/reset-period` | Set auto-reset period. |
@@ -418,7 +418,7 @@ code, `balance_kop` the balance covers and `money_rub` left to pay. Then `POST /
 with `from_balance` when `money_rub` is 0 (add `expect_expire_at` — the `expire_at` you showed
 — so a retried request does not buy a second period), or with a `provider` for the rest. A
 top-up is `{"user_id": 5, "kind": "topup", "amount_rub": 300}` (plus `provider`, or none for a
-manual one). Both take `lang` (`ru`/`en`, for the manual-payment instructions) and
+manual one). Both take `lang` (`ru`/`en`/`zh`/`ar`, for the manual-payment instructions) and
 `return_url` (where a hosted payment sends the payer back; the user's subscription link when left out — your own page, when one is set).
 
 **Your own bot or user cabinet** — the key stays on your server, never in a browser. Tick the
@@ -435,7 +435,8 @@ that signs people in by their subscription link finds them with `?sub_token=`.
 `GET /v1/users/{id}/subscription` has everything the subscription page shows — status,
 `blocks` (what plugins add to the page: `{type: text|markdown|notice|button, text, label, url}`),
 traffic, term, `sub_url`, one-tap imports per app (`apps`), every config (`links`), the Clash
-download (`clash_url`), devices, the payment block (`billing`), the operator's colours
+download (`clash_url`), the Telegram proxy per server (`telegram`: `{name, link, web_link, qr_url}` —
+`link` is the `tg://proxy` that adds it in one tap), devices, the payment block (`billing`), the operator's colours
 (`brand`), `terms_url` / `privacy_url` (the operator's documents, while they have text — `GET /v1/legal`
 has the text itself) and `tg_link` — the user bot's link that binds the account to the Telegram it is
 opened in (moves it there when `tg_linked`; absent while the switches in Settings → Telegram
@@ -462,8 +463,8 @@ account in full only to a key with `users.view`) instead of a second trial. The 
 must pass only an id it has verified (a confirmed e-mail): whoever passes it gets that account.
 A new account answers `201 "created"` with the account, a request `202 "pending"` with `request_id`
 (asking again while it waits files nothing). Optional: `name` (the external id when left out),
-`source` (the funnel's tag), `ref` (an invite code; an unknown one is ignored), `lang` (`ru` or
-`en`, given to the account — at once, or when the operator approves it), and `ip` — the
+`source` (the funnel's tag), `ref` (an invite code; an unknown one is ignored), `lang` (`ru`, `en`,
+`zh` or `ar`, given to the account — at once, or when the operator approves it), and `ip` — the
 client's address, for a limit of one sign-up a minute per address (per /64 for IPv6) and per id,
 20 a minute in all; over it the answer is `429` with `Retry-After`. Tick the external system's key for
 `POST /v1/signup` (plus what it shows and sells) and not `POST /v1/users`: it then cannot make a
@@ -520,6 +521,10 @@ enabled node automatically, and each server can be edited independently.
 | `POST` | `/v1/nodes/update-all` | Ask every connected node to self-update (sequentially). |
 | `POST` | `/v1/nodes/{id}/proxy` | Configure that server's system proxy (`id` 0 = the master). |
 | `GET` | `/v1/nodes/{id}/health` | One server's self-diagnostics. |
+| `GET` | `/v1/nodes/{id}/reach` | A server's last check from other countries (Globalping; `at` 0 = not checked yet). |
+| `POST` | `/v1/nodes/{id}/reach` | Check a server from other countries now (takes up to a minute). |
+| `GET` | `/v1/reach` | Countries, probes per country, monitor interval and threshold of that check. |
+| `POST` | `/v1/reach` | Set them; `token` (Globalping) omitted keeps the stored one, `""` clears it. |
 | `GET` | `/v1/nodes/{id}/logs` | A node's recent log lines. |
 
 **Register a node** — body `{ "name": "NL #1", "host": "nl1.example.com" }`. The
@@ -583,8 +588,21 @@ full field list — and which combinations are valid — is in `openapi.json` / 
 `shadowsocks` is Shadowsocks-2022 (`method` picks the AEAD; the server key is generated,
 the per-user key derived from the UUID) — multi-user, so per-user stats and quotas work,
 but only modern clients (sing-box, mihomo, v2rayN, Shadowrocket, Streisand) speak it.
-`turn-vk` is WireGuard behind a TURN relay; the previous protocol name `wireguard`
-is still accepted on input. TURN call links are configured through the panel.
+`turn-vk` (formerly `wireguard`, still accepted on input) is WireGuard behind a TURN relay: `port` is the public UDP port the relay listens
+on, `turn_link` an optional VK call link (`https://vk.com/call/join/…`) handed to users' apps; the
+server key, the loopback port Xray listens on (`wg_public_key`, `wg_local_port` in the response)
+and the Free Turn Proxy masking key (never returned) are generated. It is in no
+subscription format — users import it into an app from the subscription page
+(`vkturnproxy://`, `freeturn://`, `wingsv://`) or download `<sub>/wg/<inbound id>.conf` from the
+subscription page.
+`enc_mode` turns on VLESS Encryption on a `vless` inbound — `native`, `xorpub` or `random` (how
+the handshake looks on the wire), empty for off; the keys are generated (`encryption`, the
+clients' half, is in the response). With it `tcp` may go with `security: none`.
+`cdn_host` (and `cdn_port`, 443 when 0) puts a `vless` / `trojan` inbound on `ws` / `httpupgrade`
+/ `xhttp` behind a CDN: links point at that domain over TLS, the CDN reaches the
+inbound's own port (plain with `security: none`), and the inbound trusts its X-Forwarded-For.
+`pin_cert` (TLS, not behind a CDN) has clients check the server's certificate by its fingerprint
+rather than its name, so `sni` may be any domain — one on an operator's allowlist, say.
 Two formats the schema can only call `string`: `reality_dest` is a bare hostname
 (`www.microsoft.com` — a `host:port` form is rejected), and `hop_interval` is a range in
 seconds (`"5-10"`, not `"30"`).
@@ -627,7 +645,7 @@ link all expose only what's granted.
 A **grant token** names one connection:
 
 - `builtin:<server_id>:<lane>` — a built-in lane, where `<lane>` is `vless`, `reality`,
-  `hysteria2`, `naive`, `mieru` or `awg` and `<server_id>` is `0` for the master or a node id
+  `hysteria2`, `naive`, `anytls`, `mieru`, `awg` or `mtproto` and `<server_id>` is `0` for the master or a node id
   from `GET /v1/nodes`.
 - `inbound:<id>` — a custom inbound, by the id from `GET /v1/servers/{id}/inbounds`.
 
@@ -774,6 +792,44 @@ predict (does a shorter list delete rules or leave them?), while silently switch
 egress backend off because a body did not mention it is how tunnelled traffic starts
 leaving from the server's own IP. So send `routing` to change rules, and name only the
 backends you actually mean to move.
+
+A **cascade** is a lane whose upstreams are our own servers instead of proxies: users
+connect to this server and leave through the servers in `via`, each over one of its
+built-in connections.
+
+```json
+{ "id": "nl", "name": "Through NL", "enabled": true,
+  "urls": [], "manual": [], "domains": [], "ips": [],
+  "via": [ { "server": 0, "bridge": "reality" }, { "server": 3, "bridge": "hysteria2" } ] }
+```
+
+`server` is a server id (`0` is the panel's own machine), never this server. `bridge` is the
+exit's connection the cascade reaches it over: `reality` (default), `vision` or
+`hysteria2`, and it has to be on there. Each server in `/v1/nodes` (and `/v1/nodes/{id}`)
+lists them:
+
+```json
+"bridges": [
+  { "bridge": "reality",   "name": "VLESS-XHTTP-REALITY", "enabled": true },
+  { "bridge": "vision",    "name": "VLESS-TCP-TLS",       "enabled": true },
+  { "bridge": "hysteria2", "name": "HYSTERIA-UDP",        "enabled": false }
+]
+```
+
+`name` is what that server calls the connection (the operator may have renamed it);
+only an `enabled` one can be used. Put the lane last in `routing_order` to send
+everything else through it.
+
+The panel derives the bridge's credential itself and lets it into the exits from this
+server's addresses only; a user's traffic is counted once, here. The lane's traffic never
+leaves from this server: with no exit judged alive it still goes to one, with no exit at all
+it is dropped. A cascade lane takes no `urls` or `manual`: its upstreams are the exits alone.
+Refusals: `err.cascadeSelf`, `err.cascadeNoServer`, `err.cascadeLaneOff` (the connection is off
+on that exit), `err.cascadeLoop` (an exit's own cascades lead back here), `err.laneBadBridge`.
+Only lanes new or changed by the save are checked, so an exit that went away later does not
+block other edits. On an exit, switching off a connection a cascade uses is refused with
+`err.cascadeExitLaneOff`, and switching the server off or deleting it with
+`err.cascadeExitInUse`.
 
 **Snapshots** capture the whole server config — protocols, ports, REALITY, routing,
 egress, DNS, decoy and the custom inbounds — as one save-point. A rollback restores all
@@ -957,9 +1013,11 @@ system client's (`external_id`, from `POST /v1/signup`).
 GET $BASE/v1/summary          → users / online / traffic totals / xray + cert status
 GET $BASE/v1/system           → live CPU / RAM / disk / network / VPN throughput
 GET $BASE/v1/system/auto-update       → {"cron": "0 4 * * *", "nodes": true, "last_at": …, "last": "latest"}
-POST $BASE/v1/system/auto-update {"cron": "0 4 * * *", "nodes": true}  ("" turns it off)
+POST $BASE/v1/system/auto-update {"cron": "0 4 * * *"}  ("" turns it off; the nodes always follow)
 GET $BASE/v1/health/report    → full self-diagnostics (xray, config, TLS, geo, egress lanes)
 GET $BASE/v1/nodes/{id}/health → one server's diagnostics (id 0 = the master)
+POST $BASE/v1/nodes/{id}/reach → {"host": …, "port": 443, "countries": [{"code": "RU", "ok": 9, "blocked": 1, "failed": 0, "probes": […]}]}
+POST $BASE/v1/reach {"countries": ["RU", "CN", "IR"], "probes": 10, "every": 60, "threshold": 50}  (every 0 = only on demand)
 GET $BASE/v1/nodes/{id}/logs   → a node's recent log lines
 GET $BASE/v1/backup/info       → what a backup taken now would contain
 GET $BASE/v1/backup            → download that backup (.tar.gz body, not JSON)
@@ -1114,6 +1172,7 @@ body is never read).
 | `user.expiring` | a term is running out — at 14, 7, 3 and 1 days before it ends, each once per term (a renewal starts over; a term given with fewer days left gets the nearest stage only); `data.stage` (14, 7, 3 or 1), `data.days_left` — act on the stages you want; with a paid plan the balance can renew, `data.auto_renew`, `data.renew_price_kop`, `data.balance_kop` |
 | `user.traffic_low` | a user has spent 80% of the quota — once until usage drops back under it; `data.used`, `data.percent` |
 | `user.sub_rotated` | the subscription link is reissued (panel, API, or a Telegram move) — the old one no longer works; `data.sub_url` |
+| `user.uuid_reset` | the user's UUID, protocol passwords and WireGuard key (AmneziaWG, TURN-VK) are reissued in the panel — links and configs built from the old ones stop working; the subscription link stays |
 | `user.telegram_linked` | a Telegram is bound to the account (panel, API, bot, Mini App); `data.telegram_id` |
 | `user.telegram_unlinked` | the account loses a Telegram — unlinked, the chat moved to another account, or the account moved to another Telegram; `data.telegram_id` |
 | `user.limits_changed` | the operator changed the limits or the term, or extended it (`data.extended_days` for a bulk extension), or a refund took the order's days back (`data.refund_order_id`) |

@@ -21,6 +21,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/branding"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/core"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/i18n"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/link"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/plugin"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/sub"
@@ -107,20 +108,13 @@ func handleSub(rt *Router, w http.ResponseWriter, r *http.Request, rest string) 
 		// block it (served the decoy, so a scraper learns nothing). Blocking here, ahead
 		// of admitDevice, means a refused client never takes a device slot. No matching
 		// rule falls through to the User-Agent detection below.
-		format := subFormat(r)
-		if action := model.EvalSubRules(set.SubRules, subRuleInput(r)); action != "" {
-			if action == model.SubActionBlock {
-				rt.currentDecoy().ServeHTTP(w, r)
-				return
-			}
-			format = action
-		} else if format == "v2ray" && r.URL.Query().Get("format") == "" &&
-			set.SubDPI.JSONClients && model.IsXrayCoreClient(r.Header.Get("User-Agent")) {
-			// Xray-core apps get full configs when the operator asked for it: the
-			// only form in which fragment/noise reach them. A rule or an explicit
-			// ?format= above still wins.
-			format = model.SubActionXrayJSON
+		// A rule may also only change protocols ("auto" keeps the detected format).
+		rule, _ := model.MatchSubRule(set.SubRules, subRuleInput(r))
+		if rule != nil && rule.Action == model.SubActionBlock {
+			rt.currentDecoy().ServeHTTP(w, r)
+			return
 		}
+		format, overrides := subResponse(r.URL.Query().Get("format"), r.Header.Get("User-Agent"), rule, set)
 		// Machine payload, format chosen by the client (User-Agent or ?format=).
 		// Device binding is checked here and not on the page: the page is a browser
 		// looking at an account, while this is an install asking for credentials — the
@@ -135,6 +129,7 @@ func handleSub(rt *Router, w http.ResponseWriter, r *http.Request, rest string) 
 			rt.subUnavailable(w, u.ID, err)
 			return
 		}
+		allServers = overrides.Apply(allServers)
 		supportURL := rt.telegramSupportURL(r.Context(), set, *u)
 		setSubHeaders(w, *u, set, supportURL)
 		rt.setRoutingHeaders(w, r, set)
@@ -143,15 +138,15 @@ func handleSub(rt *Router, w http.ResponseWriter, r *http.Request, rest string) 
 			// Mihomo/Clash ignores the routing header — inject the routing rules
 			// straight into the YAML by merging proxies into the template.
 			ua := r.Header.Get("User-Agent")
-			body := sub.ClashYAMLFor(*u, allServers, ua)
+			body := sub.ClashYAMLRule(*u, allServers, ua, overrides)
 			// The operator's own stored template wins over the fetched one: they wrote
 			// it, and a remote URL that has quietly changed under them is exactly what
 			// storing it is meant to avoid.
 			if tpl := strings.TrimSpace(set.SubTplClash); tpl != "" {
-				body = sub.ClashWithTemplateFor(*u, allServers, tpl, ua)
+				body = sub.ClashWithTemplateRule(*u, allServers, tpl, ua, overrides)
 			} else if set.SubRouting && strings.TrimSpace(set.SubRoutingMihomo) != "" {
 				if tpl, err := rt.mgr.FetchRoutingTemplate(set.SubRoutingMihomo); err == nil {
-					body = sub.ClashWithTemplateFor(*u, allServers, tpl, ua)
+					body = sub.ClashWithTemplateRule(*u, allServers, tpl, ua, overrides)
 				}
 			}
 			w.Header().Set("Content-Type", "text/yaml; charset=utf-8")
@@ -167,21 +162,21 @@ func handleSub(rt *Router, w http.ResponseWriter, r *http.Request, rest string) 
 			// failure now is worth a log line — but never worth a broken profile: the
 			// renderer hands back the generated one and the user keeps working.
 			body, err := sub.SingBoxWithTemplate(*u, allServers, set.SubTplSingBox,
-				sub.SingBoxNaive(r.Header.Get("User-Agent")))
+				overrides.SingBox(sub.SingBoxCapsFor(r.Header.Get("User-Agent"))))
 			if err != nil {
 				slog.Warn("subscription: sing-box template failed, serving the generated profile", "err", err)
 			}
 			_, _ = w.Write([]byte(rt.pluginConfig(r.Context(), *u, plugin.SubSingBox, body)))
 		case model.SubActionXrayJSON, "xray", "json":
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-			body, err := sub.XrayJSONWithTemplate(*u, allServers, set.SubDPI, set.SubTplXray)
+			body, err := sub.XrayJSONRule(*u, allServers, set.SubDPI, set.SubTplXray, r.Header.Get("User-Agent"), overrides)
 			if err != nil {
 				slog.Warn("subscription: xray template failed, serving the generated profile", "err", err)
 			}
 			_, _ = w.Write([]byte(rt.pluginConfig(r.Context(), *u, plugin.SubXray, body)))
 		default:
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			links := rt.pluginLinks(r.Context(), *u, sub.ShareLinksFor(*u, allServers, r.Header.Get("User-Agent")))
+			links := rt.pluginLinks(r.Context(), *u, sub.ShareLinksRule(*u, allServers, r.Header.Get("User-Agent"), overrides))
 			var body string
 			if set.SubBase64 {
 				body = sub.Base64Payload(links)
@@ -213,6 +208,7 @@ func handleSub(rt *Router, w http.ResponseWriter, r *http.Request, rest string) 
 		}
 		w.Header().Set("Content-Type", "application/manifest+json")
 		w.Header().Set("Cache-Control", "private, max-age=3600")
+		w.Header().Set("Vary", "Accept-Language")
 		_, _ = w.Write(sub.Manifest(set, u.SubToken, i18n.FromAcceptLanguage(r.Header.Get("Accept-Language")), branding.LogoContentType(logo)))
 
 	case "tg.js":
@@ -286,6 +282,10 @@ func handleSub(rt *Router, w http.ResponseWriter, r *http.Request, rest string) 
 		// Telegram Mini App so the client scheme actually launches).
 		if rest, ok := strings.CutPrefix(leaf, "awg/"); ok {
 			rt.serveAWG(w, r, u, set, rest)
+			return
+		}
+		if rest, ok := strings.CutPrefix(leaf, "tg/"); ok {
+			rt.serveTelegramQR(w, r, u, set, rest)
 			return
 		}
 		if rest, ok := strings.CutPrefix(leaf, "wg/"); ok {
@@ -786,7 +786,7 @@ func isBrowser(r *http.Request) bool {
 func hasTurnInbound(servers []sub.Server) bool {
 	for _, s := range servers {
 		for _, in := range s.Custom {
-			if in.Protocol == model.InbTurnVK && s.Access.AllowsInbound(in.ID) {
+			if in.Protocol == model.InbTurnVK && !s.Hidden[model.SubProtoCustom] && s.Access.AllowsInbound(in.ID) {
 				return true
 			}
 		}
@@ -1072,14 +1072,32 @@ func subRuleInput(r *http.Request) model.SubRuleInput {
 	}
 }
 
-// subFormat picks the subscription format: an explicit ?format= wins, otherwise
-// Clash-family clients (by User-Agent) get YAML; everyone else gets the
-// universal base64 v2ray list.
-func subFormat(r *http.Request) string {
-	if f := strings.ToLower(r.URL.Query().Get("format")); f != "" {
-		return f
+// subResponse is the format and protocol overrides a subscription request is answered
+// with: an explicit ?format= or a rule's format, else the one the User-Agent is detected
+// as — upgraded to full Xray configs for Xray-core apps when the operator asked for it,
+// the only form in which fragment/noise reach them. rule is the matched rule (nil for
+// none), never a blocking one.
+func subResponse(query, userAgent string, rule *model.SubRule, set *model.Settings) (string, sub.Overrides) {
+	format := strings.ToLower(query)
+	if format == "" {
+		format = subFormatFor(userAgent)
 	}
-	ua := strings.ToLower(r.Header.Get("User-Agent"))
+	var overrides sub.Overrides
+	if rule != nil {
+		overrides = rule.Protocols
+		if rule.Action != model.SubActionAuto {
+			return rule.Action, overrides
+		}
+	}
+	if format == "v2ray" && query == "" && set.SubDPI.JSONClients && model.IsXrayCoreClient(userAgent) {
+		format = model.SubActionXrayJSON
+	}
+	return format, overrides
+}
+
+// subFormatFor is the format a User-Agent gets with no ?format= and no rule.
+func subFormatFor(userAgent string) string {
+	ua := strings.ToLower(userAgent)
 	for _, k := range []string{"clash", "mihomo", "stash", "meta"} {
 		if strings.Contains(ua, k) {
 			return "clash"
@@ -1216,6 +1234,39 @@ func (rt *Router) serveAWG(w http.ResponseWriter, r *http.Request, u *model.User
 		return
 	}
 	rt.serveTunnelConf(w, r, conf, ext, sub.AWGFileName(srv.Set))
+}
+
+// serveTelegramQR draws one user's Telegram proxy link for one server as a QR code —
+// "<id>.png", id the server (0 = the master). As with AmneziaWG, a server without the
+// lane, or one the user may not use, is the decoy.
+func (rt *Router) serveTelegramQR(w http.ResponseWriter, r *http.Request, u *model.User, set *model.Settings, rest string) {
+	name, ok := strings.CutSuffix(rest, ".png")
+	serverID, err := strconv.ParseInt(name, 10, 64)
+	if !ok || err != nil || serverID < 0 {
+		rt.currentDecoy().ServeHTTP(w, r)
+		return
+	}
+	servers, err := rt.subServers(set, u.ID, clientIP(r))
+	if err != nil {
+		rt.subUnavailable(w, u.ID, err)
+		return
+	}
+	for i := range servers {
+		s := servers[i].Set
+		if s.ServerID != serverID || !link.MTProtoOn(s) || !servers[i].Access.AllowsBuiltin(serverID, model.LaneMTProto) {
+			continue
+		}
+		// The t.me form: any scanner opens it in Telegram, where tg:// is left alone.
+		png, err := qrcode.Encode(link.MTProtoWeb(*u, s), qrcode.Medium, 512)
+		if err != nil {
+			break
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(png)
+		return
+	}
+	rt.currentDecoy().ServeHTTP(w, r)
 }
 
 // buildWallet fills the page's wallet block: balance, top-up, renewal switch, the

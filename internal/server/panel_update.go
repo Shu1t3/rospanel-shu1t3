@@ -30,7 +30,10 @@ func (rt *Router) checkUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	resp["latest"] = rel.Version
 	resp["notes"] = rel.Notes
-	resp["available"] = rel.AssetURL != "" && updater.IsNewer(rel.Version, version.Version)
+	// ready: the release carries its binaries. It is published a minute or two before
+	// they are uploaded, and until then nothing — master or node — can install it.
+	resp["ready"] = rel.Complete()
+	resp["available"] = rel.Complete() && updater.IsNewer(rel.Version, version.Version)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -98,7 +101,9 @@ type autoUpdateView struct {
 	Supported bool `json:"supported"`
 }
 
-// autoUpdateReq changes the schedule; a field left out keeps its value.
+// autoUpdateReq changes the schedule; a field left out keeps its value. Nodes is
+// still read so older callers keep working, but a scheduled update always takes the
+// servers along.
 type autoUpdateReq struct {
 	Cron  *string `json:"cron"`
 	Nodes *bool   `json:"nodes"`
@@ -109,7 +114,7 @@ func (rt *Router) autoUpdateState() (autoUpdateView, error) {
 	if err != nil {
 		return autoUpdateView{}, err
 	}
-	return autoUpdateView{Cron: set.AutoUpdateCron, Nodes: set.AutoUpdateNodes,
+	return autoUpdateView{Cron: set.AutoUpdateCron, Nodes: true,
 		LastAt: set.AutoUpdateLastAt, Last: set.AutoUpdateLast, Supported: updater.UnderSystemd()}, nil
 }
 
@@ -122,10 +127,7 @@ func (rt *Router) saveAutoUpdate(req autoUpdateReq) (autoUpdateView, error) {
 	if req.Cron != nil {
 		cur.Cron = *req.Cron
 	}
-	if req.Nodes != nil {
-		cur.Nodes = *req.Nodes
-	}
-	if err := rt.mgr.SaveAutoUpdate(cur.Cron, cur.Nodes); err != nil {
+	if err := rt.mgr.SaveAutoUpdate(cur.Cron, true); err != nil {
 		return cur, err
 	}
 	return rt.autoUpdateState()

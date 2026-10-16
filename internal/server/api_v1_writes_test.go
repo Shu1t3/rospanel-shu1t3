@@ -407,6 +407,55 @@ func TestMCPInboundWritesReachTheStore(t *testing.T) {
 				}
 			},
 		},
+		{ // WireGuard behind a TURN relay: the call link, and what the panel generates
+			body: map[string]any{
+				"enabled": true, "name": "land-wg", "protocol": model.InbTurnVK, "port": 21107,
+				"turn_link": "https://vk.com/call/join/abcdef",
+			},
+			assert: func(t *testing.T, in model.Inbound) {
+				eq(t, "turn_link", "https://vk.com/call/join/abcdef", in.Opts.TurnLink)
+				if in.Opts.WGPrivateKey == "" || in.Opts.WGPublicKey == "" || in.Opts.TurnMaskKey == "" {
+					t.Error("the inbound's WireGuard or masking key was not generated")
+				}
+				if in.Opts.WGLocalPort == 0 || in.Opts.WGLocalPort == in.Port {
+					t.Errorf("the loopback port %d was not assigned apart from the relay's", in.Opts.WGLocalPort)
+				}
+			},
+		},
+		{ // VLESS Encryption on raw TCP without TLS: the mode, and the keys it is built on
+			body: map[string]any{
+				"enabled": true, "name": "land-enc", "protocol": model.InbVLESS, "port": 21108,
+				"transport": model.TrTCP, "security": model.SecNone, "enc_mode": model.EncRandom,
+			},
+			assert: func(t *testing.T, in model.Inbound) {
+				eq(t, "enc_mode", model.EncRandom, in.Opts.EncMode)
+				if !strings.HasPrefix(in.Opts.Decryption, "mlkem768x25519plus.random.600s.") ||
+					!strings.HasPrefix(in.Opts.Encryption, "mlkem768x25519plus.random.0rtt.") {
+					t.Errorf("the VLESS Encryption keys were not generated: %q / %q", in.Opts.Decryption, in.Opts.Encryption)
+				}
+			},
+		},
+		{ // behind a CDN
+			body: map[string]any{
+				"enabled": true, "name": "land-cdn", "protocol": model.InbVLESS, "port": 21109,
+				"transport": model.TrXHTTP, "security": model.SecNone, "path": "cdnpath",
+				"cdn_host": "cdn.example.ru", "cdn_port": 8443,
+			},
+			assert: func(t *testing.T, in model.Inbound) {
+				eq(t, "cdn_host", "cdn.example.ru", in.Opts.CDNHost)
+				eq(t, "cdn_port", 8443, in.Opts.CDNPort)
+			},
+		},
+		{ // checked by fingerprint, with someone else's name as SNI
+			body: map[string]any{
+				"enabled": true, "name": "land-pin", "protocol": model.InbHysteria, "port": 21110,
+				"sni": "smartcaptcha.yandexcloud.net", "pin_cert": true,
+			},
+			assert: func(t *testing.T, in model.Inbound) {
+				eq(t, "pin_cert", true, in.Opts.PinCert)
+				eq(t, "sni", "smartcaptcha.yandexcloud.net", in.Opts.SNI)
+			},
+		},
 	}
 
 	covered := map[string]bool{}

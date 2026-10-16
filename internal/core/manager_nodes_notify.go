@@ -61,14 +61,6 @@ type nodeAlertState struct {
 	// all-clear only for an alarm they actually saw.
 	trafficAlerted bool
 
-	// awgKnown is false until the tunnel has been observed once. The first sweep runs
-	// the moment the panel boots, while the tunnel is still coming up, so without a
-	// baseline every restart read as an outage and sent "down" followed by "back".
-	awgKnown bool
-	// awgDownAlerted is the same for the AmneziaWG tunnel: once when it stops being
-	// up, once when it comes back.
-	awgDownAlerted bool
-
 	xrayAlerted    bool
 	xrayDownAt     time.Time
 	lastXrayNotify time.Time
@@ -164,13 +156,6 @@ func (m *Manager) sweepAlerts(nodes []model.Node, local *sysstat.Stats, now time
 			m.notifyAdminEvent(model.AdminEventXrayDown, msg)
 		}
 	}
-	// The master's own tunnel, on the same terms as a node's. Nodes report theirs over
-	// the sync protocol; this one runs in this process, so it is asked directly — and
-	// without this the one server whose logs the operator can actually read is the one
-	// that never told them.
-	if msg := m.localAWGAlertMsg(); msg != "" {
-		m.notifyAdminEvent(model.AdminEventXrayDown, msg)
-	}
 	m.pruneNodeAlerts(live)
 }
 
@@ -193,48 +178,6 @@ func (m *Manager) localDiskAlertMsg(live map[int64]struct{}, used, total int64) 
 	st.diskLowAlerted = next
 	st.known = true
 	return msg
-}
-
-// localAWGAlertMsg is localDiskAlertMsg's twin for the master's AmneziaWG tunnel:
-// one message when it stops being up, one when it comes back, and nothing at all when
-// the lane is switched off.
-func (m *Manager) localAWGAlertMsg() string {
-	set, err := m.store.GetSettings()
-	if err != nil {
-		return ""
-	}
-	m.nodeAlertMu.Lock()
-	defer m.nodeAlertMu.Unlock()
-	st := m.nodeAlertLocked(model.LocalNodeID)
-	if !set.AWGEnabled {
-		// Switched off: forget the alarm so turning it back on starts clean rather
-		// than believing admins were already told.
-		st.awgDownAlerted = false
-		st.awgKnown = false
-		return ""
-	}
-	running, lastErr := m.AWGStatus()
-	lang := m.botLang()
-	// The first pass only records that we have looked — the same baseline every node
-	// gets (see nodeAlertsFor). A tunnel that is genuinely down still alerts, on the
-	// next sweep a minute later; one that was merely still starting says nothing.
-	if !st.awgKnown {
-		st.awgKnown = true
-		return ""
-	}
-	switch {
-	case !running && !st.awgDownAlerted:
-		st.awgDownAlerted = true
-		msg := fmt.Sprintf(i18n.T(lang, "notify.nodeAWGDown"), model.LocalNodeName)
-		if lastErr != "" {
-			msg += "\n" + escHTML(lastErr)
-		}
-		return msg
-	case running && st.awgDownAlerted:
-		st.awgDownAlerted = false
-		return fmt.Sprintf(i18n.T(lang, "notify.nodeAWGBack"), model.LocalNodeName)
-	}
-	return ""
 }
 
 // nodeAlertsFor advances one node's alert state and returns the messages that
@@ -261,11 +204,11 @@ func (m *Manager) nodeAlertsFor(n *model.Node, now time.Time, diskUsed, diskTota
 		st.offlineAlerted, st.offlineSince = true, n.LastSeen
 		out = append(out, nodeAlertMsg{bit: model.AdminEventXrayDown, html: fmt.Sprintf(
 			i18n.T(lang, "notify.nodeOffline"),
-			nodeLabel(n), fmtDowntime(now.Sub(time.Unix(n.LastSeen, 0)), lang)),
+			nodeLabel(n, lang), fmtDowntime(now.Sub(time.Unix(n.LastSeen, 0)), lang)),
 			event: model.WebhookNodeDown, data: nodeEventData(n, map[string]any{"last_seen": n.LastSeen})})
 	case !st.online && online && st.offlineAlerted:
 		st.offlineAlerted = false
-		msg := i18n.T(lang, "notify.nodeBack") + "\n" + nodeLabel(n)
+		msg := i18n.T(lang, "notify.nodeBack") + "\n" + nodeLabel(n, lang)
 		var downFor int64
 		if st.offlineSince > 0 {
 			downFor = int64(now.Sub(time.Unix(st.offlineSince, 0)).Seconds())
@@ -281,7 +224,7 @@ func (m *Manager) nodeAlertsFor(n *model.Node, now time.Time, diskUsed, diskTota
 	// which shows up as traffic that is not recorded and users that do not sync —
 	// symptoms an operator has no reason to connect to a full disk, on a machine they
 	// have no reason to be logged into.
-	if next, msg := diskAlert(st.diskLowAlerted, diskUsed, diskTotal, nodeLabel(n), lang); msg != "" {
+	if next, msg := diskAlert(st.diskLowAlerted, diskUsed, diskTotal, nodeLabel(n, lang), lang); msg != "" {
 		st.diskLowAlerted = next
 		out = append(out, nodeAlertMsg{bit: model.AdminEventXrayDown, html: msg})
 	}
@@ -303,11 +246,11 @@ func (m *Manager) nodeAlertsFor(n *model.Node, now time.Time, diskUsed, diskTota
 			st.lastXrayNotify, st.xrayAlerted, st.xrayDownAt = now, true, now
 			out = append(out, nodeAlertMsg{bit: model.AdminEventXrayDown, html: fmt.Sprintf(
 				i18n.T(lang, "notify.nodeXrayCrashed"),
-				nodeLabel(n)), event: model.WebhookXrayDown, data: nodeEventData(n, nil)})
+				nodeLabel(n, lang)), event: model.WebhookXrayDown, data: nodeEventData(n, nil)})
 		}
 	case !st.xrayUp && n.XrayRunning && st.xrayAlerted:
 		st.xrayAlerted = false
-		msg := i18n.T(lang, "notify.nodeXrayBack") + "\n" + nodeLabel(n)
+		msg := i18n.T(lang, "notify.nodeXrayBack") + "\n" + nodeLabel(n, lang)
 		down := now.Sub(st.xrayDownAt)
 		if down > time.Second {
 			msg += "\n" + i18n.T(lang, "notify.downtime", fmtDowntime(down, lang))
@@ -317,36 +260,6 @@ func (m *Manager) nodeAlertsFor(n *model.Node, now time.Time, diskUsed, diskTota
 	}
 	st.xrayUp = n.XrayRunning
 
-	// The AmneziaWG tunnel, when the operator switched the lane on for this server.
-	// Nothing else watched it: the agent applies the tunnel and a failure went into
-	// the node's own log and no further, so the panel kept the server green and kept
-	// issuing keys for a lane nobody could connect through.
-	//
-	// Only for a node that actually reports the state. An agent older than the feature
-	// says nothing, and reading silence as "down" would alert on every node in the
-	// fleet the moment this ships.
-	if awgEnabledOn(n) {
-		if awg, ok := m.NodeAWG(n.ID); ok {
-			switch {
-			case !awg.Running && !st.awgDownAlerted:
-				st.awgDownAlerted = true
-				msg := fmt.Sprintf(i18n.T(lang, "notify.nodeAWGDown"), nodeLabel(n))
-				if awg.Err != "" {
-					msg += "\n" + escHTML(awg.Err)
-				}
-				out = append(out, nodeAlertMsg{bit: model.AdminEventXrayDown, html: msg})
-			case awg.Running && st.awgDownAlerted:
-				st.awgDownAlerted = false
-				out = append(out, nodeAlertMsg{bit: model.AdminEventXrayDown,
-					html: fmt.Sprintf(i18n.T(lang, "notify.nodeAWGBack"), nodeLabel(n))})
-			}
-		}
-	} else {
-		// The lane was switched off. Forget the alarm so switching it back on later
-		// starts clean rather than believing the operator was already told.
-		st.awgDownAlerted = false
-	}
-
 	// A changed fingerprint on a CA-signed cert is a renewal that landed. Self-signed
 	// is the agent's fallback while ACME is unavailable, not an event: it changes on
 	// its own schedule and says nothing an operator can act on.
@@ -355,7 +268,7 @@ func (m *Manager) nodeAlertsFor(n *model.Node, now time.Time, diskUsed, diskTota
 		if st.certSHA == "" || st.certSelf {
 			key = "notify.nodeCertIssued" // first real cert for this node, not a renewal
 		}
-		msg := i18n.T(lang, key, nodeLabel(n))
+		msg := i18n.T(lang, key, nodeLabel(n, lang))
 		if days := certDaysLeft(n.CertExpiresAt, now); days >= 0 {
 			msg += "\n" + i18n.TN(lang, "notify.validForDays", days)
 		}
@@ -367,7 +280,7 @@ func (m *Manager) nodeAlertsFor(n *model.Node, now time.Time, diskUsed, diskTota
 		st.lastCertErrAt = now
 		out = append(out, nodeAlertMsg{bit: model.AdminEventCert, html: fmt.Sprintf(
 			i18n.T(lang, "notify.nodeCertFailed"),
-			nodeLabel(n), escHTML(st.certErr))})
+			nodeLabel(n, lang), escHTML(st.certErr))})
 	}
 	return out
 }
@@ -436,8 +349,8 @@ func (m *Manager) pruneNodeAlerts(live map[int64]struct{}) {
 // nodeLabel names a node in an alert. The host rides along with the name because an
 // abuse complaint, a hoster's mail and a traceroute all name the address, not the
 // label the operator picked in the panel.
-func nodeLabel(n *model.Node) string {
-	s := i18n.T(i18n.Default, "notify.serverIs", escHTML(n.Name))
+func nodeLabel(n *model.Node, lang i18n.Lang) string {
+	s := i18n.T(lang, "notify.serverIs", escHTML(n.Name))
 	if n.Host != "" {
 		s += " (" + escHTML(n.Host) + ")"
 	}

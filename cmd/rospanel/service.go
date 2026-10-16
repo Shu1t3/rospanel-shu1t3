@@ -27,6 +27,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/decoy"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/geo"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/h2fix"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/hostfw"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/http80"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/migration"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
@@ -289,6 +290,8 @@ func runServer(dataDir string) {
 	// Writes the buffered access-log sightings. RecordAccess only buffers, so this
 	// is what actually persists who connected from where.
 	runBG("access flush", accessFlushLoop(mgr))
+	// Puts back the ports a firewall reload took out of the host firewall (hostfw).
+	runBG("hostfw", func(ctx context.Context) { hostfw.Keep(ctx, time.Minute) })
 	// Audit-log + connection-row retention: drops rows past their windows.
 	runBG("retention", retentionLoop(mgr))
 	// Re-applies the addresses banned by hand: they never expire, so a ban that did
@@ -334,6 +337,8 @@ func runServer(dataDir string) {
 		log.Fatalf("build router: %v", err)
 	}
 	startPlugins(runBG, handler.(*server.Router), mgr, st, dataDir)
+	// The decoy again, for the HTTP/3 requests Hysteria2 masquerades (decoy/h3.go).
+	decoy.ServeLoopback(xray.DecoyH3Addr, handler.(*server.Router).PublicDecoy())
 	// Serve HTTP/2 cleartext too: Xray's VLESS inbound offers ALPN h2, so non-VPN
 	// traffic arrives as HTTP/2 (prior-knowledge) over the plaintext fallback.
 	// UnencryptedHTTP2 lets the loopback panel speak both HTTP/1.1 and HTTP/2 —
@@ -367,7 +372,9 @@ func runServer(dataDir string) {
 	// HTTP/2 connection, which is how a browser arrives through that same fallback:
 	// without it every held response — the dashboard's SSE stream — dies after ten
 	// seconds. See internal/h2fix.
-	ln = h2fix.Listener{Listener: &proxyproto.Listener{Listener: ln}}
+	// AnyTLS takes the sessions that authenticate before HTTP sees the connection;
+	// everything else reaches the panel with the bytes it sent (see internal/anytls).
+	ln = h2fix.Listener{Listener: mgr.AnyTLSListener(&proxyproto.Listener{Listener: ln})}
 
 	go func() {
 		log.Printf("admin API listening on %s", adminAddr)
@@ -391,6 +398,7 @@ func runServer(dataDir string) {
 	sup.Stop()
 	mgr.StopAWG()
 	mgr.StopMieru()
+	mgr.StopMTProto()
 	mgr.StopTurn()
 
 	// Let the background loops finish what they are in the middle of — a flush, a
@@ -548,6 +556,9 @@ func statsPollLoop(mgr *core.Manager) func(context.Context) {
 				}
 			})
 			safeTick("mieru retry", mgr.RetryMieru)
+			safeTick("mtproto retry", mgr.RetryMTProto)
+			safeTick("turn relay retry", mgr.RetryTurn)
+			safeTick("awg retry", mgr.RetryAWG)
 		})
 	}
 }
@@ -729,6 +740,11 @@ func bootstrapPanel(st *store.Store) (string, error) {
 		// placeholder — a page that plausibly serves a few kilobytes a day, sitting
 		// on a box that moves gigabytes. The operator can still change it.
 		if err := st.SetDecoyTemplate(decoy.RandomTemplate()); err != nil {
+			return "", err
+		}
+		// The REALITY donor and port likewise: max.ru on 8443 on every install is the
+		// same one-query signature.
+		if err := st.SetRealityPorts(core.PickRealityPort(), core.PickRealityDonor()); err != nil {
 			return "", err
 		}
 	}

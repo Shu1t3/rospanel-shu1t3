@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
 	"github.com/amnezia-vpn/amneziawg-go/v3/device"
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
@@ -30,6 +31,7 @@ type linuxDevice struct {
 	port    int
 	privKey string
 	lastErr string
+	last    *Config // what the last Apply asked for; nil after Close
 }
 
 // New returns the tunnel driver for this platform.
@@ -38,7 +40,21 @@ func New() Device { return &linuxDevice{} }
 func (d *linuxDevice) Apply(cfg Config) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	err := d.apply(cfg)
+	d.last = &cfg
+	return d.applyLast()
+}
+
+func (d *linuxDevice) Retry() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.lastErr == "" || d.last == nil {
+		return nil
+	}
+	return d.applyLast()
+}
+
+func (d *linuxDevice) applyLast() error {
+	err := d.apply(*d.last)
 	if err != nil {
 		d.lastErr = err.Error()
 	} else {
@@ -118,8 +134,20 @@ func configureInterface() error {
 }
 
 // Ruleset is the NAT/forward table: masquerade the tunnel subnet on its way out
-// of any other interface, let tunnel traffic through the forward chain both ways.
+// of any other interface, let tunnel traffic through the forward chain both ways —
+// except to the private ranges the Xray lanes may not reach either
+// (model.PrivateEgressCIDRs: cloud metadata, the provider's LAN, Docker's networks,
+// the other peers). A drop here is final whatever another table accepts; an accept
+// is not, and internal/hostfw opens the drops of Docker, ufw and firewalld.
 func Ruleset() string {
+	var v4, v6 []string
+	for _, c := range model.PrivateEgressCIDRs {
+		if strings.Contains(c, ":") {
+			v6 = append(v6, c)
+		} else {
+			v4 = append(v4, c)
+		}
+	}
 	return fmt.Sprintf(`table inet %[1]s {
 	chain postrouting {
 		type nat hook postrouting priority srcnat; policy accept;
@@ -127,11 +155,13 @@ func Ruleset() string {
 	}
 	chain forward {
 		type filter hook forward priority filter; policy accept;
+		iifname "%[3]s" ip daddr { %[4]s } drop
+		iifname "%[3]s" ip6 daddr { %[5]s } drop
 		iifname "%[3]s" accept
 		oifname "%[3]s" ct state established,related accept
 	}
 }
-`, nftTable, Subnet, Iface)
+`, nftTable, Subnet, Iface, strings.Join(v4, ", "), strings.Join(v6, ", "))
 }
 
 func (d *linuxDevice) Stats() (map[string]PeerStat, error) {
@@ -163,6 +193,7 @@ func (d *linuxDevice) Close() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.closeLocked()
+	d.last, d.lastErr = nil, "" // switched off: nothing to retry
 }
 
 func (d *linuxDevice) closeLocked() {

@@ -44,6 +44,9 @@ func nodeSettings(set *model.Settings, n *model.Node) *model.Settings {
 	ns.AWGPort, ns.AWGName, ns.AWGDNS = 0, "", ""
 	ns.NaiveEnabled, ns.NaiveName = derefBool(n.NaiveEnabled), ""
 	ns.MieruEnabled, ns.MieruPort, ns.MieruTransport, ns.MieruName = derefBool(n.MieruEnabled), 0, model.MieruTCP, ""
+	ns.AnyTLSEnabled, ns.AnyTLSName = derefBool(n.AnyTLSEnabled), ""
+	ns.MTProtoEnabled, ns.MTProtoPort, ns.MTProtoName = derefBool(n.MTProtoEnabled), 0, ""
+	ns.MTProtoDomain = n.MTProtoDomain
 	// REALITY donor: the node's own if set, otherwise inherit the panel's (a node
 	// needs some donor for REALITY to work).
 	if n.RealityDest != "" {
@@ -58,6 +61,7 @@ func nodeSettings(set *model.Settings, n *model.Node) *model.Settings {
 	// TLS hints for this node's share links come from what the node reported about
 	// its live cert — the panel can't read the remote node's disk.
 	ns.TLSInsecure = n.CertSelfSigned
+	ns.CertSHA256 = n.CertSHA256
 	ns.TLSPinSHA256 = ""
 	if n.CertSelfSigned {
 		ns.TLSPinSHA256 = n.CertSHA256
@@ -123,10 +127,16 @@ func nodeSettings(set *model.Settings, n *model.Node) *model.Settings {
 		ns.MieruPort = c.MieruPort
 		ns.MieruTransport = model.MieruTransportOr(c.MieruTransport)
 		ns.MieruName = c.MieruName
+		ns.AnyTLSName = c.AnyTLSName
+		ns.MTProtoPort = c.MTProtoPort
+		ns.MTProtoName = c.MTProtoName
 	}
 	if ns.MieruPort == 0 {
 		// Nothing chosen: the node's own default, clear of its other listeners.
 		ns.MieruPort = clearOf(mieruHeldOn(&ns, nil), ns.MieruTransport, defaultMieruPort(nodeMieruSeed(n)))
+	}
+	if ns.MTProtoPort == 0 {
+		ns.MTProtoPort = clearOf(mtprotoHeldOn(&ns, nil), model.MieruTCP, defaultMTProtoPort(nodeMieruSeed(n)))
 	}
 	return &ns
 }
@@ -244,6 +254,9 @@ func (m *Manager) generateNodeState(n *model.Node, x *nodeStateInputs, users []m
 	if l := mieruListen(ns); l.Port > 0 {
 		connGuardPorts = append(connGuardPorts, l.Port)
 	}
+	if l := MTProtoListen(ns); l.Port > 0 {
+		connGuardPorts = append(connGuardPorts, l.Port)
+	}
 	// Custom inbounds get the same per-IP flood guard as the built-in lanes — they are
 	// public listeners on the same box, and leaving them out would make "add a custom
 	// inbound" quietly the way to bypass the guard. Only the TCP ones: the guard's
@@ -275,6 +288,7 @@ func (m *Manager) generateNodeState(n *model.Node, x *nodeStateInputs, users []m
 		HopEnd:            ns.HopEnd,
 		HopRanges:         nodeHopMeta(ns, opts.Custom),
 		ConnGuardPorts:    connGuardPorts,
+		ConnGuardExempt:   bridgeSources(x.opts.Bridges),
 		TurnRelays:        nodeTurnRelays(opts.Custom),
 		LoopbackDest:      m.opts.PanelDest,
 		DecoyTemplate:     n.DecoyTemplate,
@@ -284,6 +298,9 @@ func (m *Manager) generateNodeState(n *model.Node, x *nodeStateInputs, users []m
 	}
 	if l := mieruListen(ns); l.Port > 0 {
 		meta.Mieru = &nodeapi.MieruState{Port: l.Port, Transport: l.Transport}
+	}
+	if l := MTProtoListen(ns); l.Port > 0 {
+		meta.MTProto = &nodeapi.MTProtoState{Port: l.Port, Domain: l.Domain, Front: l.Front}
 	}
 	var claimed bool
 	meta.AWG, claimed = m.nodeAWGStateClaimed(n, ns, users, in.access)
@@ -383,10 +400,10 @@ func (m *Manager) readNodeInputsLocked(ws *workingSet) (*nodeInputs, error) {
 	ids, capped := ws.ids, ws.caps
 	var err error
 	// The credentials cost several times the rest of this read put together, in time
-	// and in garbage both, and nothing can change one for a user already in the set:
-	// a uuid and a password are written when the account is made and never again, and
-	// a tunnel identity is claimed once — by a path that forgets this snapshot (see
-	// claimAWG). So while the set is the same, last read's credentials are the same.
+	// and in garbage both, and they change only by paths that forget this snapshot: a
+	// uuid and a password are written when the account is made and again only by a
+	// UUID reset (markRekeyed), and a tunnel identity is claimed once (see claimAWG).
+	// So while the set is the same, last read's credentials are the same.
 	if prev != nil && slices.Equal(prev.ids, ids) {
 		in.users, in.ids = prev.users, prev.ids
 	} else {

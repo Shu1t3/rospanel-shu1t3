@@ -7,7 +7,8 @@ import {
   getConfigSnapshots,
   rollbackConfigSnapshot,
 } from "./api";
-import { currentLang } from "./i18n";
+import { locale } from "./i18n";
+import { inPanelTz } from "./tz";
 import { useAction } from "./hooks";
 import { errMessage, notifyError, notifySuccess } from "./notify";
 import {
@@ -44,7 +45,7 @@ export function ServerSnapshots({ onRolledBack }: { onRolledBack?: () => void })
     reload();
   }, []);
 
-  const stamp = (sec: number) => new Date(sec * 1000).toLocaleString(currentLang());
+  const stamp = (sec: number) => new Date(sec * 1000).toLocaleString(locale(), inPanelTz());
 
   const rollback = (sn: ConfigSnapshot) => async () => {
     const ok = await confirm({

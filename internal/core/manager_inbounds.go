@@ -58,6 +58,9 @@ func inboundView(in model.Inbound) InboundView {
 		TLSExtraForm:     model.DisassembleTLSExtra(in.Opts.TLSExtra),
 	}
 	v.Opts.RealityPrivateKey = ""
+	// The VLESS Encryption server string carries the private key; clients get only the
+	// encryption half, in their links.
+	v.Opts.Decryption = ""
 	// The Shadowsocks server key is generated, not edited: the client gets it inside
 	// its share link, and the editor has no field for it, so keep it off the view the
 	// same way the REALITY private key is kept off.
@@ -145,6 +148,7 @@ func reservedPorts(set *model.Settings) model.ReservedPorts {
 	}
 	r.HoldUDP(set.HysteriaPort, "HYSTERIA-UDP")
 	r.Hold(xray.APIPort, "Xray internal API")
+	r.HoldTCP(xray.DecoyH3Port, "decoy for HTTP/3")
 	// Loopback ports only off Linux; abstract sockets there hold none (xray/inner.go).
 	if p := xray.InnerPort(xray.VLESSInnerAddr); p != 0 {
 		r.HoldTCP(p, "VLESS-Vision behind the front")
@@ -154,6 +158,12 @@ func reservedPorts(set *model.Settings) model.ReservedPorts {
 	}
 	if p := xray.InnerPort(xray.MieruInnerAddr); p != 0 {
 		r.HoldTCP(p, "mieru (internal)")
+	}
+	if p := xray.InnerPort(xray.AnyTLSInnerAddr); p != 0 {
+		r.HoldTCP(p, "AnyTLS (internal)")
+	}
+	if p := xray.InnerPort(xray.MTProtoInnerAddr); p != 0 {
+		r.HoldTCP(p, "MTProto (internal)")
 	}
 	if set.HopEnd > set.HysteriaPort {
 		// The built-in hop range is a UDP funnel onto the Hysteria port: anything
@@ -185,6 +195,9 @@ func reservedPorts(set *model.Settings) model.ReservedPorts {
 		} else {
 			r.HoldTCP(set.MieruPort, "mieru")
 		}
+	}
+	if set.MTProtoEnabled && set.MTProtoPort > 0 {
+		r.HoldTCP(set.MTProtoPort, "MTProto")
 	}
 	return r
 }
@@ -268,6 +281,11 @@ func (m *Manager) UpdateInbound(ctx context.Context, in model.Inbound) (*Inbound
 	// method change is exactly the case where they must be re-imported anyway.
 	if in.Protocol == model.InbShadowsocks {
 		in.Opts.ShadowKey = cur.Opts.ShadowKey
+	}
+	// And the VLESS Encryption keys (the server's half is never shown either); a new
+	// mode re-dresses the same keypair in prepareInbound.
+	if in.Protocol == model.InbVLESS && in.Opts.EncMode != "" {
+		in.Opts.Decryption, in.Opts.Encryption = cur.Opts.Decryption, cur.Opts.Encryption
 	}
 	// And the WireGuard identity and loopback port: a new key would strand every
 	// imported config, and a new port would move the relay's target for nothing.
@@ -372,6 +390,9 @@ func (m *Manager) prepareInbound(in *model.Inbound) error {
 		}
 		in.Opts.TurnMaskKey = hex.EncodeToString(key)
 	}
+	if err := prepareVLESSEnc(&in.Opts); err != nil {
+		return err
+	}
 	if !in.NeedsRealityKeys() {
 		return nil
 	}
@@ -386,6 +407,27 @@ func (m *Manager) prepareInbound(in *model.Inbound) error {
 	in.Opts.RealityPrivateKey = priv
 	in.Opts.RealityPublicKey = pub
 	in.Opts.RealityShortID = shortIDs
+	return nil
+}
+
+// prepareVLESSEnc puts the mode the operator picked into the inbound's VLESS Encryption
+// strings: the keypair it already has (a mode change keeps it, so links stay valid but
+// for the mode), or a new one; off clears both. X25519 authentication, as `xray
+// vlessenc` offers it: the key exchange is post-quantum either way, and the ML-KEM
+// alternative makes every link some 1.6 KB longer.
+func prepareVLESSEnc(o *model.InboundOpts) error {
+	if o.EncMode == "" {
+		o.Decryption, o.Encryption = "", ""
+		return nil
+	}
+	priv, pub := model.VLESSEncKey(o.Decryption), model.VLESSEncKey(o.Encryption)
+	if priv == "" || pub == "" {
+		var err error
+		if priv, pub, err = auth.GenerateRealityKeys(); err != nil { // the same X25519 pair
+			return err
+		}
+	}
+	o.Decryption, o.Encryption = model.VLESSEncStrings(o.EncMode, priv, pub)
 	return nil
 }
 
@@ -517,6 +559,9 @@ func (m *Manager) candidateConfig(serverID int64, custom []model.Inbound) (*xray
 	}
 	opts := m.genOpts()
 	opts.Custom = custom
+	if master, err := m.store.GetSettings(); err == nil {
+		m.cascadeOpts(&opts, serverID, master)
+	}
 
 	if serverID == model.LocalNodeID {
 		set, err := m.store.GetSettings()
@@ -710,6 +755,9 @@ func HostConnGuardPorts(st *store.Store) ([]int, error) {
 	if set.MieruEnabled && set.MieruPort > 0 {
 		ports = append(ports, set.MieruPort) // TCP: see model.MieruTransportOr
 	}
+	if set.MTProtoEnabled && set.MTProtoPort > 0 {
+		ports = append(ports, set.MTProtoPort)
+	}
 	list, err := st.EnabledInbounds(model.LocalNodeID)
 	if err != nil {
 		return nil, err
@@ -730,6 +778,9 @@ func (m *Manager) SetConnGuard(wanted bool, lim connguard.Limits) {
 	m.connGuardMu.Lock()
 	m.connGuardLimits = lim
 	m.connGuardMu.Unlock()
+	// Boot installed the guard before the manager existed, so without the cascade
+	// entries this server is the exit of: put them in now.
+	m.ensureLocalConnGuard()
 }
 
 // ensureLocalConnGuard re-applies the per-IP guard for the current port set.
@@ -746,6 +797,9 @@ func (m *Manager) ensureLocalConnGuard() {
 	m.connGuardMu.Lock()
 	lim := m.connGuardLimits
 	m.connGuardMu.Unlock()
+	if set, err := m.store.GetSettings(); err == nil {
+		lim.Exempt = m.localBridgeSources(set)
+	}
 	if err := connguard.Ensure(ports, lim); err != nil {
 		logErr("connguard: re-apply failed", "err", err)
 	}

@@ -34,6 +34,18 @@ const VisionFlow = "xtls-rprx-vision"
 // APIPort is the loopback port for the Xray gRPC StatsService.
 const APIPort = 10085
 
+// DecoyH3Port is the loopback port the decoy also listens on for Hysteria2's
+// masquerade (decoy.ServeLoopback), and DecoyH3Addr the address.
+const (
+	DecoyH3Port = 18447
+	DecoyH3Addr = "127.0.0.1:18447"
+)
+
+// h3Masquerade sends a Hysteria2 inbound's non-client HTTP/3 requests to the decoy.
+func h3Masquerade() *HysteriaMasquerade {
+	return &HysteriaMasquerade{Type: "proxy", URL: "http://" + DecoyH3Addr}
+}
+
 // Options carries non-DB generation parameters.
 type Options struct {
 	// PanelDest is where the VLESS default fallback forwards non-proxy traffic
@@ -71,6 +83,12 @@ type Options struct {
 
 	// Relays are the external servers this server carries traffic on to (relay.go).
 	Relays []Relay
+	// Cascade are the upstreams of this server's cascade lanes by lane ID — our own
+	// servers, as links the panel built — joined to the lanes' pools (cascade.go).
+	Cascade map[string][]model.ProxyEndpoint
+	// Bridges are the cascade entries that leave through this server: each one's
+	// service credential on its bridge lane, let in from its own addresses only.
+	Bridges []Bridge
 }
 
 // acceptProxy is the socket option that has Xray read the front's PROXY header.
@@ -112,6 +130,8 @@ func Generate(set *model.Settings, users []model.User, opts Options, proxies map
 	// filter drops a user's credential from a lane they aren't allowed — so a hidden
 	// lane can't be reached with a hand-made link, not just hidden in the UI.
 	vlessClients, hy2Clients, realityClients := protocolClients(set, users, opts.allowsBuiltin)
+	vlessClients, hy2Clients, realityClients = addBridgeClients(set, opts.Bridges, vlessClients, hy2Clients, realityClients)
+	proxies = withCascade(proxies, opts.Cascade, set.Routing.Lanes)
 
 	sharedCert := []Certificate{{CertificateFile: set.CertPath, KeyFile: set.KeyPath}}
 
@@ -184,7 +204,7 @@ func Generate(set *model.Settings, users []model.User, opts Options, proxies map
 			// Hysteria2 runs over QUIC/HTTP3 — the TLS layer MUST offer ALPN "h3"
 			// or the handshake fails with "no application protocol".
 			TLSSettings:      &TLSSettings{ServerName: set.SNI, ALPN: []string{"h3"}, Certificates: sharedCert},
-			HysteriaSettings: &HysteriaSettings{Version: 2},
+			HysteriaSettings: &HysteriaSettings{Version: 2, Masquerade: h3Masquerade()},
 			// Salamander, when the operator set a key. Nil otherwise, so an install
 			// that never turned it on generates exactly the config it did before.
 			FinalMask: salamanderUDP(set.HysteriaObfs),
@@ -357,6 +377,16 @@ func Generate(set *model.Settings, users []model.User, opts Options, proxies map
 		listen, port := innerLaneListen(MieruInnerAddr, inbounds)
 		inbounds = append(inbounds, innerInbound(TagMieru, listen, port, laneClients(set.MieruEnabled, model.LaneMieru, users, opts.allowsBuiltin), sniff))
 	}
+	if set.AnyTLSEnabled {
+		listen, port := innerLaneListen(AnyTLSInnerAddr, inbounds)
+		inbounds = append(inbounds, innerInbound(TagAnyTLS, listen, port, laneClients(set.AnyTLSEnabled, model.LaneAnyTLS, users, opts.allowsBuiltin), sniff))
+	}
+	// MTProto (its own port, see internal/mtproto): each Telegram connection enters
+	// here on its user's UUID, bound for a Telegram data centre.
+	if set.MTProtoEnabled {
+		listen, port := innerLaneListen(MTProtoInnerAddr, inbounds)
+		inbounds = append(inbounds, innerInbound(TagMTProto, listen, port, laneClients(set.MTProtoEnabled, model.LaneMTProto, users, opts.allowsBuiltin), sniff))
+	}
 
 	return &Config{
 		Log:   &Log{Loglevel: "warning"},
@@ -380,7 +410,7 @@ func Generate(set *model.Settings, users []model.User, opts Options, proxies map
 		DNS:         dns,
 		Inbounds:    inbounds,
 		Outbounds:   outbounds,
-		Routing:     compileRouting(expandGroups(rc, opts.Groups), order, warpActive, operaActive, active, unusable, relayRules),
+		Routing:     compileRouting(expandGroups(rc, opts.Groups), order, warpActive, operaActive, active, unusable, relayRules, opts.Bridges),
 		Observatory: observatory,
 	}, nil
 }
@@ -545,6 +575,8 @@ const (
 	TagReality  = "vless-reality-in"
 	TagNaive    = "naive-in"
 	TagMieru    = "mieru-in"
+	TagAnyTLS   = "anytls-in"
+	TagMTProto  = "mtproto-in"
 )
 
 // ProtoWireGuard is Xray's name for the protocol of a TURN-VK inbound.
@@ -619,6 +651,22 @@ func NaiveClientsRaw(data []byte) ([]VLESSClient, string) { return InnerClientsR
 
 // MieruClientsRaw is MieruClients for a config as JSON.
 func MieruClientsRaw(data []byte) ([]VLESSClient, string) { return InnerClientsRaw(data, TagMieru) }
+
+// AnyTLSClients are anytls-in's clients in cfg — who internal/anytls lets in — and the
+// address it listens on ("" when the lane is off).
+func AnyTLSClients(cfg *Config) ([]VLESSClient, string) { return InnerClients(cfg, TagAnyTLS) }
+
+// AnyTLSClientsRaw is AnyTLSClients for a config as JSON.
+func AnyTLSClientsRaw(data []byte) ([]VLESSClient, string) { return InnerClientsRaw(data, TagAnyTLS) }
+
+// MTProtoClients are mtproto-in's clients in cfg — who internal/mtproto lets in — and
+// the address it listens on ("" when the lane is off).
+func MTProtoClients(cfg *Config) ([]VLESSClient, string) { return InnerClients(cfg, TagMTProto) }
+
+// MTProtoClientsRaw is MTProtoClients for a config as JSON.
+func MTProtoClientsRaw(data []byte) ([]VLESSClient, string) {
+	return InnerClientsRaw(data, TagMTProto)
+}
 
 // InnerClients are the clients of the inner lane inbound tagged tag in cfg, and the
 // address it listens on ("" when the lane is off).
@@ -707,9 +755,13 @@ func customInbound(in model.Inbound, set *model.Settings, users []model.User,
 
 	switch in.Protocol {
 	case model.InbVLESS:
+		dec := in.Opts.Decryption
+		if dec == "" {
+			dec = "none"
+		}
 		out.Settings = VLESSInboundSettings{
 			Clients:    customVLESSClients(in, allowed),
-			Decryption: "none",
+			Decryption: dec,
 		}
 	case model.InbTrojan:
 		out.Settings = TrojanInboundSettings{Clients: customTrojanClients(allowed)}
@@ -781,10 +833,13 @@ func customStream(in model.Inbound, set *model.Settings, cert []Certificate, min
 			ServiceName: o.ServiceName, Authority: o.Authority, MultiMode: o.MultiMode,
 		}
 	case model.TrHysteria:
-		st.HysteriaSettings = &HysteriaSettings{Version: 2}
+		st.HysteriaSettings = &HysteriaSettings{Version: 2, Masquerade: h3Masquerade()}
 		st.FinalMask = salamanderUDP(o.Obfs)
 	}
 	st.Sockopt = o.Sockopt
+	if o.ViaCDN() {
+		st.Sockopt = trustForwardedFor(o.Sockopt)
+	}
 
 	switch o.Security {
 	case model.SecTLS:
@@ -1051,6 +1106,14 @@ func UserInbounds(set *model.Settings, custom []model.Inbound, users []model.Use
 		listen, port := InnerListen(MieruInnerAddr)
 		in = append(in, Inbound{Tag: TagMieru, Listen: listen, Port: port, Protocol: "vless", Settings: VLESSInboundSettings{Clients: mc, Decryption: "none"}})
 	}
+	if ac := laneClients(set.AnyTLSEnabled, model.LaneAnyTLS, users, allowBuiltin); len(ac) > 0 {
+		listen, port := InnerListen(AnyTLSInnerAddr)
+		in = append(in, Inbound{Tag: TagAnyTLS, Listen: listen, Port: port, Protocol: "vless", Settings: VLESSInboundSettings{Clients: ac, Decryption: "none"}})
+	}
+	if tc := laneClients(set.MTProtoEnabled, model.LaneMTProto, users, allowBuiltin); len(tc) > 0 {
+		listen, port := InnerListen(MTProtoInnerAddr)
+		in = append(in, Inbound{Tag: TagMTProto, Listen: listen, Port: port, Protocol: "vless", Settings: VLESSInboundSettings{Clients: tc, Decryption: "none"}})
+	}
 	if len(users) == 0 {
 		return in
 	}
@@ -1142,6 +1205,12 @@ func EnabledInboundTags(set *model.Settings, custom []model.Inbound) []string {
 	}
 	if set.MieruEnabled {
 		tags = append(tags, TagMieru)
+	}
+	if set.AnyTLSEnabled {
+		tags = append(tags, TagAnyTLS)
+	}
+	if set.MTProtoEnabled {
+		tags = append(tags, TagMTProto)
 	}
 	for _, c := range custom {
 		if c.Protocol == model.InbHysteria || c.Protocol == model.InbTurnVK {
@@ -1299,34 +1368,9 @@ func healthBalancer(tag, selector string, strict bool) Balancer {
 // own members so the lane can never silently leave the tunnel (see warpBalancer). A
 // WARP lane with no account provisioned routes to direct, same as any other inactive
 // lane — or is dropped under StrictEgress, as any switched-on lane that cannot run is.
-// privateEgressCIDRs are destination ranges a tunnelled client is never allowed to
-// reach: loopback, RFC1918 private space, link-local (covers the 169.254.169.254
-// cloud-metadata endpoint), CGNAT, and their IPv6 equivalents. Explicit CIDRs (not
-// geoip:private) so the rule needs no geo database to be present and can never
-// silently no-op if geoip.dat is missing at boot.
-var privateEgressCIDRs = []string{
-	"0.0.0.0/8",
-	"10.0.0.0/8",
-	"100.64.0.0/10",
-	"127.0.0.0/8",
-	"169.254.0.0/16",
-	"172.16.0.0/12",
-	"192.0.0.0/24", // IETF protocol assignments
-	"192.168.0.0/16",
-	"198.18.0.0/15", // benchmarking range — routers on it answer as themselves
-	"224.0.0.0/4",   // multicast: not a destination a tunnelled client has business with
-	"240.0.0.0/4",   // reserved
-	"::/128",
-	"::1/128",
-	"fc00::/7",
-	"fe80::/10",
-	// NB: do NOT add "::ffff:0:0/96" here. Xray parses an IPv4-mapped literal back to
-	// a 4-byte address and then rejects any prefix over 32, so the whole routing config
-	// fails to build — and since a panel restart stops Xray BEFORE the new config is
-	// validated, that is a full outage, not a no-op. Xray already normalises v4-in-v6
-	// to IPv4, so the IPv4 rows above cover the mapped form. TestPrivateEgressCIDRsAreValid
-	// pins this.
-}
+// privateEgressCIDRs is model.PrivateEgressCIDRs: the AmneziaWG tunnel, which bypasses
+// Xray, drops the same ranges in nftables.
+var privateEgressCIDRs = model.PrivateEgressCIDRs
 
 // privateEgressDomains closes the NAME half of the same floor. The CIDR list above only
 // matches once a destination is an IP, and the "direct" outbound is a bare freedom that
@@ -1349,15 +1393,30 @@ var privateEgressDomains = []string{
 	"full:instance-data.ec2.internal",
 }
 
-func compileRouting(rc model.RoutingConfig, order []string, warpActive, operaActive bool, active, unusable map[string]bool, relay []RouteRule) *Routing {
+func compileRouting(rc model.RoutingConfig, order []string, warpActive, operaActive bool, active, unusable map[string]bool, relay []RouteRule, bridges []Bridge) *Routing {
 	out := &Routing{DomainStrategy: "IPIfNonMatch"}
 	strict := rc.StrictEgress
+	byID := make(map[string]model.EgressLane, len(rc.Lanes))
+	for _, l := range rc.Lanes {
+		byID[l.ID] = l
+	}
+	// A cascade lane is strict whatever the setting: its traffic was sent abroad to be
+	// out of reach here, and leaving from here is the one thing it must not do.
+	strictLane := func(id string) bool { return strict || byID[id].IsCascade() }
 	// Each lane's proxies / Opera sit behind health-probed balancers; leastPing (via
 	// the Observatory) routes to a live member, else to the fallback.
 	for _, lane := range rc.Lanes {
-		if active[lane.ID] {
-			out.Balancers = append(out.Balancers, healthBalancer(laneBalancerTag(lane.ID), laneTagPrefix(lane.ID), strict))
+		if !active[lane.ID] {
+			continue
 		}
+		b := healthBalancer(laneBalancerTag(lane.ID), laneTagPrefix(lane.ID), strictLane(lane.ID))
+		if lane.IsCascade() {
+			// Like WARP's: with no exit judged alive the traffic still goes to one, never
+			// out from here. A slow exit fails the Observatory's 5-second probe and is
+			// still a working exit; a dead one fails the connection itself.
+			b.FallbackTag = laneTagPrefix(lane.ID) + "0"
+		}
+		out.Balancers = append(out.Balancers, b)
 	}
 	if operaActive {
 		out.Balancers = append(out.Balancers, healthBalancer(operaBalancerTag, "opera", strict))
@@ -1371,6 +1430,8 @@ func compileRouting(rc model.RoutingConfig, order []string, warpActive, operaAct
 		InboundTag:  []string{"api"},
 		OutboundTag: "api",
 	})
+	// A cascade entry's credential from anywhere but the entry is dropped first.
+	out.Rules = append(out.Rules, bridgeSourceRules(bridges)...)
 
 	// Security floor: a VPN client must not be able to address the server's own
 	// loopback (the Xray gRPC control API on 127.0.0.1:10085, the loopback panel),
@@ -1419,10 +1480,6 @@ func compileRouting(rc model.RoutingConfig, order []string, warpActive, operaAct
 	out.Rules = append(out.Rules, relay...)
 
 	// Egress lanes in the configured precedence (first-match-wins).
-	byID := make(map[string]model.EgressLane, len(rc.Lanes))
-	for _, l := range rc.Lanes {
-		byID[l.ID] = l
-	}
 	emitLane := func(lane string) {
 		switch lane {
 		case "direct":
@@ -1453,7 +1510,7 @@ func compileRouting(rc model.RoutingConfig, order []string, warpActive, operaAct
 			case !ok:
 			case active[lane]:
 				addBalancerRule(out, laneBalancerTag(lane), l.Domains, l.IPs)
-			case strict && unusable[lane]:
+			case strictLane(lane) && unusable[lane]:
 				// On, routed to, and no upstream to carry it: drop rather than let
 				// these destinations fall through to a later lane and out directly.
 				addDomainRule(out, "block", l.Domains)
@@ -1488,7 +1545,7 @@ func compileRouting(rc model.RoutingConfig, order []string, warpActive, operaAct
 		switch {
 		case active[last]:
 			out.Rules = append(out.Rules, RouteRule{Type: "field", Network: "tcp,udp", BalancerTag: laneBalancerTag(last)})
-		case strict && unusable[last]:
+		case strictLane(last) && unusable[last]:
 			out.Rules = append(out.Rules, blockAll)
 		}
 		// Otherwise an inactive catch-all lane (disabled / no live proxies) falls
@@ -1604,4 +1661,24 @@ func normDomains(entries []string) []string {
 		out = append(out, e)
 	}
 	return out
+}
+
+// trustForwardedFor is sockopt with the CDN's X-Forwarded-For trusted, so the access
+// log, the device limit and the online list see each client's own address rather than
+// the CDN's. The panel sets it, never the operator (SockoptKeys leaves it out), for an
+// inbound it was told sits behind a CDN. Xray's WebSocket, HTTPUpgrade and XHTTP read
+// the header without it too, and take its leftmost address — one the client can write
+// itself, a CDN appending to it — so it pins what Xray does today rather than making
+// the address trustworthy.
+func trustForwardedFor(sockopt json.RawMessage) json.RawMessage {
+	m := map[string]any{}
+	if len(sockopt) > 0 {
+		_ = json.Unmarshal(sockopt, &m)
+	}
+	m["trustedXForwardedFor"] = []string{"X-Forwarded-For"}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return sockopt
+	}
+	return b
 }

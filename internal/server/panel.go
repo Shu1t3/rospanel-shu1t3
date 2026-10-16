@@ -104,8 +104,15 @@ func makeUserView(u model.User, set *model.Settings, userBotUsername string, cus
 	if link.NaiveOn(set) && access.AllowsBuiltin(model.LocalNodeID, model.LaneNaive) {
 		v.Links = append(v.Links, namedLink{set.ProtoLabelFor(model.ProtoNaive, &u), link.Naive(u, set)})
 	}
+	if link.AnyTLSOn(set) && access.AllowsBuiltin(model.LocalNodeID, model.LaneAnyTLS) {
+		v.Links = append(v.Links, namedLink{set.ProtoLabelFor(model.ProtoAnyTLS, &u), link.AnyTLS(u, set)})
+	}
 	if link.MieruOn(set) && access.AllowsBuiltin(model.LocalNodeID, model.LaneMieru) {
 		v.Links = append(v.Links, namedLink{set.ProtoLabelFor(model.ProtoMieru, &u), link.Mieru(u, set)})
+	}
+	// The Telegram proxy: the link that adds it to Telegram, not a VPN client's.
+	if link.MTProtoOn(set) && access.AllowsBuiltin(model.LocalNodeID, model.LaneMTProto) {
+		v.Links = append(v.Links, namedLink{set.ProtoLabelFor(model.ProtoMTProto, &u), link.MTProto(u, set)})
 	}
 	for _, in := range custom {
 		if !access.AllowsInbound(in.ID) {
@@ -164,6 +171,13 @@ func (rt *Router) applyTLSHints(set *model.Settings) {
 			set.MieruEnabled = false
 		}
 	}
+	// The Telegram proxy likewise.
+	if set.MTProtoEnabled {
+		if up, _ := rt.mgr.MTProtoStatus(); !up {
+			set.MTProtoEnabled = false
+		}
+	}
+	set.CertSHA256 = rt.mgr.CertPinSHA256()
 	if rt.mgr.HasValidCert() {
 		return
 	}
@@ -216,6 +230,11 @@ func (rt *Router) subServers(local *model.Settings, userID int64, clientIP strin
 	// operator's weights decide who comes first, and a full server can drop out.
 	// Under the manual mode with no weights this is the old order, unchanged.
 	servers := sub.Servers(sets, custom, access)
+	// What is down on a server stays out until it is back (core/manager_lanes_down.go).
+	for i := range servers {
+		lanes, inbounds := rt.mgr.DownLanes(servers[i].Set.ServerID)
+		sub.HideDown(&servers[i], lanes, inbounds)
+	}
 	ordered := sub.Order(servers, local.SubOrderMode, rt.mgr.CountryOfIP(clientIP),
 		rt.mgr.OnlineByServer(), rt.mgr.ServersOverTrafficLimit())
 	// External servers are the panel's, not any one server's, so they ride along on
@@ -413,6 +432,7 @@ func (rt *Router) panelMux() http.Handler {
 	canSettingsView("POST /api/settings/legal/preview", rt.previewLegal)
 	canSettingsView("GET /api/settings/sub-rules", rt.getSubRules)
 	canSettingsManage("POST /api/settings/sub-rules", rt.saveSubRules)
+	canSettingsView("POST /api/settings/sub-rules/preview", rt.previewSubRules)
 	canSettingsView("GET /api/settings/sub-templates", rt.getSubTemplates)
 	canSettingsManage("POST /api/settings/sub-templates", rt.saveSubTemplates)
 	canSettingsManage("POST /api/settings/sub-dpi", rt.saveSubDPI)
@@ -528,6 +548,7 @@ func (rt *Router) panelMux() http.Handler {
 	canUsersManage("POST /api/users/{id}/devices/unbind", withID(rt.unbindUserDevice))
 	canUsersView("GET /api/users/{id}/abuse", withID(rt.userAbuse))
 	canUsersManage("POST /api/users/{id}/rotate-sub", withID(rt.rotateSubToken))
+	canUsersManage("POST /api/users/{id}/reset-uuid", withID(rt.resetUserUUID))
 	canUsersView("GET /api/users/{id}/happ-link", withID(rt.userHappLink))
 	canUsersManage("POST /api/users/{id}/telegram/unlink", withID(rt.unlinkUserTelegram))
 	canUsersManage("POST /api/users/{id}/telegram/link", withID(rt.genUserTelegramLink))
@@ -618,6 +639,10 @@ func (rt *Router) panelMux() http.Handler {
 	canLogs("GET /api/nodes/{id}/logs", withID(rt.nodeLogs))
 	canServersManage("GET /api/nodes/{id}/xray-config", withID(rt.nodeXrayConfig))
 	canServersView("GET /api/nodes/{id}/health", withID(rt.nodeHealth))
+	canServersView("GET /api/nodes/{id}/reach", withID(rt.nodeReach))
+	canServersView("POST /api/nodes/{id}/reach", withID(rt.checkNodeReach))
+	canServersView("GET /api/reach", rt.getReach)
+	canServersManage("POST /api/reach", rt.setReach)
 	canServersManage("DELETE /api/nodes/{id}", withID(rt.deleteNode))
 	canServersManage("POST /api/nodes/{id}/enabled", withID(rt.setNodeEnabled))
 	canServersManage("POST /api/nodes/{id}/regen-join", withID(rt.regenNodeJoin))

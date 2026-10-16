@@ -1,0 +1,51 @@
+package core
+
+import (
+	"strings"
+
+	"github.com/Shu1t3/rospanel-shu1t3/internal/awg"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/hostfw"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/xray"
+)
+
+// syncHostFW opens this server's listeners in the host firewall (internal/hostfw):
+// Xray's public inbounds, the :443 front, :80 for ACME, and the panel's own lanes as
+// they are running right now. Called at the end of every reconcile, which every
+// settings path reaches.
+func (m *Manager) syncHostFW(set *model.Settings, cfg *xray.Config) {
+	var skip []string
+	if !set.HysteriaEnabled {
+		skip = append(skip, xray.TagHysteria)
+	}
+	var s hostfw.Spec
+	s.Ports = append(xray.PublicListeners(cfg, skip...), hostfw.TCP(80), hostfw.TCP(set.VLESSPort))
+	if m.awg != nil && m.awg.Running() {
+		s.Ports = append(s.Ports, hostfw.UDP(set.AWGPort))
+		s.Forward = append(s.Forward, awg.Iface)
+	}
+	// mieru and MTProto from the settings, not from their listeners: one that comes up on
+	// a later retry must find its port open already.
+	if l := mieruListen(set); l.Port > 0 {
+		s.Ports = append(s.Ports, MieruHostPort(l.Port, l.Transport)...)
+	}
+	if l := MTProtoListen(set); l.Port > 0 {
+		s.Ports = append(s.Ports, hostfw.TCP(l.Port))
+	}
+	for _, p := range m.turn.Ports() {
+		s.Ports = append(s.Ports, hostfw.UDP(p))
+	}
+	hostfw.Ensure(s)
+}
+
+// MieruHostPort is a running mieru listener as a firewall port; none for a lane
+// that is off.
+func MieruHostPort(port int, transport string) []hostfw.Port {
+	if port <= 0 {
+		return nil
+	}
+	if strings.EqualFold(transport, model.MieruUDP) {
+		return []hostfw.Port{hostfw.UDP(port)}
+	}
+	return []hostfw.Port{hostfw.TCP(port)}
+}

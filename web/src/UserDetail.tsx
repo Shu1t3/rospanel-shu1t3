@@ -16,6 +16,7 @@ import {
   unbindUserDevice,
   resetUserTraffic,
   rotateSubToken,
+  resetUserUUID,
   messageUser,
   unlinkUserTelegram,
   setResetPeriod,
@@ -78,6 +79,7 @@ import {
   IconCopy,
   IconExternal,
   IconKey,
+  IconShield,
   IconPencil,
   IconRestart,
   IconSend,
@@ -96,7 +98,7 @@ import {
   useConfirm,
   useCopy,
 } from './ui'
-import i18n from './i18n'
+import i18n, { locale } from './i18n'
 import { useCan } from './role'
 import { ExtendUserModal, RenameModal } from './UserModals'
 import { GroupChip, NoteAndTags } from './UserNotes'
@@ -570,7 +572,7 @@ export function UserDetail({
                 user.abuse_action === 'disable'
                   ? 'userDetail.abuseDisabled'
                   : 'userDetail.abuseThrottled',
-                { when: new Date(user.abuse_until * 1000).toLocaleString(i18n.language, inPanelTz()) },
+                { when: new Date(user.abuse_until * 1000).toLocaleString(locale(), inPanelTz()) },
               )}
             </p>
           )}
@@ -639,6 +641,26 @@ export function UserDetail({
               }}
             >
               <IconKey />
+            </IconButton>
+            <IconButton
+              title={t('userDetail.resetUUID')}
+              onClick={async () => {
+                const ok = await confirm({
+                  title: t('userDetail.resetUUIDTitle'),
+                  body: t('userDetail.resetUUIDBody'),
+                  confirmLabel: t('userDetail.resetUUIDConfirm'),
+                  danger: true,
+                })
+                if (!ok) return
+                resetUserUUID(user.id)
+                  .then(() => {
+                    notifySuccess(t('userDetail.uuidReset'))
+                    onChanged()
+                  })
+                  .catch(fail)
+              }}
+            >
+              <IconShield size={16} />
             </IconButton>
             </>
             )}

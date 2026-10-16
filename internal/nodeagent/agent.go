@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Shu1t3/rospanel-shu1t3/internal/anytls"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/awg"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/connguard"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/decoy"
@@ -35,6 +36,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/logbuf"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/mieru"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/mtproto"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/naive"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/nodeapi"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/nodestate"
@@ -110,9 +112,17 @@ func jitter(d time.Duration) time.Duration {
 // server, holds the long-poll to the panel, and reports traffic back.
 type Agent struct {
 	dataDir string
-	ident   *Identity
-	client  *http.Client
-	sup     *xray.Supervisor
+	// A self-update the operator asked for: tried again until updateUntil while the
+	// release is still without its binaries (they are uploaded a minute or two after it
+	// is published), at most once per updateRetry. updateErr is why the last attempt
+	// failed, reported to the panel. All three belong to the sync loop's goroutine;
+	// updateErr is read by syncOnce on that same goroutine.
+	updateUntil time.Time
+	updateNext  time.Time
+	updateErr   string
+	ident       *Identity
+	client      *http.Client
+	sup         *xray.Supervisor
 	// front holds the TCP-TLS lane's public port in front of Xray (see tlsfront); nil
 	// when switched off with ROSPANEL_TLS_FRONT=off. frontPort is the port the last
 	// applied config wants it on (0: none), kept for when a suspension lifts.
@@ -267,6 +277,7 @@ type Agent struct {
 	// awgErr is the last tunnel-apply failure, reported to the panel so it can raise
 	// the AmneziaWG health alert — the node has no bot to tell anyone itself.
 	awgErr    string
+	awgRetry  time.Time // when retryAWG last tried, under awgMu
 	awgMu     sync.Mutex
 	awgEmails map[string]string
 	awgLast   map[string]awg.PeerStat
@@ -283,6 +294,16 @@ type Agent struct {
 	mieru    *mieru.Server
 	mieruMu  sync.Mutex // a sync's Apply and a retry, so neither overwrites the other's outcome
 	mieruErr atomic.Pointer[string]
+
+	// mtproto is the Telegram proxy on the port the panel gives (internal/mtproto); its
+	// users are mtproto-in's clients in the config last applied.
+	mtproto    *mtproto.Server
+	mtprotoMu  sync.Mutex
+	mtprotoErr atomic.Pointer[string]
+
+	// anytls answers AnyTLS behind the decoy (internal/anytls); its users are
+	// anytls-in's clients in the config last applied.
+	anytls *anytls.Server
 }
 
 // Run loads the node identity and runs the agent until the context is cancelled
@@ -341,6 +362,7 @@ func Run(ctx context.Context, dataDir string) error {
 	go a.banLoop(ctx)   // re-apply the banned addresses, which never expire on their own
 	go a.shapeLoop(ctx) // per-user speed caps, from this node's own address view
 	go a.quotaLoop(ctx) // quotas between the minute-long traffic samples
+	go keepHostFW(ctx)  // a firewall reload drops the ports we opened
 	a.syncLoop(ctx)
 	a.shutdown()
 	return nil
@@ -536,6 +558,7 @@ func newAgent(dataDir string, ident *Identity) (*Agent, error) {
 		awg:          awg.New(),
 		naive:        naive.New(xray.NaiveInnerAddr),
 		mieru:        mieru.New(xray.MieruInnerAddr),
+		mtproto:      mtproto.New(xray.MTProtoInnerAddr),
 		turn:         turnrelay.New(),
 		policyBlock:  ipblock.New(ipblock.TablePolicy),
 		ipBan:        ipblock.NewPermanent(ipblock.TableBanned),
@@ -544,6 +567,11 @@ func newAgent(dataDir string, ident *Identity) (*Agent, error) {
 	// watermark keeps accepting this node's traffic after a restart.
 	a.reportSeq = a.state.LastReportID
 	a.restoreSplit()
+	if at, err := anytls.New(xray.AnyTLSInnerAddr); err == nil {
+		a.anytls = at
+	} else {
+		slog.Warn("node: AnyTLS lane not started", "err", err)
+	}
 	// Tap Xray's access log so the panel can count this node's devices (mirrors the
 	// master's sup.SetOnAccess(RecordAccess)).
 	a.sup.SetOnAccess(a.recordConn)
@@ -638,6 +666,7 @@ const (
 // (email, ip); destinations are counted per (user, host). Both buffers are bounded
 // so a flood can't grow them without limit.
 func (a *Agent) recordConn(email, ip, dest string) {
+	email = xray.CanonicalEmail(email) // the shaper's caps and the panel know users by their own
 	if !strings.HasPrefix(email, "u") || ip == "" {
 		return
 	}
@@ -942,8 +971,18 @@ func (a *Agent) syncLoop(ctx context.Context) {
 			}
 		}
 		if resp.Update {
-			if a.selfUpdate(ctx, resp.UpdateRepo) {
+			a.updateUntil, a.updateNext, a.updateErr = time.Now().Add(updateWindow), time.Time{}, ""
+		}
+		if !a.updateUntil.IsZero() && !time.Now().Before(a.updateNext) {
+			swapped, again, why := a.selfUpdate(ctx, resp.UpdateRepo)
+			if swapped {
 				return // binary swapped; exit so systemd restarts the new one
+			}
+			if again && time.Now().Before(a.updateUntil) {
+				a.updateNext = time.Now().Add(updateRetry)
+			} else {
+				// Settled: reported only now, so a retry under way does not read as failed.
+				a.updateUntil, a.updateErr = time.Time{}, why
 			}
 		}
 		if resp.Changed && (resp.Split != nil || resp.Delta != nil) {
@@ -1141,18 +1180,26 @@ func (a *Agent) buildSyncRequest() nodeapi.SyncRequest {
 		})
 	}
 
+	a.retryAWG()
 	awgUp, awgErr := a.awgState()
 	a.retryMieru()
+	a.retryMTProto()
+	_ = a.turn.Retry() // still failing is reported below, as TurnDown
 	conns, connsMore := a.takeConns(connsChunkMax)
 	req := nodeapi.SyncRequest{
-		ConfigHash:  hash,
-		DeltaRev:    nodeapi.DeltaRev,
-		Naive:       true,
-		Mieru:       true,
-		MieruError:  a.mieruError(),
-		StateTag:    a.splitTag(),
-		NodeVersion: version.Version,
-		XrayVersion: a.sup.Version(),
+		ConfigHash:   hash,
+		DeltaRev:     nodeapi.DeltaRev,
+		Naive:        true,
+		Mieru:        true,
+		AnyTLS:       a.anytls != nil,
+		MieruError:   a.mieruError(),
+		MTProto:      a.mtproto != nil,
+		MTProtoError: a.mtprotoError(),
+		UpdateError:  a.updateErr,
+		TurnDown:     a.turn.Failed(),
+		StateTag:     a.splitTag(),
+		NodeVersion:  version.Version,
+		XrayVersion:  a.sup.Version(),
 		// Serving, not Running: a sync that happens to land during a deliberate
 		// restart (cert renewal, config push, operator bounce) must not report the
 		// node as down for a whole poll cycle over a one-second gap.
@@ -1286,7 +1333,9 @@ func (a *Agent) applyState(st *nodeapi.NodeState) error {
 	}
 	// Per-IP connection guard on the public TCP ports.
 	if len(m.ConnGuardPorts) > 0 {
-		if err := connguard.Ensure(m.ConnGuardPorts, connguard.DefaultLimits()); err != nil {
+		lim := connguard.DefaultLimits()
+		lim.Exempt = m.ConnGuardExempt
+		if err := connguard.Ensure(m.ConnGuardPorts, lim); err != nil {
 			slog.Warn("node: connection guard setup failed", "err", err)
 		}
 	}
@@ -1384,11 +1433,21 @@ func (a *Agent) applyUsers(st *nodeapi.NodeState) error {
 		a.frontPort.Store(int64(public))
 		a.syncFront()
 	}
+	// Before the error return: the tunnel and the relays are up whatever Xray did.
+	a.syncHostFW(data, m, public)
+	// HTTP/3 advertised where Hysteria2 shares the front's port, as Caddy would.
+	if m.HysteriaEnabled && public > 0 && m.HysteriaPort == public {
+		decoy.SetAltSvc(public)
+	} else {
+		decoy.SetAltSvc(0)
+	}
 	if err != nil {
 		return fmt.Errorf("apply xray config: %w", err)
 	}
 	a.syncNaive(data)
 	a.syncMieru(data, m.Mieru)
+	a.syncMTProto(data, m.MTProto)
+	a.syncAnyTLS(data)
 	switch how {
 	case xray.RawUnchanged:
 		slog.Info("node: state applied without an Xray restart (config unchanged)")
@@ -1572,11 +1631,13 @@ func (a *Agent) ensureDecoy(dest, template string) error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	a.decoySrv = srv
+	// The same decoy for HTTP/3 requests to Hysteria2 (see decoy/h3.go).
+	decoy.ServeLoopback(xray.DecoyH3Addr, decoyHandler)
 	go func() {
 		// h2fix: ReadHeaderTimeout is a raw read deadline net/http never disarms on an
 		// unencrypted HTTP/2 connection, so without it every h2 request to the decoy is
 		// capped at ten seconds. See internal/h2fix.
-		_ = srv.Serve(h2fix.Listener{Listener: &proxyproto.Listener{Listener: ln}})
+		_ = srv.Serve(h2fix.Listener{Listener: a.anytlsListener(&proxyproto.Listener{Listener: ln})})
 	}()
 	return nil
 }
@@ -1588,6 +1649,9 @@ func (a *Agent) shutdown() {
 	}
 	if a.mieru != nil {
 		a.mieru.Close()
+	}
+	if a.mtproto != nil {
+		a.mtproto.Close()
 	}
 	a.turn.Close()
 	a.operaSup.Stop()
@@ -1633,6 +1697,13 @@ func (a *Agent) syncOpera(enabled bool, country string, port int) {
 	slog.Info("node: Opera egress started", "country", country, "port", port)
 }
 
+// updateWindow is how long a requested self-update keeps being retried while it
+// cannot start yet; updateRetry is the pause between attempts.
+const (
+	updateWindow = 15 * time.Minute
+	updateRetry  = 30 * time.Second
+)
+
 // resolveUpdateRepo returns the GitHub repository to self-update from, prioritizing:
 // 1. ROSPANEL_REPO environment variable (explicit host override)
 // 2. updateRepo pushed by the panel in SyncResponse
@@ -1648,10 +1719,11 @@ func resolveUpdateRepo(updateRepo string) string {
 }
 
 // selfUpdate downloads + verifies the latest release and swaps the node binary,
-// then stops Xray and returns true so Run exits — systemd (Restart=always) starts
-// the new binary, which re-applies the saved config. Returns false (and keeps
-// running the current version) if there's nothing newer or the update fails.
-func (a *Agent) selfUpdate(parent context.Context, updateRepo string) bool {
+// then stops Xray and reports swapped so Run exits — systemd (Restart=always) starts
+// the new binary, which re-applies the saved config. Otherwise the node keeps running
+// its version; again says the attempt is worth repeating (GitHub unreachable, or a
+// release published without its binaries yet) and why says why it did not happen.
+func (a *Agent) selfUpdate(parent context.Context, updateRepo string) (swapped, again bool, why string) {
 	repo := resolveUpdateRepo(updateRepo)
 	// Derived from the agent context so a shutdown cancels an in-flight download
 	// promptly instead of blocking up to the full timeout.
@@ -1660,16 +1732,20 @@ func (a *Agent) selfUpdate(parent context.Context, updateRepo string) bool {
 	rel, err := updater.Latest(ctx, repo)
 	if err != nil {
 		slog.Warn("node self-update: check failed", "err", err)
-		return false
+		return false, true, err.Error()
 	}
 	if !updater.IsNewer(rel.Version, version.Version) {
 		slog.Info("node self-update: already on the latest version", "version", version.Version)
-		return false
+		return false, false, ""
+	}
+	if !rel.Complete() {
+		slog.Info("node self-update: the release has no binaries yet — retrying", "version", rel.Version)
+		return false, true, "release " + rel.Version + " has no binaries yet"
 	}
 	slog.Info("node self-update: installing", "from", version.Version, "to", rel.Version)
 	if err := updater.Apply(ctx, rel, nil); err != nil {
 		slog.Error("node self-update: failed", "err", err)
-		return false
+		return false, false, err.Error()
 	}
 	slog.Info("node self-update: binary updated — restarting", "version", rel.Version)
 	a.sup.Stop()
@@ -1679,8 +1755,11 @@ func (a *Agent) selfUpdate(parent context.Context, updateRepo string) bool {
 	if a.mieru != nil {
 		a.mieru.Close()
 	}
+	if a.mtproto != nil {
+		a.mtproto.Close()
+	}
 	a.turn.Close()
-	return true
+	return true, false, ""
 }
 
 // resolveNodeXrayBin finds or downloads the Xray binary, like the panel's resolver

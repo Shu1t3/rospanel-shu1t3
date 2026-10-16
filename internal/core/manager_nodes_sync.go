@@ -128,6 +128,18 @@ func (m *Manager) IngestNodeSync(n *model.Node, req nodeapi.SyncRequest) (*nodea
 		m.nodeMieruErr = map[int64]string{}
 	}
 	m.nodeMieruErr[n.ID] = req.MieruError
+	if m.nodeMTProtoErr == nil {
+		m.nodeMTProtoErr = map[int64]string{}
+	}
+	m.nodeMTProtoErr[n.ID] = req.MTProtoError
+	if m.nodeUpdateErr == nil {
+		m.nodeUpdateErr = map[int64]string{}
+	}
+	m.nodeUpdateErr[n.ID] = req.UpdateError
+	if m.nodeTurnDown == nil {
+		m.nodeTurnDown = map[int64][]int{}
+	}
+	m.nodeTurnDown[n.ID] = req.TurnDown
 	// Always refreshed (a healthy node reports 0), so the "limping" badge clears the
 	// moment the transport recovers rather than sticking on a stale count.
 	m.nodeSyncFails[n.ID] = req.SyncFails
@@ -139,6 +151,14 @@ func (m *Manager) IngestNodeSync(n *model.Node, req nodeapi.SyncRequest) (*nodea
 	// The node's own TLS state, for the fleet-wide "TLS certificate" alert. Recorded
 	// here, raised by the node sweep — see manager_nodes_notify.go.
 	m.NoteNodeCertError(n.ID, req.CertError)
+	// A self-signed node is reached by its pin: a new certificate moves the links its
+	// cascade entries hold.
+	certMoved := req.CertSHA256 != "" && req.CertSHA256 != n.CertSHA256
+	defer func() {
+		if certMoved {
+			m.cascadeChanged()
+		}
+	}()
 	_ = m.store.UpdateNodeStatus(n.ID, model.NodeStatusUpdate{
 		LastSeen:       now.Unix(),
 		NodeVersion:    req.NodeVersion,
@@ -151,6 +171,8 @@ func (m *Manager) IngestNodeSync(n *model.Node, req nodeapi.SyncRequest) (*nodea
 		ConfigHash:     req.ConfigHash,
 		ServesNaive:    req.Naive,
 		ServesMieru:    req.Mieru,
+		ServesAnyTLS:   req.AnyTLS,
+		ServesMTProto:  req.MTProto,
 	})
 
 	// Everything below names users, and a node is believed only about its own (see
