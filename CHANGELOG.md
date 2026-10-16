@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.1.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.1.0...v5.1.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **store:** handle duplicate columns idempotently during migrations ([1aacbb2](https://github.com/Shu1t3/rospanel-shu1t3/commit/1aacbb2f4e9751df5eb79dd2210a232f47688b20))
+
 ## [5.1.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.0.0...v5.1.0) (2026-10-16)
 
 
