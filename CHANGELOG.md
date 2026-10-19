@@ -1,5 +1,18 @@
 # Changelog
 
+## [5.3.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.2.0...v5.3.0) (2026-10-19)
+
+
+### Features
+
+* **sub:** title the TURN card TURN-VK ([aea5663](https://github.com/Shu1t3/rospanel-shu1t3/commit/aea5663a2c78b33db6ab1c7539ef9e3619ce92fa))
+* sync upstream v5.8.0 preserving fork safeguards ([4cb5a9d](https://github.com/Shu1t3/rospanel-shu1t3/commit/4cb5a9dad2d311b74508b0e18ac7c77b52518323))
+
+
+### Bug Fixes
+
+* eliminate inefficient string concatenations and mark unused parameter ([b7d7a34](https://github.com/Shu1t3/rospanel-shu1t3/commit/b7d7a349d43481725abf62a59418f1c1428f0d7f))
+
 ## [5.2.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.1.1...v5.2.0) (2026-10-16)
 
 
