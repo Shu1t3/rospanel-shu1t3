@@ -38,6 +38,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/proxyproto"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/server"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/sysunit"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/telegram"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/tlsfront"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/tlsmgr"
@@ -330,6 +331,7 @@ func runServer(dataDir string) {
 		})
 		// Broadcast delivery.
 		runBG("broadcasts", telegram.NewBroadcast(st, dataDir).Run)
+		runBG("scheduled", mgr.RunScheduledLoop) // broadcasts set for later, the monthly summary
 	}
 
 	handler, err := server.New(mgr, secret, set.DecoyTemplate, dataDir)
@@ -387,10 +389,19 @@ func runServer(dataDir string) {
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	// Units written before KillMode=mixed signal Xray with us on stop, before the
+	// final traffic flush below can read it. After the signal handler: a stop that
+	// arrives meanwhile still gets the orderly shutdown.
+	go sysunit.EnsureKillModeMixed("rospanel.service")
 	<-stop
 	log.Print("shutting down")
 
-	// Stop Xray FIRST. Draining HTTP can take the full timeout below, and until the
+	// Write the traffic counted since the last flush while Xray still holds it — up
+	// to a minute of every user's traffic otherwise goes with the counters. Before
+	// anything stops: the unit's KillMode=mixed means Xray was not signalled with us.
+	mgr.FlushTrafficOnStop(5 * time.Second)
+
+	// Then stop Xray. Draining HTTP can take the full timeout below, and until the
 	// supervisor is marked closed an Xray exit still reads as a crash — which is
 	// exactly what happens under systemd's default KillMode, where Xray receives its
 	// own SIGTERM at the same moment we do. Marking the shutdown before we wait on

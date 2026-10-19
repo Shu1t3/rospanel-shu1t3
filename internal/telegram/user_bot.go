@@ -696,6 +696,14 @@ func (s *UserService) linkByCode(ctx context.Context, client *Client, set *model
 			return
 		}
 		oldChat = u.TgChatID
+		// And no more often than the operator set: asked here, before the question
+		// about moving, and settled atomically below.
+		if every := int64(set.SubTGRebindHours) * 3600; every > 0 {
+			if at, err := s.store.TGChangedAt(u.ID); err == nil && time.Now().Unix()-at < every {
+				s.send(ctx, client, chatID, i18n.T(lang, "user.rebindTooSoon", i18n.Every(lang, set.SubTGRebindHours)))
+				return
+			}
+		}
 	}
 	cur, curOK := s.findLinkedUser(chatID)
 	here := curOK && cur.ID != u.ID
@@ -731,6 +739,12 @@ func (s *UserService) linkByCode(ctx context.Context, client *Client, set *model
 	// must not both move the account.
 	if ok, err := s.store.ClaimUserTgLinkCode(u.ID, code); err != nil || !ok {
 		s.send(ctx, client, chatID, i18n.T(lang, "user.codeInvalid"))
+		return
+	}
+	// When it was linked is recorded for every link by code — the first one too, so a
+	// move right after it waits like any other.
+	if ok, err := s.store.ClaimTGLink(u.ID, time.Now().Unix(), int64(set.SubTGRebindHours)*3600, oldChat != 0); err != nil || !ok {
+		s.send(ctx, client, chatID, i18n.T(lang, "user.rebindTooSoon", i18n.Every(lang, set.SubTGRebindHours)))
 		return
 	}
 	if err := s.store.SetUserTelegramChat(u.ID, chatID); err != nil {
@@ -785,7 +799,8 @@ func userMenuRows(set *model.Settings, u model.User, lang i18n.Lang) [][]InlineB
 	// A Mini App button opens the subscription page inside Telegram (QR, link,
 	// import buttons — all on one page). Needs an https:// URL, so it's skipped
 	// until the host is set.
-	if url := subWebAppURL(set, u); url != "" {
+	// With the page switched off there is nothing to open: the card carries the link.
+	if url := subWebAppURL(set, u); url != "" && set.SubPageReachable() {
 		rows = append(rows, []InlineButton{{Text: i18n.T(lang, "user.btnMySub"), WebApp: &WebAppInfo{URL: url}}})
 	}
 	if set.BillingEnabled {
@@ -826,6 +841,10 @@ func userSelfCard(u model.User, set *model.Settings, panel Panel, lang i18n.Lang
 
 	fmt.Fprintf(&b, "👤 <b>%s</b> · <code>#%d</code>\n\n", esc(u.Name), u.ID)
 	fmt.Fprintf(&b, "%s\n", userStatusLine(u.Status, lang))
+	// No page to open from the menu: the subscription link itself, to add to an app.
+	if !set.SubPageReachable() && strings.TrimSpace(set.Host) != "" && u.SubToken != "" {
+		fmt.Fprintf(&b, "%s\n", i18n.T(lang, "user.cardSubLink", esc(sub.URL(set, u.SubToken))))
+	}
 
 	// Plan (only when billing is in play).
 	if u.PlanID != 0 {
@@ -1405,8 +1424,12 @@ func userBotCommands(lang i18n.Lang) []BotCommand {
 // publishCommands pushes the command menu once per token. Re-publishing on every
 // poll would spend an API call a cycle to send Telegram what it already has.
 func (s *UserService) publishCommands(ctx context.Context, client *Client, token string) {
-	// Latched on the plugins' commands too: switching one on or off republishes.
+	// Latched on the plugins' commands too: switching one on or off republishes. And
+	// on where the menu button leads, so switching the page off takes it away.
 	key := token
+	if set, err := s.store.GetSettings(); err == nil {
+		key += "|" + sub.MiniAppURL(set)
+	}
 	for _, c := range s.pluginCommands(i18n.EN) {
 		key += "|" + c.Command
 	}
@@ -1467,6 +1490,23 @@ func (s *UserService) publishMenuButton(ctx context.Context, client *Client) boo
 	}
 	url := sub.MiniAppURL(set)
 	if url == "" {
+		// Nothing to open (the page switched off, no host yet): a button of ours that
+		// is still there would lead to the decoy, so it goes back to the default.
+		if set.TGMenuURL == "" {
+			return true
+		}
+		cur, err := client.GetChatMenuButton(ctx)
+		if err != nil {
+			log.Printf("telegram user: read the menu button: %v", err)
+			return false
+		}
+		if cur.Type == "web_app" && cur.WebApp != nil && cur.WebApp.URL == set.TGMenuURL {
+			if err := client.ResetChatMenuButton(ctx); err != nil {
+				log.Printf("telegram user: reset the menu button: %v", err)
+				return false
+			}
+		}
+		_ = s.store.SetTelegramMenuURL("")
 		return true
 	}
 	cur, err := client.GetChatMenuButton(ctx)

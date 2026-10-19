@@ -48,6 +48,10 @@ type userView struct {
 	BlacklistReason string `json:"blacklist_reason,omitempty"`
 	// Source is the /start tag the user came with (user card only).
 	Source string `json:"source,omitempty"`
+	// NoSubPage: a browser opening the subscription link gets no page (the panel's is
+	// switched off and the operator has none of their own) — the card offers no button
+	// to open it. User card only.
+	NoSubPage bool `json:"no_sub_page,omitempty"`
 	// ExternalID is the website's id for a client it signed up (POST /v1/signup);
 	// filled for one user and for the API's user list.
 	ExternalID string `json:"external_id,omitempty"`
@@ -235,6 +239,7 @@ func (rt *Router) subServers(local *model.Settings, userID int64, clientIP strin
 		lanes, inbounds := rt.mgr.DownLanes(servers[i].Set.ServerID)
 		sub.HideDown(&servers[i], lanes, inbounds)
 	}
+	servers = withoutMaintenance(servers, rt.mgr.MaintenanceHiddenServers())
 	ordered := sub.Order(servers, local.SubOrderMode, rt.mgr.CountryOfIP(clientIP),
 		rt.mgr.OnlineByServer(), rt.mgr.ServersOverTrafficLimit())
 	// External servers are the panel's, not any one server's, so they ride along on
@@ -270,6 +275,29 @@ func (rt *Router) subServers(local *model.Settings, userID int64, clientIP strin
 		}
 	}
 	return ordered, nil
+}
+
+// withoutMaintenance leaves out the servers a maintenance window under way takes out
+// of subscriptions — unless that would leave nothing this user can use: a client with
+// no server at all is worse off than one pointed at a server being worked on.
+func withoutMaintenance(servers []sub.Server, hidden map[int64]bool) []sub.Server {
+	if len(hidden) == 0 {
+		return servers
+	}
+	kept := make([]sub.Server, 0, len(servers))
+	usable := false
+	for _, s := range servers {
+		if !hidden[s.Set.ServerID] {
+			kept = append(kept, s)
+			usable = usable || s.Reaches()
+		}
+	}
+	// Counted by what this user can use: a server their groups give them nothing on
+	// is no server to them.
+	if !usable {
+		return servers
+	}
+	return kept
 }
 
 // localInbounds is the master's own custom inbounds, or none when they can't be
@@ -454,6 +482,13 @@ func (rt *Router) panelMux() http.Handler {
 	canSecurityManage("POST /api/security/unban", rt.unbanIP)
 	canSettingsView("GET /api/settings/status-page", rt.getStatusPage)
 	canSettingsManage("POST /api/settings/status-page", rt.saveStatusPage)
+	canSettingsView("GET /api/incidents", rt.listIncidents)
+	canSettingsManage("POST /api/incidents", rt.createIncident)
+	canSettingsManage("POST /api/incidents/{id}", withID(rt.updateIncident))
+	canSettingsManage("POST /api/incidents/{id}/resolve", withID(rt.resolveIncident))
+	canSettingsManage("DELETE /api/incidents/{id}", withID(rt.deleteIncident))
+	canSettingsManage("POST /api/incidents/{id}/updates", withID(rt.addIncidentUpdate))
+	canSettingsManage("DELETE /api/incidents/updates/{id}", withID(rt.deleteIncidentUpdate))
 	canRoutingManage("POST /api/settings/dns", rt.setXrayDNS)
 	authedOwner("POST /api/settings/local-backup", rt.setLocalBackup)
 	canSettingsManage("POST /api/settings/autodelete", rt.setUserAutoDelete)

@@ -386,6 +386,14 @@ func (rt *Router) apiMux() http.Handler {
 	id("POST /v1/billing/orders/{id}/refund", rt.apiRefundOrder)
 	nodeAudit("POST /v1/billing/promos", "apiPromoSaved", rt.apiSavePromo)
 	nodeAudit("DELETE /v1/billing/promos/{id}", "apiPromoDeleted", idFn(rt.apiDeletePromo))
+	// Incidents and maintenance on the public status page.
+	hf("GET /v1/incidents", rt.apiListIncidents)
+	nodeAudit("POST /v1/incidents", "apiIncidentSaved", rt.apiCreateIncident)
+	nodeAudit("POST /v1/incidents/{id}", "apiIncidentSaved", idFn(rt.apiUpdateIncident))
+	nodeAudit("POST /v1/incidents/{id}/resolve", "apiIncidentResolved", idFn(rt.apiResolveIncident))
+	nodeAudit("DELETE /v1/incidents/{id}", "apiIncidentDeleted", idFn(rt.apiDeleteIncident))
+	nodeAudit("POST /v1/incidents/{id}/updates", "apiIncidentUpdate", idFn(rt.apiAddIncidentUpdate))
+	nodeAudit("DELETE /v1/incidents/updates/{id}", "apiIncidentUpdateDeleted", idFn(rt.apiDeleteIncidentUpdate))
 	hf("GET /v1/payments", rt.apiPaymentProviders)
 	nodeAudit("POST /v1/payments", "apiPaymentProvider", rt.apiSavePaymentProvider)
 
@@ -1411,6 +1419,11 @@ func (rt *Router) apiReturnURL(given string, userID int64) string {
 	}
 	set, err := rt.mgr.Settings()
 	if err != nil {
+		return ""
+	}
+	// No page behind the link (the panel's switched off, none of the operator's):
+	// "" sends the payer where the bot's own payments go.
+	if !set.SubPageReachable() {
 		return ""
 	}
 	u, err := rt.mgr.Store().GetUser(userID)

@@ -8,7 +8,7 @@
 
 ![Release](https://img.shields.io/github/v/release/Shu1t3/rospanel-shu1t3?label=версия&sort=semver&color=2ea44f)
 ![Go](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white)
-![Xray-core](https://img.shields.io/badge/Xray--core-v26.9.9-2b2b2b)
+![Xray-core](https://img.shields.io/badge/Xray--core-v26.10.10-2b2b2b)
 ![Platform](https://img.shields.io/badge/platform-Linux-555?logo=linux&logoColor=white)
 
 [Установка](#установка) · [Ноды](#ноды) · [Переезд мастера](#переезд-мастера) · [Возможности](#возможности) · [CLI](#cli) · [Разработка](#разработка)

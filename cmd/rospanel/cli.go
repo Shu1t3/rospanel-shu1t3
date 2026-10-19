@@ -19,6 +19,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/datasec"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/sysunit"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/updater"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/version"
 )
@@ -398,6 +399,7 @@ func runUninstall(args []string) {
 		return
 	}
 	_ = exec.Command("systemctl", "disable", "--now", "rospanel").Run()
+	sysunit.RemoveDropIn(systemdUnitPath)
 	if err := os.Remove(systemdUnitPath); err != nil && !os.IsNotExist(err) {
 		log.Fatalf("uninstall: remove unit: %v", err)
 	}

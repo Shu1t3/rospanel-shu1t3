@@ -90,6 +90,11 @@ func handleSub(rt *Router, w http.ResponseWriter, r *http.Request, rest string) 
 				http.Redirect(w, r, to, http.StatusFound)
 				return
 			}
+			// The page switched off: a browser gets what any unknown path gets.
+			if !set.SubPageEnabled {
+				rt.currentDecoy().ServeHTTP(w, r)
+				return
+			}
 			lang := i18n.FromAcceptLanguage(r.Header.Get("Accept-Language"))
 			access := rt.buildAccess(r, *u, set)
 			if err := rt.servePage(w, *u, set, access, lang, clientIP(r)); err != nil {
@@ -269,6 +274,13 @@ func handleSub(rt *Router, w http.ResponseWriter, r *http.Request, rest string) 
 			return
 		}
 		rt.handleSubWallet(w, r, leaf, *u, set)
+
+	case "rotate":
+		if !subActionAllowed(r) {
+			rt.currentDecoy().ServeHTTP(w, r)
+			return
+		}
+		rt.handleSubRotate(w, r, *u, set)
 
 	case "devices/unbind":
 		if !subActionAllowed(r) {
@@ -817,6 +829,7 @@ func (rt *Router) servePage(w http.ResponseWriter, u model.User, set *model.Sett
 			slog.Warn("sub: tunnel identity", "user", u.ID, "err", err)
 		}
 	}
+	rt.subNotices(&access, set, servers, lang)
 	html, err := sub.Page(u, set, servers, rt.buildBilling(u, set, lang, rt.mgr.PaymentMethods()),
 		rt.buildDevices(u, set, lang), access, showDownload, lang)
 	if err != nil {
@@ -961,6 +974,40 @@ func (rt *Router) handleSubDeviceUnbind(w http.ResponseWriter, r *http.Request, 
 	writeOK(w)
 }
 
+// handleSubRotate reissues the user's own subscription link, when the operator allows
+// it, at most once per the interval they set: the old one stops working, and the
+// answer carries the new page's address.
+func (rt *Router) handleSubRotate(w http.ResponseWriter, r *http.Request, u model.User, set *model.Settings) {
+	if r.Method != http.MethodPost || set.SubSelfRotateHours <= 0 {
+		rt.currentDecoy().ServeHTTP(w, r)
+		return
+	}
+	now := time.Now().Unix()
+	ok, err := rt.mgr.Store().ClaimSelfRotate(u.ID, now, int64(set.SubSelfRotateHours)*3600)
+	if err != nil {
+		writeSubErr(w, err, i18n.FromAcceptLanguage(r.Header.Get("Accept-Language")))
+		return
+	}
+	if !ok {
+		writeErrCode(w, http.StatusTooManyRequests, "err.tooManyAttempts", "слишком много попыток, повторите позже")
+		return
+	}
+	// The keys go with the link: configs already imported from a leaked link stop
+	// working too, not just its refreshes.
+	ctx := subActorCtx(r, u)
+	if _, err := rt.mgr.ResetUserUUID(ctx, u.ID); err != nil {
+		_ = rt.mgr.Store().ReleaseSelfRotate(u.ID, now)
+		writeSubErr(w, err, i18n.FromAcceptLanguage(r.Header.Get("Accept-Language")))
+		return
+	}
+	nu, err := rt.mgr.RotateSubToken(ctx, u.ID)
+	if err != nil {
+		writeSubErr(w, err, i18n.FromAcceptLanguage(r.Header.Get("Accept-Language")))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"url": sub.URL(set, nu.SubToken)})
+}
+
 // admitDevice runs the HWID device cap for one subscription fetch. It returns true
 // when the payload should be served; on a refusal it has already written the reply.
 //
@@ -1015,7 +1062,10 @@ func setSubHeaders(w http.ResponseWriter, u model.User, set *model.Settings, sup
 	w.Header().Set("Subscription-Userinfo", fmt.Sprintf(
 		"upload=%d; download=%d; total=%d; expire=%d",
 		u.UsedUp, u.UsedDown, u.DataLimit, u.ExpireAt))
-	w.Header().Set("Profile-Web-Page-Url", sub.URL(set, u.SubToken))
+	// The apps show it as a button that opens a browser: only while there is a page.
+	if set.SubPageReachable() {
+		w.Header().Set("Profile-Web-Page-Url", sub.URL(set, u.SubToken))
+	}
 	if supportURL != "" {
 		// Happ shows it as a support button on the traffic bar; Telegram links get
 		// the TG icon. Points the client at the public user bot.
@@ -1576,7 +1626,8 @@ func termTitle(plan string, periods int) string {
 // on to their own page. With the user bot off it is the decoy, like any unknown path.
 func handleMiniApp(rt *Router, w http.ResponseWriter, r *http.Request, leaf string) {
 	set, err := rt.mgr.Store().GetSettings()
-	if err != nil || !set.TGUserBotEnabled || strings.TrimSpace(set.TGUserBotToken) == "" {
+	// It leads to the subscription page: off with it.
+	if err != nil || !set.TGUserBotEnabled || strings.TrimSpace(set.TGUserBotToken) == "" || !set.SubPageReachable() {
 		rt.currentDecoy().ServeHTTP(w, r)
 		return
 	}

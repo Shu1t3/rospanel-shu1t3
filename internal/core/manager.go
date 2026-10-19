@@ -216,8 +216,10 @@ type Manager struct {
 	// believed about (see manager_node_served.go).
 	served servedRegistry
 
-	tzMu sync.RWMutex
-	tz   *time.Location // operator timezone for the local-day stats boundary
+	// subIncidents memoizes SubPageIncidents (see there).
+	subIncidents subIncidentCache
+	tzMu         sync.RWMutex
+	tz           *time.Location // operator timezone for the local-day stats boundary
 
 	sys *sysstat.Sampler // host metrics sampler for the dashboard (nil until started)
 
@@ -434,9 +436,11 @@ type Manager struct {
 
 	// awg is the master's AmneziaWG tunnel (see manager_awg.go); awgLast holds the
 	// counters read at the previous poll, per peer public key.
-	awg     awg.Device
-	awgMu   sync.Mutex
-	awgLast map[string]awg.PeerStat
+	awg   awg.Device
+	awgMu sync.Mutex
+	// awgPollMu runs one AmneziaWG poll at a time (see pollAWG).
+	awgPollMu sync.Mutex
+	awgLast   map[string]awg.PeerStat
 
 	// turn runs the master's TURN relays, one per WireGuard inbound (manager_wireguard.go).
 	turn *turnrelay.Relay

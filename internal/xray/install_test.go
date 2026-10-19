@@ -39,8 +39,7 @@ func TestBinaryVersionReadsTheFirstLine(t *testing.T) {
 // re-download, no touching the file.
 func TestEnsureBinaryKeepsThePinnedRelease(t *testing.T) {
 	dir := t.TempDir()
-	pinnedClean := strings.TrimPrefix(PinnedVersion, "v")
-	want := versionStub(t, dir, pinnedClean)
+	want := versionStub(t, dir, strings.TrimPrefix(PinnedVersion, "v"))
 	before, err := os.Stat(want)
 	if err != nil {
 		t.Fatal(err)

@@ -88,7 +88,8 @@ func TestMCPEveryToolAnswers(t *testing.T) {
 	}
 	// newID reads the id out of a create call's answer. A tool that cannot say what
 	// it made is a broken tool, so this reports rather than skipping quietly. An
-	// order carries its id one level down, under the payment instructions.
+	// order carries its id one level down, under the payment instructions, and an
+	// incident beside the outcome of its notification.
 	newID := func(tool, text string) int64 {
 		if text == "" {
 			return 0
@@ -99,13 +100,16 @@ func TestMCPEveryToolAnswers(t *testing.T) {
 				Order struct {
 					ID int64 `json:"id"`
 				} `json:"order"`
+				Incident struct {
+					ID int64 `json:"id"`
+				} `json:"incident"`
 			} `json:"data"`
 		}
 		if err := json.Unmarshal([]byte(text), &out); err != nil {
 			t.Errorf("%s: undecodable answer: %v (%s)", tool, err, text)
 			return 0
 		}
-		if id := max(out.Data.ID, out.Data.Order.ID); id != 0 {
+		if id := max(out.Data.ID, out.Data.Order.ID, out.Data.Incident.ID); id != 0 {
 			return id
 		}
 		t.Errorf("%s: no id in the answer: %s", tool, text)
@@ -399,6 +403,32 @@ func TestMCPEveryToolAnswers(t *testing.T) {
 	call("delete_groups_by_id", map[string]any{"id": group})
 	call("delete_billing_plans_by_id", map[string]any{"id": target})
 	call("delete_billing_promos_by_id", map[string]any{"id": promo})
+
+	incident := newID("post_incidents", call("post_incidents", map[string]any{
+		"body": map[string]any{"kind": "incident", "title": "sweep incident", "node_ids": []int64{0}},
+	}))
+	call("post_incidents_by_id", map[string]any{
+		"id": incident, "body": map[string]any{"kind": "incident", "title": "sweep incident, renamed"},
+	})
+	posted := call("post_incidents_by_id_updates", map[string]any{
+		"id": incident, "body": map[string]any{"stage": "identified", "body": "sweep cause"},
+	})
+	var course struct {
+		Data struct {
+			Incident struct {
+				Updates []struct {
+					ID int64 `json:"id"`
+				} `json:"updates"`
+			} `json:"incident"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(posted), &course); err != nil || len(course.Data.Incident.Updates) != 1 {
+		t.Errorf("post_incidents_by_id_updates: no update in the answer: %s", posted)
+	} else {
+		call("delete_incidents_updates_by_id", map[string]any{"id": course.Data.Incident.Updates[0].ID})
+	}
+	call("post_incidents_by_id_resolve", map[string]any{"id": incident})
+	call("delete_incidents_by_id", map[string]any{"id": incident})
 	call("delete_nodes_by_id", map[string]any{"id": added})
 	call("delete_users_by_id", map[string]any{"id": created})
 

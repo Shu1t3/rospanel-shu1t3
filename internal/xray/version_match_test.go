@@ -7,8 +7,7 @@ import (
 
 func TestVersionMatchesPinned(t *testing.T) {
 	// The reported version (from `xray version`) has no "v"; PinnedVersion does.
-	clean := strings.TrimPrefix(PinnedVersion, "v")
-	for _, v := range []string{clean, "v" + clean} {
+	for _, v := range []string{strings.TrimPrefix(PinnedVersion, "v"), PinnedVersion} {
 		if !VersionMatchesPinned(v) {
 			t.Errorf("VersionMatchesPinned(%q) = false, want true (pinned=%s)", v, PinnedVersion)
 		}

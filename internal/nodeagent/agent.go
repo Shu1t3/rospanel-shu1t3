@@ -44,6 +44,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/proxyproto"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/shaper"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/sysstat"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/sysunit"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/tlsfront"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/tlsmgr"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/tlsutil"
@@ -185,6 +186,7 @@ type Agent struct {
 	// double-counts (the panel dedups by id) and never loses new traffic (it keeps
 	// piling into `pending`). See buildSyncRequest / ackReport.
 	statsMu      sync.Mutex
+	sampleMu     sync.Mutex                      // one sampleStats at a time
 	lastCounters map[string]xray.Traffic         // last raw Xray counter per user email
 	pending      map[int64]*nodeapi.TrafficDelta // accumulated, not yet sent
 	inflight     map[int64]*nodeapi.TrafficDelta // sent, awaiting ack
@@ -318,6 +320,9 @@ func Run(ctx context.Context, dataDir string) error {
 		return err
 	}
 	slog.Info("node agent: starting", "node_id", ident.NodeID, "panel", ident.PanelURL, "version", version.Version)
+	// Older installs signal Xray with us on stop, before its counters can be read.
+	// In the background: serving must not wait on systemd.
+	go sysunit.EnsureKillModeMixed("rospanel-node.service")
 
 	// Best-effort host tuning (same as the panel).
 	if state, _ := tuning.EnsureBBR(); state == tuning.BBREnabled {
@@ -566,6 +571,7 @@ func newAgent(dataDir string, ident *Identity) (*Agent, error) {
 	// Resume report ids where the last run left off so the panel's forward-only
 	// watermark keeps accepting this node's traffic after a restart.
 	a.reportSeq = a.state.LastReportID
+	a.restoreCarry()
 	a.restoreSplit()
 	if at, err := anytls.New(xray.AnyTLSInnerAddr); err == nil {
 		a.anytls = at
@@ -1643,6 +1649,7 @@ func (a *Agent) ensureDecoy(dest, template string) error {
 }
 
 func (a *Agent) shutdown() {
+	a.keepTrafficOnStop()
 	a.sup.Stop()
 	if a.awg != nil {
 		a.awg.Close()
@@ -1748,6 +1755,7 @@ func (a *Agent) selfUpdate(parent context.Context, updateRepo string) (swapped, 
 		return false, false, err.Error()
 	}
 	slog.Info("node self-update: binary updated — restarting", "version", rel.Version)
+	a.keepTrafficOnStop()
 	a.sup.Stop()
 	if a.awg != nil {
 		a.awg.Close()

@@ -32,6 +32,9 @@ export interface User {
   // The linked Telegram account is on the shared blacklist (user card only).
   blacklisted?: boolean
   source?: string // the /start tag the user came with
+  // No page behind the subscription link (switched off, none of the operator's):
+  // the card offers no button to open it. The user card only.
+  no_sub_page?: boolean
   external_id?: string // the website's id for a client it signed up
   // Broadcasts and automatic messages go to the user; the language to write in
   // ("" unknown). The user card only.
@@ -1102,6 +1105,12 @@ export interface SubSettings {
   sub_order_mode: string
   // Drop a node from subscriptions while it is offline (off by default).
   sub_hide_offline: boolean
+  // The panel's own subscription page for browsers (on by default); off, a browser
+  // gets the decoy and apps keep their subscription.
+  sub_page_enabled: boolean
+  // Users may reissue their own subscription link at most once per this many hours
+  // (0 = they may not).
+  sub_self_rotate: number
   // The operator's own subscription page: browsers opening a subscription link are
   // redirected there, {token} replaced by the user's token. Empty = the panel's page.
   sub_page_url: string
@@ -1161,6 +1170,87 @@ export const saveStatusPage = (s: StatusPageSettings) =>
     method: 'POST',
     body: JSON.stringify(s),
   })
+
+// Incident is an operator's notice on the status page: something broke, or a planned
+// maintenance window. node_ids empty means the whole service; ends_at is a
+// maintenance window's close (0: open-ended), never set on an incident.
+export type IncidentKind = 'incident' | 'maintenance'
+export interface Incident {
+  id: number
+  kind: IncidentKind
+  title: string
+  body: string
+  node_ids: number[]
+  starts_at: number
+  ends_at: number
+  resolved_at: number
+  created_at: number
+  updated_at: number
+  // hide_in_sub takes the named servers out of subscriptions while maintenance is
+  // under way.
+  hide_in_sub: boolean
+  updates: IncidentUpdate[]
+}
+
+// IncidentUpdate is one step of an incident's course; "resolved" is the closing
+// note given with the resolve.
+export type IncidentStage = 'investigating' | 'identified' | 'monitoring' | 'update' | 'resolved'
+export interface IncidentUpdate {
+  id: number
+  incident_id: number
+  stage: IncidentStage
+  body: string
+  created_at: number
+}
+
+export interface IncidentServer {
+  id: number
+  name: string
+}
+
+// IncidentSaved carries notify_error when the incident was saved but the message
+// to the users could not go out (no user bot, nobody to send to).
+export interface IncidentSaved {
+  incident: Incident
+  notify_error?: { error: string; code?: string; args?: Record<string, unknown> }
+}
+
+export const listIncidents = () =>
+  api<{ incidents: Incident[]; servers: IncidentServer[] }>('api/incidents')
+
+export const saveIncident = (inc: Incident, notify: boolean) =>
+  api<IncidentSaved>(inc.id ? `api/incidents/${inc.id}` : 'api/incidents', {
+    method: 'POST',
+    body: JSON.stringify({
+      kind: inc.kind,
+      title: inc.title,
+      body: inc.body,
+      node_ids: inc.node_ids,
+      starts_at: inc.starts_at,
+      ends_at: inc.ends_at,
+      hide_in_sub: inc.hide_in_sub,
+      notify,
+      lang: currentLang(),
+    }),
+  })
+
+export const resolveIncident = (id: number, notify: boolean, note = '') =>
+  api<IncidentSaved>(`api/incidents/${id}/resolve`, {
+    method: 'POST',
+    body: JSON.stringify({ note, notify, lang: currentLang() }),
+  })
+
+export const addIncidentUpdate = (id: number, stage: IncidentStage, body: string, notify: boolean) =>
+  api<IncidentSaved>(`api/incidents/${id}/updates`, {
+    method: 'POST',
+    body: JSON.stringify({ stage, body, notify, lang: currentLang() }),
+  })
+
+export const deleteIncidentUpdate = (id: number) =>
+  api<{ ok: boolean }>(`api/incidents/updates/${id}`, { method: 'DELETE' })
+
+export const deleteIncident = (id: number) =>
+  api<{ ok: boolean }>(`api/incidents/${id}`, { method: 'DELETE' })
 
 export const setUserAutoDelete = (days: number) =>
   api<{ ok: boolean }>('api/settings/autodelete', {
@@ -1552,6 +1642,8 @@ export interface TelegramInfo {
   // default), and moving a linked one to another Telegram (off by default).
   user_tg_bind?: boolean
   user_tg_rebind?: boolean
+  // At most one move to another Telegram per this many hours (0: no limit).
+  user_tg_rebind_hours?: number
   // The bot's broadcast on/off button (shown by default).
   user_mailing_switch?: boolean
   admin_events: Record<string, boolean> // admin notification categories (key→on)
@@ -1609,6 +1701,7 @@ export const saveTelegram = (t: {
   user_reg_code: string
   user_tg_bind: boolean
   user_tg_rebind: boolean
+  user_tg_rebind_hours: number
   user_mailing_switch: boolean
   admin_events: Record<string, boolean>
   user_events: Record<string, boolean>
@@ -1673,7 +1766,7 @@ export const testTelegramBackup = () =>
 
 // Mass broadcasts through the user bot. The audience is snapshotted when a broadcast
 // starts, so total never moves once it is running.
-export type BroadcastStatus = 'running' | 'paused' | 'done' | 'cancelled'
+export type BroadcastStatus = 'scheduled' | 'running' | 'paused' | 'done' | 'cancelled'
 // A plain key ("all", "expired") or a parameterised one carrying its horizon
 // ("seen:7"). The string is what gets stored and displayed, so the parameter travels
 // with it rather than in a second field that would have to be kept in sync.
@@ -1706,6 +1799,8 @@ export interface Broadcast {
   skipped: number
   // Accounts it went to through the external system (broadcast.sent).
   hook_users: number
+  // When a scheduled one goes out (unix seconds); its audience is read then.
+  scheduled_at: number
 }
 
 export const listBroadcasts = () => api<Broadcast[]>('api/broadcasts')
@@ -1719,7 +1814,7 @@ export const broadcastAudience = (audience: BroadcastAudience) =>
 // broadcastForm packs the composed message the way both create and test expect: a
 // JSON "payload" part plus an optional file, since an attachment can't ride in JSON.
 const broadcastForm = (
-  b: { text: string; audience: BroadcastAudience; buttons: BroadcastButton[] },
+  b: { text: string; audience: BroadcastAudience; buttons: BroadcastButton[]; scheduled_at?: number },
   media: File | null,
 ) => {
   const fd = new FormData()
@@ -1729,7 +1824,7 @@ const broadcastForm = (
 }
 
 export const createBroadcast = (
-  b: { text: string; audience: BroadcastAudience; buttons: BroadcastButton[] },
+  b: { text: string; audience: BroadcastAudience; buttons: BroadcastButton[]; scheduled_at?: number },
   media: File | null,
 ) => apiForm<Broadcast>('api/broadcasts', broadcastForm(b, media))
 
