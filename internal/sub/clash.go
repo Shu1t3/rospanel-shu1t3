@@ -317,7 +317,8 @@ func clashYAML(u model.User, servers []Server, caps clashCaps) string {
 	b.WriteString("proxies:\n")
 	quoted := make([]string, len(proxies))
 	for i, p := range proxies {
-		b.WriteString(p.line + "\n")
+		b.WriteString(p.line)
+		b.WriteByte('\n')
 		quoted[i] = fmt.Sprintf("%q", p.name)
 	}
 	group := clashGroupName(u, local)

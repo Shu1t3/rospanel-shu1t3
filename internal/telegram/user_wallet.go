@@ -183,18 +183,23 @@ func (s *UserService) showWallet(ctx context.Context, client *Client, chatID, ms
 	var b strings.Builder
 	b.WriteString(i18n.T(lang, "user.walletCard", kop(w.BalanceKop)))
 	if renewable && w.AutoRenew {
-		b.WriteString("\n\n" + i18n.T(lang, "user.walletAutoOn"))
+		b.WriteString("\n\n")
+		b.WriteString(i18n.T(lang, "user.walletAutoOn"))
 	} else if renewable {
-		b.WriteString("\n\n" + i18n.T(lang, "user.walletAutoOff"))
+		b.WriteString("\n\n")
+		b.WriteString(i18n.T(lang, "user.walletAutoOff"))
 	}
 	if w.RefBonusDays > 0 {
-		b.WriteString("\n" + i18n.T(lang, "user.walletBonusDays", w.RefBonusDays))
+		b.WriteByte('\n')
+		b.WriteString(i18n.T(lang, "user.walletBonusDays", w.RefBonusDays))
 	}
 	if w.PromoCode != "" {
-		b.WriteString("\n" + i18n.T(lang, "user.walletPromo", esc(w.PromoCode)))
+		b.WriteByte('\n')
+		b.WriteString(i18n.T(lang, "user.walletPromo", esc(w.PromoCode)))
 	}
 	if txs, err := s.store.ListBalanceTx(u.ID, 5); err == nil && len(txs) > 0 {
-		b.WriteString("\n\n" + i18n.T(lang, "user.walletHistory"))
+		b.WriteString("\n\n")
+		b.WriteString(i18n.T(lang, "user.walletHistory"))
 		for _, t := range txs {
 			sign := "+"
 			if t.AmountKop < 0 {
@@ -346,7 +351,7 @@ func (s *UserService) reply(ctx context.Context, client *Client, chatID, msgID i
 }
 
 // doPromo handles a typed promo code.
-func (s *UserService) doPromo(ctx context.Context, client *Client, chatID int64, set *model.Settings, u model.User, code string) {
+func (s *UserService) doPromo(ctx context.Context, client *Client, chatID int64, _ *model.Settings, u model.User, code string) {
 	lang := s.lang(chatID)
 	back := [][]InlineButton{{{Text: i18n.T(lang, "user.btnMenu"), CallbackData: "vu:menu"}}}
 	res, err := s.panel.RedeemPromo(ctx, u.ID, code)
@@ -418,22 +423,27 @@ func quoteLines(q core.PlanQuote, lang i18n.Lang) string {
 	}
 	var b strings.Builder
 	if q.PeriodDiscountRub > 0 {
-		b.WriteString("\n" + i18n.T(lang, "user.quotePeriods", q.Periods, q.PeriodDiscountRub))
+		b.WriteByte('\n')
+		b.WriteString(i18n.T(lang, "user.quotePeriods", q.Periods, q.PeriodDiscountRub))
 	}
 	if q.PluginDiscountRub > 0 {
 		note := q.PluginNote
 		if note == "" {
 			note = i18n.T(lang, "sub.yourPrice")
 		}
-		b.WriteString("\n" + i18n.T(lang, "user.quotePlugin", esc(note), q.PluginDiscountRub))
+		b.WriteByte('\n')
+		b.WriteString(i18n.T(lang, "user.quotePlugin", esc(note), q.PluginDiscountRub))
 	}
 	if q.DiscountRub > 0 {
-		b.WriteString("\n" + i18n.T(lang, "user.quoteDiscount", esc(q.PromoCode), q.DiscountRub))
+		b.WriteByte('\n')
+		b.WriteString(i18n.T(lang, "user.quoteDiscount", esc(q.PromoCode), q.DiscountRub))
 	}
 	if q.BalanceKop > 0 {
-		b.WriteString("\n" + i18n.T(lang, "user.quoteBalance", kop(q.BalanceKop)))
+		b.WriteByte('\n')
+		b.WriteString(i18n.T(lang, "user.quoteBalance", kop(q.BalanceKop)))
 	}
-	b.WriteString("\n" + i18n.T(lang, "user.quoteToPay", q.MoneyRub))
+	b.WriteByte('\n')
+	b.WriteString(i18n.T(lang, "user.quoteToPay", q.MoneyRub))
 	return b.String()
 }
 

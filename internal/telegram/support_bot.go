@@ -500,13 +500,15 @@ func topicCard(u model.User, linked bool, m *Message, set *model.Settings, panel
 	if linked {
 		b.WriteString(userSelfCard(u, set, panel, opLang(set)))
 	} else {
-		b.WriteString(i18n.T(opLang(set), "support.notRegistered") + "\n")
+		b.WriteString(i18n.T(opLang(set), "support.notRegistered"))
+		b.WriteByte('\n')
 		if m.From != nil && m.From.Username != "" {
 			fmt.Fprintf(&b, "Telegram: @%s\n", esc(m.From.Username))
 		}
 		fmt.Fprintf(&b, "Chat ID: <code>%d</code>", m.Chat.ID)
 	}
-	b.WriteString("\n\n" + i18n.T(opLang(set), "support.topicHint", internalNotePrefix))
+	b.WriteString("\n\n")
+	b.WriteString(i18n.T(opLang(set), "support.topicHint", internalNotePrefix))
 	return b.String()
 }
 
