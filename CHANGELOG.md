@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.3.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.3.0...v5.3.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* **deps:** refresh stable stack and adapt Xray validation ([92a8a3d](https://github.com/Shu1t3/rospanel-shu1t3/commit/92a8a3d6282131ee70b532e083b3c06b28feb23e))
+
 ## [5.3.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.2.0...v5.3.0) (2026-10-19)
 
 
