@@ -372,7 +372,8 @@ func TestSetUsersEndsRemovedUsersTunnels(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { _, err := io.ReadAll(resp.Body); done <- err }()
 	select {
-	case <-done:
+	case err := <-done:
+		t.Logf("removed user tunnel closed: %v", err)
 	case <-time.After(5 * time.Second):
 		t.Fatal("the removed user's tunnel stayed open")
 	}

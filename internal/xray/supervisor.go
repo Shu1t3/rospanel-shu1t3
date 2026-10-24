@@ -662,12 +662,13 @@ func (s *Supervisor) Apply(cfg *Config) error {
 	}
 
 	if s.bin != "" {
-		// -format json: the temp file lacks a .json extension, and Xray otherwise
-		// infers config format from the extension. A timeout keeps a wedged
-		// validation from holding s.mu (and thus blocking all future applies).
-		// validation under runMu (not mu) — a wedged -test can't block Running().
+		// Xray 26.10.21 rejects a .new file even with -format json. Validate the
+		// same bytes through stdin, keeping the staged file for the atomic swap.
+		// Validation runs under runMu, not mu, so a wedged -test cannot block
+		// Running(); the timeout still bounds how long other applies wait.
 		ctx, cancel := context.WithTimeout(context.Background(), validateTimeout)
-		cmd := exec.CommandContext(ctx, s.bin, "run", "-test", "-format", "json", "-c", tmp)
+		cmd := exec.CommandContext(ctx, s.bin, "run", "-test", "-format", "json", "-c", "stdin:")
+		cmd.Stdin = bytes.NewReader(data)
 		cmd.Env = s.env()
 		out, err := cmd.CombinedOutput()
 		cancel()
@@ -775,7 +776,8 @@ func (s *Supervisor) ApplyRaw(data []byte) error {
 	}
 	if s.bin != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), validateTimeout)
-		cmd := exec.CommandContext(ctx, s.bin, "run", "-test", "-format", "json", "-c", tmp)
+		cmd := exec.CommandContext(ctx, s.bin, "run", "-test", "-format", "json", "-c", "stdin:")
+		cmd.Stdin = bytes.NewReader(data)
 		cmd.Env = s.env()
 		out, err := cmd.CombinedOutput()
 		cancel()

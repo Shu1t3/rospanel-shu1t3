@@ -3,7 +3,7 @@
 #
 # Run it in a throwaway Linux container from the repository root:
 #
-#   docker run --rm -v "$PWD/internal/plugin/jsvm/guest:/guest" golang:1.26.6 /guest/build.sh
+#   docker run --rm -v "$PWD/internal/plugin/jsvm/guest:/guest" golang:1.27.3 /guest/build.sh
 #
 # The result is committed; CI rebuilds it and compares the sha256, so a change to
 # rp.c, a version bump or a toolchain drift shows up as a diff instead of passing

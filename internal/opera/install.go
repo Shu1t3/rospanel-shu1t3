@@ -18,7 +18,7 @@ import (
 
 // PinnedVersion is the opera-proxy release auto-downloaded when no binary is
 // present. Pinned (not "latest") so a release can't silently change behaviour.
-const PinnedVersion = "v1.25.0"
+const PinnedVersion = "v1.31.0"
 
 // pinnedSHA256 is the SHA-256 of each platform's opera-proxy asset for
 // PinnedVersion. The downloaded binary is rejected if it doesn't match — this
@@ -26,9 +26,9 @@ const PinnedVersion = "v1.25.0"
 // binary before it is made executable and run as root (mirrors xray/install.go).
 // Update these together with PinnedVersion.
 var pinnedSHA256 = map[string]string{
-	"opera-proxy.linux-amd64":   "2655296010c19309dc22ddca12059a507e32099d461df11db5e7e99c1c1f0691",
-	"opera-proxy.linux-386":     "1461a5b8ef980b50641c1e97eb08ccc839cbc527c3188cd57316ef43e572e0de",
-	"opera-proxy.android-arm64": "450ced891e981aa0bfc6debbe1c839a76c59dd589218c65f865a4fbde97c1044",
+	"opera-proxy.linux-amd64": "e539c6f583c23715d16810925307d74b136aa1f7bc256d586a52e63d03b0346d",
+	"opera-proxy.linux-386":   "759fd3959d4eb0d5969b0030c9c9ee96540c42c97e2abbb3deb58eec9407105c",
+	"opera-proxy.linux-arm64": "fe1e72f1bfb2302350fff82cf0710859699118ae47d5b541d99c5f13aebcb935",
 }
 
 // releaseAsset returns the opera-proxy release asset name for the current
@@ -41,9 +41,7 @@ func releaseAsset() (string, error) {
 	case "linux/386":
 		return "opera-proxy.linux-386", nil
 	case "linux/arm64":
-		// No dedicated linux-arm64 asset; the android-arm64 build is an arm64 ELF
-		// and runs on linux/arm64.
-		return "opera-proxy.android-arm64", nil
+		return "opera-proxy.linux-arm64", nil
 	default:
 		return "", fmt.Errorf("no prebuilt opera-proxy for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}

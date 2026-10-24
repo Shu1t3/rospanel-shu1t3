@@ -83,8 +83,8 @@ func TestScansQueueOnTheWriter(t *testing.T) {
 		done := make(chan error, 1)
 		go func() { done <- scan() }()
 		select {
-		case <-done:
-			t.Errorf("%s answered beside an open write: it is not on the writer", name)
+		case err := <-done:
+			t.Errorf("%s answered beside an open write: it is not on the writer (err=%v)", name, err)
 		case <-time.After(300 * time.Millisecond):
 		}
 		if err := tx.Commit(); err != nil {

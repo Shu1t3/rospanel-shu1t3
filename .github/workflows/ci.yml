@@ -84,7 +84,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 24.22.1
           cache: npm
           cache-dependency-path: web/package-lock.json
       - name: Install deps
@@ -147,7 +147,7 @@ jobs:
           path: web/dist
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.14.0
+          version: v2.15.0
           only-new-issues: ${{ github.event_name == 'pull_request' }}
 
   govulncheck:

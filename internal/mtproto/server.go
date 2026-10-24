@@ -432,7 +432,9 @@ func pipe(a, b *idleConn) {
 		_ = a.Close()
 		_ = b.Close()
 	}
-	<-done
+	if err := <-done; err != nil && !errors.Is(err, net.ErrClosed) {
+		slog.Debug("mtproto: reverse copy ended", "err", err)
+	}
 	_ = a.Close()
 	_ = b.Close()
 }

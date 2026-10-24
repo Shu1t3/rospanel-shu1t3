@@ -25,7 +25,7 @@ jobs:
       - name: Rebuild rp.wasm from pinned sources
         run: |
           want=$(cat internal/plugin/jsvm/guest/rp.wasm.sha256)
-          docker run --rm -v "$PWD/internal/plugin/jsvm/guest:/guest" golang:1.26.6 /guest/build.sh
+          docker run --rm -v "$PWD/internal/plugin/jsvm/guest:/guest" golang:1.27.3 /guest/build.sh
           got=$(cat internal/plugin/jsvm/guest/rp.wasm.sha256)
           if [ "$got" != "$want" ]; then
             echo "::error::rebuilt rp.wasm is $got, committed is $want — run guest/build.sh and commit"
