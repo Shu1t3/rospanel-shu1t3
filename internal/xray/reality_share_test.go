@@ -80,3 +80,27 @@ func TestRealityOnTheSharedPortRefusesItsOwnName(t *testing.T) {
 		t.Fatal("a shared REALITY masking as the server's own name was generated")
 	}
 }
+
+// Before shared-port REALITY, disabled lanes could retain the TLS port and
+// the server's own name. Those settings must not prevent custom lanes from starting.
+func TestDisabledRealityWithLegacySharedPortKeepsCustomXHTTP(t *testing.T) {
+	set := realityOn443()
+	set.RealityEnabled = false
+	set.RealityDest = set.OwnName()
+	in := model.Inbound{
+		ID: 1, Protocol: model.InbVLESS, Port: 18444,
+		Opts: model.InboundOpts{Transport: model.TrXHTTP, Security: model.SecNone, Path: "/x"},
+	}
+	cfg, err := Generate(set, nil, Options{
+		PanelDest: "127.0.0.1:8080", FrontVLESS: true, Custom: []model.Inbound{in},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findInbound(cfg, TagReality) != nil {
+		t.Fatal("disabled built-in REALITY is present")
+	}
+	if got := findInbound(cfg, in.Tag()); got == nil || got.StreamSettings.Network != model.TrXHTTP {
+		t.Fatalf("custom XHTTP inbound missing: %+v", got)
+	}
+}
