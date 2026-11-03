@@ -72,6 +72,10 @@ type oaOrderResp struct {
 	Order   *paymentOrderDTO `json:"order"`
 	PayURL  string           `json:"pay_url,omitempty"` // hosted provider URL (when a provider is set)
 	Message string           `json:"message,omitempty"` // manual-payment instructions (no provider)
+	// ImageURL is the operator's picture for manual payment — a QR code, their
+	// requisites — served from the payer's subscription page. Empty when none is
+	// uploaded or that page is not reachable.
+	ImageURL string `json:"image_url,omitempty"`
 }
 
 // oaProviderResp is one enabled payment method returned by GET /v1/billing/providers.
@@ -179,6 +183,10 @@ func apiSpecRoutes() []oaRoute {
 			summary: "Enter a promo code for the user: a discount attaches to the next payment, days go onto the plan, a balance code credits the balance",
 			req:     t(apiRedeemReq{}), reqRequired: []string{"code"}, resp: t(apiRedeemResp{}),
 			destructive: true},
+		{method: "POST", path: "/v1/users/{id}/churn", tag: "Users",
+			summary: "Record the user's answer to the exit survey (while the subscription view carries churn): reason " +
+				"price | quality | not_needed | competitor | other, comment optional; a later answer replaces the reason",
+			req: t(apiChurnReq{}), reqRequired: []string{"reason"}},
 		{method: "GET", path: "/v1/users/{id}/subscription", tag: "Users",
 			summary: "The user's subscription page as data, to draw it yourself: status, traffic, term, app imports, configs, devices, payment block — under the subscription settings the panel's page keeps",
 			query:   []oaParam{{name: "lang", typ: "string", desc: "ru | en | zh | ar — the language of the texts (default en)"}},
@@ -392,6 +400,12 @@ func apiSpecRoutes() []oaRoute {
 			summary: "Mark an incident resolved or a maintenance window finished, now, with an optional closing note; " +
 				"optionally tell the users (body optional)",
 			req: t(apiIncidentResolveReq{}), resp: t(apiIncidentResp{}), destructive: true},
+		{method: "POST", path: "/v1/incidents/{id}/compensate", tag: "Monitoring",
+			summary: "Give the users a finished incident hit hours back, once: added to each subscription that was " +
+				"running when it began, for users who may use a server it names (needs users.manage); " +
+				"notify tells each of them through the user bot (needs the broadcasts permission)",
+			req: t(apiIncidentCompensateReq{}), reqRequired: []string{"hours"}, resp: t(apiIncidentResp{}),
+			destructive: true},
 		{method: "DELETE", path: "/v1/incidents/{id}", tag: "Monitoring",
 			summary: "Delete an incident from the status page and its history"},
 		{method: "GET", path: "/v1/summary", tag: "Monitoring",
@@ -460,6 +474,22 @@ func apiSpecRoutes() []oaRoute {
 		{method: "POST", path: "/v1/reach", tag: "Nodes",
 			summary: "Set the check from other countries (every = minutes between rounds, 0 = only on demand; token omitted = kept)",
 			req:     t(reachReq{}), resp: t(core.ReachConfig{}), destructive: true},
+		{method: "GET", path: "/v1/alerts", tag: "Alerts",
+			summary: "Alert rules: a threshold on a server's figure (node_id -1 = every server, 0 = the master), with `firing` = open alerts now",
+			resp:    t(model.AlertRule{}), list: true},
+		{method: "GET", path: "/v1/alerts/metrics", tag: "Alerts", summary: "Metrics a rule can watch, with their units",
+			resp: t(model.AlertMetricDef{}), list: true},
+		{method: "GET", path: "/v1/alerts/events", tag: "Alerts",
+			summary: "Firing history, newest first (`limit`, `before` = id to continue below); resolved_at 0 = still firing",
+			resp:    t(model.AlertEvent{}), list: true},
+		{method: "POST", path: "/v1/alerts", tag: "Alerts",
+			summary: "Add an alert rule (for_secs = how long the condition holds before it fires; op gt|lt)",
+			req:     t(model.AlertRuleInput{}), reqRequired: []string{"name", "metric", "op", "threshold", "node_id"},
+			resp: t(model.AlertRule{}), status: 201},
+		{method: "POST", path: "/v1/alerts/{id}", tag: "Alerts", summary: "Replace an alert rule's settings",
+			req: t(model.AlertRuleInput{}), reqRequired: []string{"name", "metric", "op", "threshold", "node_id"},
+			resp: t(model.AlertRule{})},
+		{method: "DELETE", path: "/v1/alerts/{id}", tag: "Alerts", summary: "Delete an alert rule (its history stays)"},
 		{method: "GET", path: "/v1/nodes/{id}/logs", tag: "Nodes",
 			summary: "A node's recent log lines (collected on its next poll; `at` says how fresh)",
 			resp:    t(apiNodeLogsResp{})},

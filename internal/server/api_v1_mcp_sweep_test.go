@@ -288,6 +288,11 @@ func TestMCPEveryToolAnswers(t *testing.T) {
 	call("post_system_auto_update", map[string]any{"body": map[string]any{"cron": "0 4 * * *", "nodes": true}})
 	call("post_users_by_id_autorenew", map[string]any{"id": created, "body": map[string]any{"on": false}})
 	call("post_users_by_id_promo", map[string]any{"id": created, "body": map[string]any{"code": "SWEEP10"}})
+	// The survey is off here: the answer is refused for that, not for its shape.
+	if _, failure := callRaw("post_users_by_id_churn", map[string]any{"id": created,
+		"body": map[string]any{"reason": "price", "comment": "x"}}); !strings.Contains(failure, "err.churnClosed") && !strings.Contains(failure, "survey") {
+		t.Errorf("post_users_by_id_churn: %s", failure)
+	}
 	call("post_users_by_id_telegram", map[string]any{"id": created, "body": map[string]any{"chat_id": 910001}})
 	call("post_users_by_id_referrer", map[string]any{"id": created, "body": map[string]any{"referrer_id": user.ID}})
 	call("post_users_by_id_source", map[string]any{"id": created, "body": map[string]any{"source": "vk_ads"}})
@@ -325,6 +330,16 @@ func TestMCPEveryToolAnswers(t *testing.T) {
 		},
 	})
 	call("post_webhooks_by_id_test", map[string]any{"id": hookID})
+
+	alertRule := newID("post_alerts", call("post_alerts", map[string]any{
+		"body": map[string]any{"name": "sweep cpu", "enabled": true, "metric": "cpu_percent",
+			"op": "gt", "threshold": 90, "for_secs": 600, "node_id": -1},
+	}))
+	call("post_alerts_by_id", map[string]any{
+		"id": alertRule,
+		"body": map[string]any{"name": "sweep cpu", "enabled": false, "metric": "cpu_percent",
+			"op": "gt", "threshold": 95, "for_secs": 300, "node_id": model.LocalNodeID},
+	})
 
 	inbound := newID("post_servers_by_id_inbounds", call("post_servers_by_id_inbounds", map[string]any{
 		"id": model.LocalNodeID,
@@ -399,6 +414,7 @@ func TestMCPEveryToolAnswers(t *testing.T) {
 
 	// Deletions last, so everything above had something to work on.
 	call("delete_webhooks_by_id", map[string]any{"id": hookID})
+	call("delete_alerts_by_id", map[string]any{"id": alertRule})
 	call("delete_inbounds_by_id", map[string]any{"id": inbound})
 	call("delete_groups_by_id", map[string]any{"id": group})
 	call("delete_billing_plans_by_id", map[string]any{"id": target})
@@ -428,6 +444,7 @@ func TestMCPEveryToolAnswers(t *testing.T) {
 		call("delete_incidents_updates_by_id", map[string]any{"id": course.Data.Incident.Updates[0].ID})
 	}
 	call("post_incidents_by_id_resolve", map[string]any{"id": incident})
+	call("post_incidents_by_id_compensate", map[string]any{"id": incident, "hours": 1})
 	call("delete_incidents_by_id", map[string]any{"id": incident})
 	call("delete_nodes_by_id", map[string]any{"id": added})
 	call("delete_users_by_id", map[string]any{"id": created})

@@ -16,7 +16,7 @@ func TestRoutingProfileIsolationAndSecurityFloor(t *testing.T) {
 	}
 
 	order := []string{"direct"}
-	routing := compileRouting(rc, order, false, false, map[string]bool{}, map[string]bool{}, nil, nil)
+	routing := compileRouting(rc, order, false, false, map[string]bool{}, map[string]bool{}, nil, nil, nil)
 
 	if len(routing.Rules) < 4 {
 		t.Fatalf("expected at least 4 routing rules, got %d", len(routing.Rules))

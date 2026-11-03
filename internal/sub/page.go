@@ -133,7 +133,7 @@ type pageText struct {
 	ChangeConfirm  string
 	AddTitle       string
 	AddBtn         string
-	ManualNote     string
+	ManualImage    string // alt text of the operator's picture, "" when there is none to show
 	ScanQR         string
 	CopyLink       string
 	AccessTitle    string
@@ -155,6 +155,9 @@ type pageText struct {
 	AWGHint        string
 	AWGDownload    string
 	AWGSite        string // where the Amnezia apps are downloaded, in the page's language
+	WGTitle        string
+	WGHint         string
+	WGSite         string
 	TurnTitle      string
 	TurnHint       string
 	TurnPeer       string
@@ -246,7 +249,7 @@ func text(lang i18n.Lang) pageText {
 		ChangeConfirm:  t("sub.changeConfirm"),
 		AddTitle:       t("sub.addTitle"),
 		AddBtn:         t("sub.addBtn"),
-		ManualNote:     t("sub.manualNote"),
+		ManualImage:    t("sub.manualImage"),
 		ScanQR:         t("sub.scanQR"),
 		CopyLink:       t("sub.copyLink"),
 		AccessTitle:    t("sub.accessTitle"),
@@ -268,6 +271,9 @@ func text(lang i18n.Lang) pageText {
 		AWGHint:        t("sub.awgHint"),
 		AWGDownload:    t("sub.awgDownload"),
 		AWGSite:        amneziaSite(lang),
+		WGTitle:        t("sub.wgTitle"),
+		WGHint:         t("sub.wgHint"),
+		WGSite:         wireGuardSite,
 		TurnTitle:      t("sub.turnTitle"),
 		TurnHint:       t("sub.turnHint"),
 		TurnPeer:       t("sub.turnPeer"),
@@ -327,6 +333,9 @@ func amneziaSite(lang i18n.Lang) string {
 	}
 	return "https://amnezia.org/downloads"
 }
+
+// wireGuardSite is where the stock WireGuard apps are downloaded.
+const wireGuardSite = "https://www.wireguard.com/install/"
 
 // turnCard is one WireGuard inbound behind a TURN relay: what the user's TURN client
 // needs (the relay's address and the call link), and the WireGuard config it carries.
@@ -401,6 +410,9 @@ type pageData struct {
 	// AWG lists one card per server whose AmneziaWG lane the user may use: the
 	// config file to import and its QR.
 	AWG []awgCard
+	// WG lists one card per plain WireGuard inbound the user may use: the config file to
+	// import and its QR.
+	WG []awgCard
 	// Turn lists one card per WireGuard inbound behind a TURN relay the user may use.
 	Turn []turnCard
 	// Telegram lists one card per server whose Telegram proxy the user may use.
@@ -461,9 +473,10 @@ type Billing struct {
 	// payment, when the operator has it on, is one of them under ManualPayKey.
 	Providers []BillingPay `json:"providers"`
 	Manual    bool         `json:"manual"` // manual payment is offered
-	// ManualOnly is manual payment with nothing else beside it: only then does the
-	// page carry the operator's details and say that an admin confirms the transfer.
-	// With a provider on the list too, both arrive with the order the user opens.
+	// ManualOnly is manual payment with nothing else beside it. The page itself says
+	// nothing about it — the details and the picture arrive with the order the user
+	// opens — but a client rendering this block from the JSON can tell the two states
+	// apart. With a provider on the list, both are just methods to choose from.
 	ManualOnly bool   `json:"manual_only"`
 	Note       string `json:"note"` // the operator's own manual-payment instructions
 	PayPath    string `json:"-"`    // POST target that starts a payment (<SubURL>/pay)
@@ -492,6 +505,7 @@ type Billing struct {
 	RenewNote  string `json:"renew_note"`
 	RenewShort bool   `json:"renew_short"`
 	TopupMin   int    `json:"topup_min"`
+	TopupMax   int    `json:"topup_max"`
 	TopupHint  string `json:"topup_hint"` // "from 100 ₽"
 	BonusDays  string `json:"bonus_days"` // banked referral days, "" when none
 	Promo      bool   `json:"promo"`      // a promo field is offered
@@ -665,6 +679,7 @@ func buildPageData(u model.User, local *model.Settings, servers []Server, billin
 	var protoLinks, extLinks []protoLink
 	var awgCards []awgCard
 	var turnCards []turnCard
+	var wgCards []awgCard
 	var tgCards []tgProxyCard
 	for _, srv := range servers {
 		s := srv.Set
@@ -705,6 +720,14 @@ func buildPageData(u model.User, local *model.Settings, servers []Server, billin
 		}
 		for _, in := range srv.Custom {
 			if !srv.allowsInbound(in.ID) {
+				continue
+			}
+			if in.Protocol == model.InbWireGuard {
+				wgCards = append(wgCards, awgCard{
+					Label:   link.CustomLabelFor(in, u, s),
+					ConfURL: TurnConfURL(local, u.SubToken, in.ID),
+					QRURL:   fmt.Sprintf("%s/wg/%d.png", subURL, in.ID),
+				})
 				continue
 			}
 			if in.Protocol == model.InbTurnVK {
@@ -783,6 +806,7 @@ func buildPageData(u model.User, local *model.Settings, servers []Server, billin
 		SubURL:      subURL,
 		Links:       protoLinks,
 		AWG:         awgCards,
+		WG:          wgCards,
 		Turn:        turnCards,
 		Telegram:    tgCards,
 		DeepLinks:   DeepLinks(subURL, lang, local.SubHappCrypt),
@@ -927,6 +951,50 @@ type Access struct {
 	// reader's language.
 	StatusMore   string
 	NoticesLabel string
+	// Churn asks why the lapsed term was not renewed; nil when there is nothing to ask.
+	Churn *Churn
+}
+
+// Churn is the survey card: the question, the reasons to pick from, and where the
+// answer goes.
+type Churn struct {
+	Path     string
+	Question string
+	Reasons  []ChurnReason
+	OtherPh  string
+	Send     string
+	Thanks   string
+}
+
+// ChurnReason is one answer on the card: key is what the answer is sent with.
+type ChurnReason struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+}
+
+// ChurnLabelKeys are the catalog keys of the reasons, spelled out so the catalog
+// check sees them; the bot words its buttons with them too.
+var ChurnLabelKeys = map[string]string{
+	model.ChurnPrice:      "churn.price",
+	model.ChurnQuality:    "churn.quality",
+	model.ChurnNotNeeded:  "churn.not_needed",
+	model.ChurnCompetitor: "churn.competitor",
+	model.ChurnOther:      "churn.other",
+}
+
+// NewChurn builds the survey card in lang, its answers posted to path.
+func NewChurn(path string, lang i18n.Lang) *Churn {
+	c := &Churn{
+		Path:     path,
+		Question: i18n.T(lang, "churn.question"),
+		OtherPh:  i18n.T(lang, "churn.otherPh"),
+		Send:     i18n.T(lang, "churn.send"),
+		Thanks:   i18n.T(lang, "churn.thanks"),
+	}
+	for _, r := range model.ChurnReasons {
+		c.Reasons = append(c.Reasons, ChurnReason{Key: r, Label: i18n.T(lang, ChurnLabelKeys[r])})
+	}
+	return c
 }
 
 // Notice is one incident or maintenance window as the subscription page shows it.

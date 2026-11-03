@@ -23,6 +23,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/i18n"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/link"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/payments"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/plugin"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/sub"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/telegram"
@@ -282,6 +283,13 @@ func handleSub(rt *Router, w http.ResponseWriter, r *http.Request, rest string) 
 		}
 		rt.handleSubRotate(w, r, *u, set)
 
+	case "churn":
+		if !subActionAllowed(r) {
+			rt.currentDecoy().ServeHTTP(w, r)
+			return
+		}
+		rt.handleSubChurn(w, r, *u)
+
 	case "devices/unbind":
 		if !subActionAllowed(r) {
 			rt.currentDecoy().ServeHTTP(w, r)
@@ -326,6 +334,22 @@ func handleSub(rt *Router, w http.ResponseWriter, r *http.Request, rest string) 
 		}
 		if name, ok := strings.CutPrefix(leaf, "theme/"); ok {
 			rt.serveThemeFile(w, r, name)
+			return
+		}
+		// The operator's picture for manual payment, under the user's own token like
+		// the page that shows it. The URL carries the content hash, so a replaced
+		// picture is a different address and this one can be cached for long.
+		if leaf == "payimg" && set.BillingManualEnabled {
+			b, err := rt.mgr.ManualPayImage()
+			if err != nil || len(b) == 0 {
+				rt.currentDecoy().ServeHTTP(w, r)
+				return
+			}
+			h := w.Header()
+			h.Set("Content-Type", payments.ManualPayImageContentType(b))
+			h.Set("X-Content-Type-Options", "nosniff")
+			h.Set("Cache-Control", "private, max-age=86400")
+			_, _ = w.Write(b)
 			return
 		}
 		rt.currentDecoy().ServeHTTP(w, r)
@@ -529,7 +553,8 @@ func (rt *Router) handleSubPay(w http.ResponseWriter, r *http.Request, u model.U
 			writeSubErr(w, err, lang)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"manual": true, "message": msg})
+		writeJSON(w, http.StatusOK, map[string]any{"manual": true, "message": msg,
+			"image": rt.manualPayImageURL(u, set)})
 		return
 	}
 	order, err := rt.mgr.StartPurchase(subActorCtx(r, u), lang, u.ID, p, req.Provider, sub.URL(set, u.SubToken))
@@ -576,6 +601,17 @@ func (rt *Router) handleSubOrder(w http.ResponseWriter, r *http.Request, u model
 		"plan_name": order.PlanName,
 		"amount":    order.AmountRub,
 	})
+}
+
+// manualPayImageURL is the operator's picture for manual payment, addressed on the
+// user's own subscription page — "" when none is uploaded. The version comes from the
+// content hash, so the address changes with the picture and the browser may cache it.
+func (rt *Router) manualPayImageURL(u model.User, set *model.Settings) string {
+	v, err := rt.mgr.ManualPayImageVersion()
+	if err != nil || v == "" {
+		return ""
+	}
+	return sub.URL(set, u.SubToken) + "/payimg?v=" + v
 }
 
 // buildBilling assembles the optional "renew / pay" block for the subscription
@@ -974,6 +1010,26 @@ func (rt *Router) handleSubDeviceUnbind(w http.ResponseWriter, r *http.Request, 
 	writeOK(w)
 }
 
+// handleSubChurn takes the reader's answer to why they did not renew.
+func (rt *Router) handleSubChurn(w http.ResponseWriter, r *http.Request, u model.User) {
+	if r.Method != http.MethodPost {
+		rt.currentDecoy().ServeHTTP(w, r)
+		return
+	}
+	var req struct {
+		Reason  string `json:"reason"`
+		Comment string `json:"comment"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := rt.mgr.AnswerChurn(subActorCtx(r, u), u.ID, req.Reason, req.Comment, "page"); err != nil {
+		writeSubErr(w, err, i18n.FromAcceptLanguage(r.Header.Get("Accept-Language")))
+		return
+	}
+	writeOK(w)
+}
+
 // handleSubRotate reissues the user's own subscription link, when the operator allows
 // it, at most once per the interval they set: the old one stops working, and the
 // answer carries the new page's address.
@@ -1185,14 +1241,15 @@ func (rt *Router) subUnavailable(w http.ResponseWriter, userID int64, err error)
 	w.WriteHeader(http.StatusServiceUnavailable)
 }
 
-// serveTurnWG hands out one user's WireGuard config for one WireGuard inbound behind a
-// TURN relay — "<id>.conf", id being the inbound. No QR: a phone takes this lane from an
-// app's import link, and the file is for setting a client up by hand. The inbound must be
+// serveTurnWG hands out one user's WireGuard config for one WireGuard inbound — "<id>.conf",
+// id being the inbound; a plain WireGuard inbound also has "<id>.png", the same text in a
+// QR. A TURN lane has no QR: a phone takes it from an app's import link, and the file is
+// for setting a client up by hand. The inbound must be
 // on a server of this user's subscription and the user allowed on it; anything else is
 // the decoy.
 func (rt *Router) serveTurnWG(w http.ResponseWriter, r *http.Request, u *model.User, set *model.Settings, rest string) {
 	name, ext, ok := strings.Cut(rest, ".")
-	if !ok || ext != "conf" {
+	if !ok || (ext != "conf" && ext != "png") {
 		rt.currentDecoy().ServeHTTP(w, r)
 		return
 	}
@@ -1210,7 +1267,10 @@ func (rt *Router) serveTurnWG(w http.ResponseWriter, r *http.Request, u *model.U
 	var in *model.Inbound
 	for i := range servers {
 		for j := range servers[i].Custom {
-			if c := &servers[i].Custom[j]; c.ID == id && c.Protocol == model.InbTurnVK {
+			// The QR is for the plain lane alone: a TURN lane is set up from an app's
+			// import link, and a QR of its file would point a phone at a local port.
+			if c := &servers[i].Custom[j]; c.ID == id && (c.Protocol == model.InbWireGuard ||
+				(c.Protocol == model.InbTurnVK && ext == "conf")) {
 				srv, in = &servers[i], c
 			}
 		}
@@ -1344,8 +1404,11 @@ func (rt *Router) buildWallet(b *sub.Billing, u model.User, set *model.Settings,
 				b.RenewShort = true
 			}
 		}
-		b.TopupMin = max(set.WalletTopupMin, 1)
+		b.TopupMin, b.TopupMax = set.TopupRange()
 		b.TopupHint = i18n.T(lang, "sub.topupHint", b.TopupMin)
+		if b.TopupMax < model.WalletTopupCeiling {
+			b.TopupHint = i18n.T(lang, "sub.topupHintRange", b.TopupMin, b.TopupMax)
+		}
 		if w.RefBonusDays > 0 {
 			b.BonusDays = i18n.T(lang, "sub.bonusDays", w.RefBonusDays)
 		}
@@ -1452,7 +1515,8 @@ func (rt *Router) handleSubWallet(w http.ResponseWriter, r *http.Request, action
 				writeSubErr(w, err, lang)
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"manual": true, "message": msg})
+			writeJSON(w, http.StatusOK, map[string]any{"manual": true, "message": msg,
+				"image": rt.manualPayImageURL(u, set)})
 			return
 		}
 		order, err := rt.mgr.StartTopup(ctx, lang, u.ID, req.Amount, req.Provider, sub.URL(set, u.SubToken))

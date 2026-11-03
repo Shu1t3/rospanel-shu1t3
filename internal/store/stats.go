@@ -552,7 +552,7 @@ func (s *Store) ActiveDeviceCountForUser(userID int64, since int64) (int, error)
 	var count int
 	err := s.db.QueryRow(
 		`SELECT COUNT(DISTINCT ip) FROM connections INDEXED BY idx_connections_last_seen
-		 WHERE user_id = ? AND last_seen > ?`,
+		 WHERE user_id = ? AND last_seen > ?`+notTunnelIP,
 		userID, since,
 	).Scan(&count)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -576,7 +576,7 @@ func (s *Store) ActiveDeviceCounts(since int64) (map[int64]int, error) {
 	rows, err := s.db.Query(
 		`SELECT user_id, COUNT(DISTINCT ip)
 		 FROM connections INDEXED BY idx_connections_last_seen
-		 WHERE last_seen > ? GROUP BY user_id`, since)
+		 WHERE last_seen > ?`+notTunnelIP+` GROUP BY user_id`, since)
 	if err != nil {
 		return nil, err
 	}

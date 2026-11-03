@@ -259,6 +259,7 @@ func (rt *Router) apiMux() http.Handler {
 	id("GET /v1/users/{id}/referrals", rt.apiUserReferrals)
 	id("POST /v1/users/{id}/autorenew", rt.apiSetAutoRenew)
 	id("POST /v1/users/{id}/promo", rt.apiRedeemPromo)
+	id("POST /v1/users/{id}/churn", rt.apiAnswerChurn)
 	id("GET /v1/users/{id}/quotes", rt.apiUserQuotes)
 	id("GET /v1/users/{id}/extras", rt.apiUserExtras)
 	id("POST /v1/users/{id}/telegram", rt.apiLinkTelegram)
@@ -335,6 +336,12 @@ func (rt *Router) apiMux() http.Handler {
 	id("POST /v1/nodes/{id}/reach", rt.apiCheckNodeReach)
 	hf("GET /v1/reach", rt.apiGetReach)
 	nodeAudit("POST /v1/reach", "apiReach", rt.apiSetReach)
+	hf("GET /v1/alerts", rt.apiListAlerts)
+	hf("GET /v1/alerts/metrics", rt.apiAlertMetrics)
+	hf("GET /v1/alerts/events", rt.apiAlertEvents)
+	nodeAudit("POST /v1/alerts", "apiAlertAdded", rt.apiCreateAlert)
+	nodeAudit("POST /v1/alerts/{id}", "apiAlertChanged", idFn(rt.apiUpdateAlert))
+	nodeAudit("DELETE /v1/alerts/{id}", "apiAlertDeleted", idFn(rt.apiDeleteAlert))
 	id("GET /v1/nodes/{id}/logs", rt.apiNodeLogs)
 
 	// Custom inbounds. Every mutation opens, changes or closes a public listener on a
@@ -391,6 +398,8 @@ func (rt *Router) apiMux() http.Handler {
 	nodeAudit("POST /v1/incidents", "apiIncidentSaved", rt.apiCreateIncident)
 	nodeAudit("POST /v1/incidents/{id}", "apiIncidentSaved", idFn(rt.apiUpdateIncident))
 	nodeAudit("POST /v1/incidents/{id}/resolve", "apiIncidentResolved", idFn(rt.apiResolveIncident))
+	// Each user it extends is in the journal already.
+	id("POST /v1/incidents/{id}/compensate", rt.apiCompensateIncident)
 	nodeAudit("DELETE /v1/incidents/{id}", "apiIncidentDeleted", idFn(rt.apiDeleteIncident))
 	nodeAudit("POST /v1/incidents/{id}/updates", "apiIncidentUpdate", idFn(rt.apiAddIncidentUpdate))
 	nodeAudit("DELETE /v1/incidents/updates/{id}", "apiIncidentUpdateDeleted", idFn(rt.apiDeleteIncidentUpdate))
@@ -1380,7 +1389,8 @@ func (rt *Router) apiCreateOrder(w http.ResponseWriter, r *http.Request) {
 			writeAPIManagerErr(w, err)
 			return
 		}
-		writeAPIData(w, http.StatusCreated, map[string]any{"order": toPaymentOrderDTO(order), "message": msg})
+		writeAPIData(w, http.StatusCreated, map[string]any{"order": toPaymentOrderDTO(order), "message": msg,
+			"image_url": rt.apiManualImageURL(req.UserID)})
 		return
 	}
 	order, err := rt.mgr.StartPurchase(r.Context(), lang, req.UserID, p, req.Provider, rt.apiReturnURL(req.ReturnURL, req.UserID))
@@ -1408,6 +1418,21 @@ func (rt *Router) apiExternalOrder(w http.ResponseWriter, r *http.Request, order
 		}
 	}
 	writeAPIData(w, http.StatusCreated, map[string]any{"order": order})
+}
+
+// apiManualImageURL is the manual payment picture's address as an external caller can
+// hand it to a payer. The picture lives on the user's own subscription page, so it
+// exists only while that page is reachable; "" when none is uploaded.
+func (rt *Router) apiManualImageURL(userID int64) string {
+	set, err := rt.mgr.Settings()
+	if err != nil || !set.BillingManualEnabled || !set.SubPageReachable() {
+		return ""
+	}
+	u, err := rt.mgr.Store().GetUser(userID)
+	if err != nil {
+		return ""
+	}
+	return rt.manualPayImageURL(*u, set)
 }
 
 // apiReturnURL is where a hosted payment sends the payer back: the caller's own, or
@@ -1447,7 +1472,8 @@ func (rt *Router) apiCreateTopup(w http.ResponseWriter, r *http.Request, req api
 			writeAPIManagerErr(w, err)
 			return
 		}
-		writeAPIData(w, http.StatusCreated, map[string]any{"order": order, "message": msg})
+		writeAPIData(w, http.StatusCreated, map[string]any{"order": order, "message": msg,
+			"image_url": rt.apiManualImageURL(req.UserID)})
 		return
 	}
 	order, err := rt.mgr.StartTopup(r.Context(), lang, req.UserID, req.AmountRub, req.Provider, rt.apiReturnURL(req.ReturnURL, req.UserID))

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"log/slog"
 	"net"
 	"strings"
 
@@ -130,6 +131,13 @@ func Generate(set *model.Settings, users []model.User, opts Options, proxies map
 	if opts.PanelDest == "" {
 		return nil, fmt.Errorf("panel fallback dest not configured")
 	}
+	// A REALITY lane sharing the TCP-TLS lane's port masks as a donor: the server's own
+	// name on that port is the decoy's, and the front would send a REALITY client naming
+	// it to the decoy. The editor refuses this too; a config that reached here anyway
+	// must not come up pretending to work.
+	if c := set.RealityShareConflict(); c != "" {
+		return nil, fmt.Errorf("REALITY on the shared port %d cannot mask as the server's own name %q — its SNI list needs a donor", set.VLESSPort, c)
+	}
 
 	// A disabled protocol keeps its inbound but gets an empty client list, so the
 	// listener stays up while nobody can authenticate against it. The per-user access
@@ -244,6 +252,16 @@ func Generate(set *model.Settings, users []model.User, opts Options, proxies map
 	// malformed one can only ever be an extra listener that fails to bind — it can't
 	// displace :443 or the REALITY lane.
 	for _, in := range opts.Custom {
+		// A row this build cannot generate — one written by a newer panel and read
+		// after a downgrade, say. Skipped, not passed on: an inbound Xray cannot
+		// build makes it refuse the WHOLE config, so one unknown row would take every
+		// lane on the server down with it. Losing this inbound alone is the smaller
+		// cost, and the log says which and why.
+		if !model.KnownInboundProtocol(in.Protocol) {
+			slog.Error("xray: skipping an inbound of a protocol this build does not know",
+				"tag", in.Tag(), "protocol", in.Protocol, "name", in.Name, "port", in.Port)
+			continue
+		}
 		inbounds = append(inbounds, customInbound(in, set, users, sniff, sharedCert, minTLS, opts))
 	}
 
@@ -302,7 +320,10 @@ func Generate(set *model.Settings, users []model.User, opts Options, proxies map
 	}
 	order := normalizeOrder(rc.RoutingOrder, rc.LaneIDs())
 	catchAll := order[len(order)-1]
-	operaActive := set.OperaEnabled && (len(rc.OperaDomains) > 0 || len(rc.OperaIPs) > 0 || catchAll == "opera")
+	// What a relayed subscription's routing sends traffic to is built like anything
+	// the server's own routing names.
+	relayAims := relayTargets(opts.Relays)
+	operaActive := set.OperaEnabled && (len(rc.OperaDomains) > 0 || len(rc.OperaIPs) > 0 || catchAll == "opera" || relayAims["opera"])
 
 	// Egress lanes: one outbound per upstream proxy (tag "proxy-<lane>-<n>"), one
 	// balancer per lane load-balancing across that lane's live proxies. A lane is
@@ -319,7 +340,7 @@ func Generate(set *model.Settings, users []model.User, opts Options, proxies map
 		if !lane.Enabled {
 			continue
 		}
-		routed := len(lane.Domains) > 0 || len(lane.IPs) > 0 || catchAll == lane.ID
+		routed := len(lane.Domains) > 0 || len(lane.IPs) > 0 || catchAll == lane.ID || relayAims[lane.ID]
 		if !routed {
 			continue
 		}
@@ -356,7 +377,9 @@ func Generate(set *model.Settings, users []model.User, opts Options, proxies map
 		// outbound it replaced, because now two thirds of the picks can be dead.
 		subjects = append(subjects, warpTagPrefix)
 	}
-	relayOuts, relayRules := relayRouting(opts, vlessClients, realityClients)
+	relayOuts, relayPlans := relayRouting(opts, vlessClients, realityClients, func(dial, protocol string) string {
+		return relayDialer(dial, protocol, warpActive, operaActive, active)
+	})
 	outbounds = append(outbounds, relayOuts...)
 
 	var observatory *Observatory
@@ -413,10 +436,11 @@ func Generate(set *model.Settings, users []model.User, opts Options, proxies map
 				StatsOutboundUplink: true, StatsOutboundDownlink: true,
 			},
 		},
-		DNS:         dns,
-		Inbounds:    inbounds,
-		Outbounds:   outbounds,
-		Routing:     compileRouting(expandGroups(rc, opts.Groups), order, warpActive, operaActive, active, unusable, relayRules, opts.Bridges),
+		DNS:       dns,
+		Inbounds:  inbounds,
+		Outbounds: outbounds,
+		Routing: compileRouting(expandGroups(rc, opts.Groups), order, warpActive, operaActive, active, unusable,
+			relayPlans, groupExpander(opts.Groups), opts.Bridges),
 		Observatory: observatory,
 	}, nil
 }
@@ -594,7 +618,8 @@ const (
 	TagMTProto  = "mtproto-in"
 )
 
-// ProtoWireGuard is Xray's name for the protocol of a TURN-VK inbound.
+// ProtoWireGuard is Xray's name for the protocol of a WireGuard inbound, TURN-VK's and
+// the plain one alike.
 const ProtoWireGuard = "wireguard"
 
 // innerLaneListen is where an inner lane's inbound listens: its inner address, or, where
@@ -725,11 +750,15 @@ func InnerClientsRaw(data []byte, tag string) ([]VLESSClient, string) {
 // XHTTP rather than gRPC: gRPC+REALITY is the most fingerprinted of the current
 // combinations, and with a REALITY config present XHTTP's default mode resolves to
 // stream-one — one HTTP request per connection, the smallest surface it offers.
+//
+// On a shared 443 it listens behind the front instead, on the inner address and taking
+// a PROXY header, the way the TCP-TLS lane does (see reality_share.go).
 func realityInbound(set *model.Settings, clients []VLESSClient, sniff *Sniffing) Inbound {
-	return Inbound{
+	listen, port := realityListen(set)
+	in := Inbound{
 		Tag:      TagReality,
-		Listen:   "0.0.0.0",
-		Port:     set.RealityPort,
+		Listen:   listen,
+		Port:     port,
 		Protocol: "vless",
 		Settings: VLESSInboundSettings{Clients: clients, Decryption: "none"},
 		StreamSettings: &StreamSettings{
@@ -737,8 +766,8 @@ func realityInbound(set *model.Settings, clients []VLESSClient, sniff *Sniffing)
 			Security: "reality",
 			RealitySettings: &RealitySettings{
 				Show:         false,
-				Dest:         set.RealitySNI() + ":443", // primary donor is dialed for probes
-				ServerNames:  set.RealityServerNames(),  // all accepted SNIs
+				Dest:         set.RealityTarget(),      // dialed for probes
+				ServerNames:  set.RealityServerNames(), // all accepted SNIs
 				PrivateKey:   set.RealityPrivateKey,
 				ShortIds:     strings.Split(set.RealityShortID, ","),
 				MaxTimeDiff:  set.RealityMaxTimeDiff, // anti-replay window (ms); 0 = off
@@ -748,6 +777,10 @@ func realityInbound(set *model.Settings, clients []VLESSClient, sniff *Sniffing)
 		},
 		Sniffing: sniff,
 	}
+	if set.RealityShared() {
+		in.StreamSettings.Sockopt = acceptProxy
+	}
+	return in
 }
 
 // customInbound builds one operator-defined inbound. Which of the stream fields are
@@ -802,6 +835,15 @@ func customInbound(in model.Inbound, set *model.Settings, users []model.User,
 			MTU:       WireGuardTURNMTU,
 			Peers:     customWireGuardPeers(allowed),
 		}
+	case model.InbWireGuard:
+		// Plain WireGuard: Xray itself holds the public UDP port.
+		out.Protocol = ProtoWireGuard
+		out.Settings = WireGuardInboundSettings{
+			SecretKey: in.Opts.WGPrivateKey,
+			Address:   []string{awg.ServerAddr.String()},
+			MTU:       WireGuardMTU,
+			Peers:     customWireGuardPeers(allowed),
+		}
 	}
 	out.StreamSettings = customStream(in, set, cert, minTLS)
 	return out
@@ -824,8 +866,8 @@ func customStream(in model.Inbound, set *model.Settings, cert []Certificate, min
 	// carries no streamSettings at all — the tcp+udp choice lives in its settings
 	// (see ShadowsocksInboundSettings.Network). A streamSettings with network
 	// "shadowsocks" would be a transport Xray doesn't know.
-	if in.Protocol == model.InbShadowsocks || in.Protocol == model.InbTurnVK {
-		return nil // WireGuard is plain UDP to Xray; the relay in front does the DTLS
+	if in.Protocol == model.InbShadowsocks || model.IsWireGuard(in.Protocol) {
+		return nil // WireGuard is plain UDP to Xray; a relay in front, if any, does the DTLS
 	}
 	o := in.Opts
 	st := &StreamSettings{Network: o.Transport}
@@ -1010,6 +1052,10 @@ func customShadowsocksClients(in model.Inbound, users []model.User) []Shadowsock
 // 1280: its DTLS and the TURN channel framing ride inside the path MTU as well.
 const WireGuardTURNMTU = 1280
 
+// WireGuardMTU is the tunnel MTU of a plain WireGuard inbound, on both ends: WireGuard's
+// own default, which fits a 1500-byte path over IPv6 with nothing wrapped around it.
+const WireGuardMTU = 1420
+
 // customWireGuardPeers builds a WireGuard inbound's peers from the users' tunnel
 // identities — the same key and address they have on AmneziaWG. A user without one is
 // left out: core claims identities for everyone allowed on the inbound before it
@@ -1163,7 +1209,7 @@ func UserInbounds(set *model.Settings, custom []model.Inbound, users []model.Use
 		case model.InbHysteria:
 			// Same as the built-in lane above: rebuilt, not live-updated.
 			continue
-		case model.InbTurnVK:
+		case model.InbTurnVK, model.InbWireGuard:
 			// The CLI refuses this inbound type as it does Hysteria2; its users go
 			// through Supervisor.SyncWireGuard (see WireGuardInbounds).
 			continue
@@ -1228,7 +1274,7 @@ func EnabledInboundTags(set *model.Settings, custom []model.Inbound) []string {
 		tags = append(tags, TagMTProto)
 	}
 	for _, c := range custom {
-		if c.Protocol == model.InbHysteria || c.Protocol == model.InbTurnVK {
+		if c.Protocol == model.InbHysteria || model.IsWireGuard(c.Protocol) {
 			continue // SyncHysteria's and SyncWireGuard's (see above)
 		}
 		tags = append(tags, c.Tag())
@@ -1408,7 +1454,7 @@ var privateEgressDomains = []string{
 	"full:instance-data.ec2.internal",
 }
 
-func compileRouting(rc model.RoutingConfig, order []string, warpActive, operaActive bool, active, unusable map[string]bool, relay []RouteRule, bridges []Bridge) *Routing {
+func compileRouting(rc model.RoutingConfig, order []string, warpActive, operaActive bool, active, unusable map[string]bool, relay []relayPlan, expand func([]string, bool) []string, bridges []Bridge) *Routing {
 	out := &Routing{DomainStrategy: "IPIfNonMatch"}
 	strict := rc.StrictEgress
 	byID := make(map[string]model.EgressLane, len(rc.Lanes))
@@ -1490,9 +1536,36 @@ func compileRouting(rc model.RoutingConfig, order []string, warpActive, operaAct
 	addDomainRule(out, "block", rc.BlockDomains)
 	addIPRule(out, "block", rc.BlockIPs)
 
-	// A relayed external server takes its connections whole, ahead of every egress
-	// lane: the user picked that server (see relay.go).
-	out.Rules = append(out.Rules, relay...)
+	// A relayed external server takes its connections, ahead of every egress lane: the
+	// user picked that server (see relay.go). Its own routing may send part of them to a
+	// way out of this server's, which is judged here like the server's own lanes.
+	out.Rules = append(out.Rules, relayRules(relay, func(target, partner string) (string, string) {
+		switch target {
+		case model.ExtToPartner:
+			return partner, ""
+		case "direct", "block":
+			return target, ""
+		case "warp":
+			switch {
+			case warpActive:
+				return "", warpBalancerTag
+			case strict && unusable["warp"]:
+				return "block", ""
+			}
+		case "opera":
+			if operaActive {
+				return "", operaBalancerTag
+			}
+		default:
+			switch {
+			case active[target]:
+				return "", laneBalancerTag(target)
+			case strictLane(target) && unusable[target]:
+				return "block", ""
+			}
+		}
+		return "direct", ""
+	}, expand)...)
 
 	// Egress lanes in the configured precedence (first-match-wins).
 	emitLane := func(lane string) {
@@ -1574,6 +1647,16 @@ func compileRouting(rc model.RoutingConfig, order []string, warpActive, operaAct
 		}
 	}
 	return out
+}
+
+// groupExpander replaces the iplist refs in a relay rule's entries: domains or IPs.
+func groupExpander(groups geo.GroupSet) func([]string, bool) []string {
+	return func(entries []string, domains bool) []string {
+		if domains {
+			return expandRefs(entries, groups, func(g geo.GroupRules) []string { return g.Domains })
+		}
+		return expandRefs(entries, groups, func(g geo.GroupRules) []string { return g.IPs })
+	}
 }
 
 // addBalancerRule appends domain + IP rules routing matched traffic to a

@@ -90,6 +90,11 @@ export interface Connection {
   approx_seconds: number
   // dropped at the firewall right now, by any ban
   banned: boolean
+  // the tunnel address of a WireGuard inbound: shows the account is on, but it is not a
+  // machine's address, so it is no device
+  tunnel?: boolean
+  // the WireGuard protocols this address can come from ("WG", "TURN-VK")
+  tunnel_via?: string[]
   // whether the caller may ban it: an admin, and an address a ban may touch
   can_ban?: boolean
 }
@@ -1189,6 +1194,13 @@ export interface Incident {
   // hide_in_sub takes the named servers out of subscriptions while maintenance is
   // under way.
   hide_in_sub: boolean
+  // When the users it hit were given time back (0: not yet), how much each got and
+  // how many got it.
+  compensated_at: number
+  compensated_seconds: number
+  compensated_users: number
+  // When the users it hits were recorded (those with a running term as it began).
+  snapshot_at: number
   updates: IncidentUpdate[]
 }
 
@@ -1238,6 +1250,12 @@ export const resolveIncident = (id: number, notify: boolean, note = '') =>
   api<IncidentSaved>(`api/incidents/${id}/resolve`, {
     method: 'POST',
     body: JSON.stringify({ note, notify, lang: currentLang() }),
+  })
+
+export const compensateIncident = (id: number, hours: number, notify: boolean) =>
+  api<{ incident: Incident }>(`api/incidents/${id}/compensate`, {
+    method: 'POST',
+    body: JSON.stringify({ hours, notify }),
   })
 
 export const addIncidentUpdate = (id: number, stage: IncidentStage, body: string, notify: boolean) =>
@@ -2277,15 +2295,21 @@ export interface BillingInfo {
   // on and off like one, with a pay-button label of its own ("" = the default).
   manual: boolean
   manual_label: string
+  // The manual method's picture (a QR code, the operator's requisites): whether one
+  // is uploaded, and the content hash its URL carries (see manualImageURL).
+  manual_image: boolean
+  manual_image_version: string
   // The wallet and the referral programme.
   wallet: boolean
   topup_min: number
+  topup_max: number
   ref_mode: RefMode
   ref_percent: number
   ref_days: number
   ref_first: boolean
   periods: PeriodOffer[] // discounts for buying several periods at once
   winback: WinbackSettings
+  churn_survey: boolean // ask a user whose paid term lapsed why it was not renewed
   traffic_packs: TrafficPack[]
   plan_change: boolean // users may switch plans while one is active
   plans: TariffPlan[]
@@ -2301,6 +2325,26 @@ export interface PeriodOffer {
 
 
 export const getBilling = () => api<BillingInfo>('api/billing')
+
+// The manual payment method's picture. Uploaded on its own rather than through the
+// page's SaveBar: a file input cannot carry a pending edit, and the server answers
+// with the new version, which the preview URL needs to fetch the replacement.
+export const manualImageURL = (version: string) =>
+  `api/billing/manual-image?v=${encodeURIComponent(version)}`
+
+export const uploadManualImage = (file: File) => {
+  const fd = new FormData()
+  fd.append('image', file)
+  return apiForm<{ manual_image: boolean; manual_image_version: string }>(
+    'api/billing/manual-image',
+    fd,
+  )
+}
+
+export const deleteManualImage = () =>
+  api<{ manual_image: boolean; manual_image_version: string }>('api/billing/manual-image', {
+    method: 'DELETE',
+  })
 
 // A payment provider's settings form is described by the server (internal/payments
 // registry), so adding a provider needs no frontend change — the form renders from
@@ -2351,12 +2395,14 @@ export const saveBilling = (b: {
   manual_label: string
   wallet: boolean
   topup_min: number
+  topup_max: number
   ref_mode: RefMode
   ref_percent: number
   ref_days: number
   ref_first: boolean
   periods: PeriodOffer[]
   winback: WinbackSettings
+  churn_survey: boolean
   traffic_packs: TrafficPack[]
   plan_change: boolean
 }) =>
@@ -2480,11 +2526,29 @@ export interface WinbackSettings {
   valid_days: number
 }
 
+export type ChurnReason = 'price' | 'quality' | 'not_needed' | 'competitor' | 'other'
+export const CHURN_REASONS: ChurnReason[] = ['price', 'quality', 'not_needed', 'competitor', 'other']
+export interface ChurnStats {
+  total: number
+  reasons: Partial<Record<ChurnReason, number>>
+  comments: {
+    user_id: number
+    user_name: string
+    reason: ChurnReason
+    comment: string
+    source: 'bot' | 'page'
+    created_at: number
+  }[]
+}
+
 // The users who joined in a period: how many took a trial, paid, and paid again —
 // and what the win-back codes did (all time).
 export interface PaymentFunnel {
   funnel: { joined: number; trial: number; paid: number; renewed: number }
   winback: { sent: number; used: number; revenue_rub: number }
+  // Why users whose paid term lapsed did not renew, over the same period: answers by
+  // reason, and the latest that came with words.
+  churn?: ChurnStats
   // The same split by where the users came from: a /start tag, "~ref" for an invite
   // link without one, "" for neither.
   by_source: {
@@ -2779,6 +2843,7 @@ export interface NodeView {
   warp_registered: boolean
   opera_enabled: boolean
   opera_country: string
+  // The server's WARP and Opera handed to users as connections of their own.
   traffic_coefficient: number
   // Placement in subscriptions (see PlacementFields) and the live online count.
   country: string
@@ -2857,6 +2922,53 @@ export const setReachConfig = (c: Omit<ReachConfig, 'has_token'>, token?: string
 export const getNodeReach = (id: number) => api<ReachReport>(`api/nodes/${id}/reach`)
 export const checkNodeReach = (id: number) =>
   api<ReachReport>(`api/nodes/${id}/reach`, { method: 'POST' })
+
+// Alert rules: a server value past a threshold for a set time tells the admins in
+// Telegram and by webhook (alert.fired / alert.resolved).
+export interface AlertMetric {
+  key: string
+  unit: string // "%", "Mbit/s" or "users"
+}
+
+export interface AlertRuleInput {
+  name: string
+  enabled: boolean
+  metric: string
+  op: 'gt' | 'lt'
+  threshold: number
+  for_secs: number
+  node_id: number // -1 = every server, 0 = the master
+}
+
+export interface AlertRule extends AlertRuleInput {
+  id: number
+  firing: number // alerts open right now
+}
+
+export interface AlertEvent {
+  id: number
+  rule_id: number
+  rule_name: string
+  node_id: number
+  node_name: string
+  metric: string
+  op: 'gt' | 'lt'
+  threshold: number
+  value: number
+  peak: number
+  fired_at: number
+  resolved_at: number // 0 = still firing
+}
+
+export const getAlerts = () => api<{ rules: AlertRule[]; metrics: AlertMetric[] }>('api/alerts')
+export const createAlert = (r: AlertRuleInput) =>
+  api<AlertRule>('api/alerts', { method: 'POST', body: JSON.stringify(r) })
+export const updateAlert = (id: number, r: AlertRuleInput) =>
+  api<AlertRule>(`api/alerts/${id}`, { method: 'PUT', body: JSON.stringify(r) })
+export const deleteAlert = (id: number) =>
+  api<{ ok: boolean }>(`api/alerts/${id}`, { method: 'DELETE' })
+export const getAlertEvents = (before = 0, limit = 50) =>
+  api<{ events: AlertEvent[] }>(`api/alerts/events?limit=${limit}${before ? `&before=${before}` : ''}`)
 
 // SystemProxy is one server's forward proxy: SOCKS5 and/or HTTP listeners for
 // traffic that is NOT a VPN client (a scraper, a bot, another panel chaining its
@@ -3412,6 +3524,21 @@ export const createInbound = (serverId: number, v: InboundInput) =>
     body: JSON.stringify(v),
   })
 
+// InboundCopyFailure is one inbound a copy skipped, with the server's coded reason.
+export interface InboundCopyFailure {
+  name: string
+  error: string
+  code?: string
+  args?: Record<string, unknown>
+}
+
+// copyInbounds recreates inbounds `ids` of server `from` on server `to`, applied once.
+export const copyInbounds = (to: number, from: number, ids: number[]) =>
+  api<{ created: Inbound[]; failed: InboundCopyFailure[] }>(
+    `api/servers/${to}/inbounds/copy`,
+    { method: 'POST', body: JSON.stringify({ from, ids }) },
+  )
+
 export const updateInbound = (id: number, v: InboundInput) =>
   api<Inbound>(`api/inbounds/${id}`, { method: 'POST', body: JSON.stringify(v) })
 
@@ -3516,10 +3643,33 @@ export interface ExtSubscription {
   last_error?: string
   server_count: number
   created_at: number
-  // The lane ("vless" | "reality") and server the servers are relayed through; an
-  // empty lane hands them out as they are.
-  relay_lane: string
-  relay_server_id: number
+  // The lanes of our servers the servers are relayed through: each one more entry per
+  // server a user gets. None hands them out as they are.
+  relays: ExtRelayVia[]
+  // How relayed traffic leaves the relay servers.
+  routing: ExtRouting
+}
+
+export interface ExtRelayVia {
+  server_id: number
+  lane: 'vless' | 'reality'
+}
+
+// ExtRouting: rules send what they match to a target ("partner" | "direct" | "block" |
+// "warp" | "opera" | a lane id), the rest goes to rest ("" = the partner), and the
+// partner is dialled through dial ("" directly, "warp", "opera" — TCP only — or a lane).
+export interface ExtRule {
+  domains: string[]
+  ips: string[]
+  target: string
+}
+export interface ExtRouting {
+  rules: ExtRule[]
+  rest?: string
+  dial?: string
+  // How a relayed entry is named: the name variables plus {name} and {proto}; empty is
+  // the provider's server name alone.
+  name?: string
 }
 
 // ExtIdentity is what the panel presents to a subscription that requires a device.
@@ -3543,7 +3693,10 @@ export const EMPTY_EXT_IDENTITY: ExtIdentity = {
 export interface ExtServer {
   id: number
   sub_id: number
+  // name is what users see: custom_name when the operator set one, else source_name.
   name: string
+  source_name: string
+  custom_name: string
   protocol: string
   host: string
   port: number
@@ -3589,16 +3742,30 @@ export const setExternalEnabled = (id: number, enabled: boolean) =>
 
 // Relays a subscription through a lane of one of our servers, or ("" lane) hands its
 // servers out as they are.
-export const setExternalRelay = (id: number, lane: string, serverId: number) =>
-  api<{ ok: boolean }>(`api/external/${id}/relay`, {
+// setExternalRelay saves the relays, and the routing with them when given: one call,
+// checked as a whole, so a refused routing leaves the relays as they were.
+export const setExternalRelay = (id: number, relays: ExtRelayVia[], routing?: ExtRouting) =>
+  api<{ subscription: ExtSubscription }>(`api/external/${id}/relay`, {
     method: 'POST',
-    body: JSON.stringify({ lane, server_id: serverId }),
+    body: JSON.stringify({ relays, routing }),
+  })
+
+export const setExternalRouting = (id: number, routing: ExtRouting) =>
+  api<{ subscription: ExtSubscription }>(`api/external/${id}/routing`, {
+    method: 'POST',
+    body: JSON.stringify(routing),
   })
 
 export const setExternalServersEnabled = (id: number, enabled: boolean) =>
   api<{ ok: boolean }>(`api/external/${id}/servers`, {
     method: 'POST',
     body: JSON.stringify({ enabled }),
+  })
+
+export const setExternalServerName = (id: number, name: string) =>
+  api<{ ok: boolean }>(`api/external/servers/${id}/name`, {
+    method: 'POST',
+    body: JSON.stringify({ name }),
   })
 
 export const setExternalServerEnabled = (id: number, enabled: boolean) =>

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/payments"
@@ -47,24 +48,36 @@ func (rt *Router) getBilling(w http.ResponseWriter, r *http.Request) {
 			planUsers[strconv.FormatInt(p.ID, 10)] = n
 		}
 	}
+	// The manual method's picture, named by its version: the SPA previews it through
+	// api/billing/manual-image?v=, so a replaced picture is fetched rather than cached.
+	// "" means none is uploaded.
+	manualImage, err := rt.mgr.ManualPayImageVersion()
+	if err != nil {
+		writeManagerErr(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled":       set.BillingEnabled,
-		"free_plan_id":  set.BillingFreePlanID,
-		"trial_plan_id": set.BillingTrialPlanID,
-		"manual":        set.BillingManualEnabled,
-		"manual_label":  set.BillingManualLabel,
-		"wallet":        set.WalletEnabled,
-		"topup_min":     set.WalletTopupMin,
-		"ref_mode":      set.RefMode,
-		"ref_percent":   set.RefPercent,
-		"ref_days":      set.RefDays,
-		"ref_first":     set.RefFirstOnly,
-		"periods":       periodOffersOrEmpty(set.BillingPeriods),
-		"winback":       set.Winback,
-		"traffic_packs": packsOrEmpty(set.TrafficPacks),
-		"plan_change":   set.PlanChange,
-		"plans":         toTariffPlanDTOs(plans),
-		"plan_users":    planUsers,
+		"enabled":              set.BillingEnabled,
+		"free_plan_id":         set.BillingFreePlanID,
+		"trial_plan_id":        set.BillingTrialPlanID,
+		"manual":               set.BillingManualEnabled,
+		"manual_label":         set.BillingManualLabel,
+		"manual_image":         manualImage != "",
+		"manual_image_version": manualImage,
+		"wallet":               set.WalletEnabled,
+		"topup_min":            set.WalletTopupMin,
+		"topup_max":            set.WalletTopupMax,
+		"ref_mode":             set.RefMode,
+		"ref_percent":          set.RefPercent,
+		"ref_days":             set.RefDays,
+		"ref_first":            set.RefFirstOnly,
+		"periods":              periodOffersOrEmpty(set.BillingPeriods),
+		"winback":              set.Winback,
+		"churn_survey":         set.ChurnSurvey,
+		"traffic_packs":        packsOrEmpty(set.TrafficPacks),
+		"plan_change":          set.PlanChange,
+		"plans":                toTariffPlanDTOs(plans),
+		"plan_users":           planUsers,
 	})
 }
 
@@ -78,13 +91,15 @@ func (rt *Router) saveBilling(w http.ResponseWriter, r *http.Request) {
 		ManualLabel string `json:"manual_label"`
 		Wallet      *bool  `json:"wallet"`
 		TopupMin    int    `json:"topup_min"`
+		TopupMax    int    `json:"topup_max"`
 		RefMode     string `json:"ref_mode"`
 		RefPercent  int    `json:"ref_percent"`
 		RefDays     int    `json:"ref_days"`
 		RefFirst    *bool  `json:"ref_first"`
 		// Periods replaces the multi-period discounts; left out (null) keeps them.
-		Periods *[]model.PeriodOffer   `json:"periods"`
-		Winback *model.WinbackSettings `json:"winback"` // left out keeps it
+		Periods     *[]model.PeriodOffer   `json:"periods"`
+		Winback     *model.WinbackSettings `json:"winback"`      // left out keeps it
+		ChurnSurvey *bool                  `json:"churn_survey"` // left out keeps it
 		// TrafficPacks replaces the packs on sale; PlanChange lets users switch plans.
 		// Left out keeps them.
 		TrafficPacks *[]model.TrafficPack `json:"traffic_packs"`
@@ -112,6 +127,9 @@ func (rt *Router) saveBilling(w http.ResponseWriter, r *http.Request) {
 	if req.TopupMin != 0 {
 		set.WalletTopupMin = req.TopupMin
 	}
+	if req.TopupMax != 0 {
+		set.WalletTopupMax = req.TopupMax
+	}
 	if req.RefMode != "" {
 		set.RefMode = req.RefMode
 	}
@@ -129,6 +147,9 @@ func (rt *Router) saveBilling(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Winback != nil {
 		set.Winback = *req.Winback
+	}
+	if req.ChurnSurvey != nil {
+		set.ChurnSurvey = *req.ChurnSurvey
 	}
 	if req.TrafficPacks != nil {
 		set.TrafficPacks = *req.TrafficPacks
@@ -362,4 +383,79 @@ func packsOrEmpty(p []model.TrafficPack) []model.TrafficPack {
 		return []model.TrafficPack{}
 	}
 	return p
+}
+
+// manualImageState is what the image endpoints answer with: whether one is stored
+// and the version its URL carries.
+func (rt *Router) manualImageState(w http.ResponseWriter) {
+	version, err := rt.mgr.ManualPayImageVersion()
+	if err != nil {
+		writeManagerErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"manual_image":         version != "",
+		"manual_image_version": version,
+	})
+}
+
+// getManualPayImage serves the manual method's picture for the panel's own preview.
+// The subscription page and the bots do not come through here: the page serves the
+// same bytes under the user's own token (see the "payimg" leaf), and the bot uploads
+// them to Telegram.
+func (rt *Router) getManualPayImage(w http.ResponseWriter, r *http.Request) {
+	b, err := rt.mgr.ManualPayImage()
+	if err != nil {
+		writeManagerErr(w, err)
+		return
+	}
+	if len(b) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", payments.ManualPayImageContentType(b))
+	h.Set("X-Content-Type-Options", "nosniff")
+	// The URL carries the version, so a new upload is a new URL; the short max-age is
+	// for the page reloaded right after a delete.
+	h.Set("Cache-Control", "private, max-age=300")
+	_, _ = w.Write(b)
+}
+
+// uploadManualPayImage stores the operator's picture for manual payment.
+func (rt *Router) uploadManualPayImage(w http.ResponseWriter, r *http.Request) {
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(2 * time.Minute))
+	r.Body = http.MaxBytesReader(w, r.Body, payments.MaxManualImageBytes+4096)
+	if err := r.ParseMultipartForm(payments.MaxManualImageBytes); err != nil {
+		writeErrCode(w, http.StatusBadRequest, "err.uploadParseFailedBig",
+			"не удалось разобрать загрузку (возможно, файл слишком большой)")
+		return
+	}
+	f, _, err := r.FormFile("image")
+	if err != nil {
+		writeErrCode(w, http.StatusBadRequest, "err.uploadParseFailed", "не удалось разобрать загрузку")
+		return
+	}
+	defer f.Close()
+	// Reading through the limit is what turns "the file is too big" into the coded
+	// error the panel translates, instead of a bare multipart failure.
+	b, err := payments.ReadManualPayImage(f)
+	if err != nil {
+		writeManagerErr(w, err)
+		return
+	}
+	if _, err := rt.mgr.SetManualPayImage(b); err != nil {
+		writeManagerErr(w, err)
+		return
+	}
+	rt.manualImageState(w)
+}
+
+// deleteManualPayImage removes the picture, reverting to text-only instructions.
+func (rt *Router) deleteManualPayImage(w http.ResponseWriter, _ *http.Request) {
+	if err := rt.mgr.DeleteManualPayImage(); err != nil {
+		writeManagerErr(w, err)
+		return
+	}
+	rt.manualImageState(w)
 }

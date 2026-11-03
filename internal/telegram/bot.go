@@ -71,6 +71,9 @@ type Panel interface {
 	PaymentMethods() []string
 	ManualPayment() bool
 	ManualPaymentLabel(lang i18n.Lang) string
+	// ManualPayImage is the operator's picture for manual payment — a QR code, their
+	// requisites — sent with the instructions as a photo. Nil when none is uploaded.
+	ManualPayImage() ([]byte, error)
 
 	// SetChatMailing is the mailing switch: the chat, and the account holding it.
 	SetChatMailing(ctx context.Context, chatID int64, on bool) error
@@ -105,6 +108,9 @@ type Panel interface {
 	AttachReferrer(ctx context.Context, userID, chatID int64)
 	SetUserNotifier(fn func(chatID int64, html string))
 	SetUserMessenger(fn func(chatID int64, html string, buttons []model.BroadcastButton) error)
+	// The churn survey: the question is sent by the bot, the answer goes back.
+	SetUserSurveyor(fn func(chatID int64))
+	AnswerChurn(ctx context.Context, userID int64, reason, comment, source string) error
 	SetAdminNotifier(fn func(html string))
 	SetAdminModerationNotifier(fn func(reqID int64, who, details string))
 	// A sign-in from a new address, and the button under it: end every session of

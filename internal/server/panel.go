@@ -122,7 +122,7 @@ func makeUserView(u model.User, set *model.Settings, userBotUsername string, cus
 		if !access.AllowsInbound(in.ID) {
 			continue
 		}
-		if in.Protocol == model.InbTurnVK {
+		if model.IsWireGuard(in.Protocol) {
 			// No share-link form either: the config file, as for AmneziaWG below.
 			v.Links = append(v.Links, namedLink{link.CustomLabelFor(in, u, set), sub.TurnConfURL(set, u.SubToken, in.ID)})
 			continue
@@ -268,7 +268,7 @@ func (rt *Router) subServers(local *model.Settings, userID int64, clientIP strin
 		// A relayed one rides the server it is relayed through, if that one is here.
 		for i := range ordered {
 			for _, e := range ext {
-				if e.RelayLane != "" && e.RelayServerID == ordered[i].Set.ServerID {
+				if len(model.RelayLanesOn(e.RelayVias(), ordered[i].Set.ServerID)) > 0 {
 					ordered[i].Relays = append(ordered[i].Relays, e)
 				}
 			}
@@ -486,6 +486,8 @@ func (rt *Router) panelMux() http.Handler {
 	canSettingsManage("POST /api/incidents", rt.createIncident)
 	canSettingsManage("POST /api/incidents/{id}", withID(rt.updateIncident))
 	canSettingsManage("POST /api/incidents/{id}/resolve", withID(rt.resolveIncident))
+	// Compensating moves users' terms: it is the users' permission, not the page's.
+	canUsersManage("POST /api/incidents/{id}/compensate", withID(rt.compensateIncident))
 	canSettingsManage("DELETE /api/incidents/{id}", withID(rt.deleteIncident))
 	canSettingsManage("POST /api/incidents/{id}/updates", withID(rt.addIncidentUpdate))
 	canSettingsManage("DELETE /api/incidents/updates/{id}", withID(rt.deleteIncidentUpdate))
@@ -499,8 +501,10 @@ func (rt *Router) panelMux() http.Handler {
 	canServersManage("POST /api/external/{id}/sync", withID(rt.syncExternal))
 	canServersManage("POST /api/external/{id}/enabled", withID(rt.setExternalEnabled))
 	canServersManage("POST /api/external/{id}/relay", withID(rt.setExternalRelay))
+	canServersManage("POST /api/external/{id}/routing", withID(rt.setExternalRouting))
 	canServersManage("POST /api/external/{id}/servers", withID(rt.setExternalServersEnabled))
 	canServersManage("POST /api/external/servers/{id}/enabled", withID(rt.setExternalServerEnabled))
+	canServersManage("POST /api/external/servers/{id}/name", withID(rt.setExternalServerName))
 	canSecurityView("GET /api/settings/abuse", rt.getAbuseSettings)
 	canSecurityManage("POST /api/settings/abuse", rt.saveAbuseSettings)
 	canSecurityManage("POST /api/settings/abuse/refresh", rt.refreshAbuse)
@@ -606,6 +610,11 @@ func (rt *Router) panelMux() http.Handler {
 	// (POST below) and the payment provider keys need permissions of their own.
 	canPlansView("GET /api/billing", rt.getBilling)
 	canBillingManage("POST /api/billing", rt.saveBilling)
+	// The manual payment method's picture: upload, replace, remove. Viewing it is the
+	// same permission as viewing the billing settings, since it is one of them.
+	canPlansView("GET /api/billing/manual-image", rt.getManualPayImage)
+	canBillingManage("POST /api/billing/manual-image", rt.uploadManualPayImage)
+	canBillingManage("DELETE /api/billing/manual-image", rt.deleteManualPayImage)
 	canBillingManage("POST /api/billing/plans", rt.saveTariffPlan)
 	canBillingManage("DELETE /api/billing/plans/{id}", withID(rt.deleteTariffPlan))
 	canBillingManage("POST /api/billing/plans/{id}/migrate", withID(rt.migratePlanUsers))
@@ -663,6 +672,7 @@ func (rt *Router) panelMux() http.Handler {
 	canServersView("GET /api/inbounds/catalog", rt.inboundCatalog)
 	canServersView("GET /api/servers/{id}/inbounds", withID(rt.serverInbounds))
 	canServersManage("POST /api/servers/{id}/inbounds", withID(rt.createServerInbound))
+	canServersManage("POST /api/servers/{id}/inbounds/copy", withID(rt.copyServerInbounds))
 	canServersManage("POST /api/inbounds/{id}", withID(rt.updateInbound))
 	canServersManage("DELETE /api/inbounds/{id}", withID(rt.deleteInbound))
 	canServersManage("POST /api/inbounds/{id}/regen-reality", withID(rt.regenInboundReality))
@@ -678,6 +688,11 @@ func (rt *Router) panelMux() http.Handler {
 	canServersView("POST /api/nodes/{id}/reach", withID(rt.checkNodeReach))
 	canServersView("GET /api/reach", rt.getReach)
 	canServersManage("POST /api/reach", rt.setReach)
+	canServersView("GET /api/alerts", rt.getAlerts)
+	canServersView("GET /api/alerts/events", rt.alertEvents)
+	canServersManage("POST /api/alerts", rt.createAlert)
+	canServersManage("PUT /api/alerts/{id}", withID(rt.updateAlert))
+	canServersManage("DELETE /api/alerts/{id}", withID(rt.deleteAlert))
 	canServersManage("DELETE /api/nodes/{id}", withID(rt.deleteNode))
 	canServersManage("POST /api/nodes/{id}/enabled", withID(rt.setNodeEnabled))
 	canServersManage("POST /api/nodes/{id}/regen-join", withID(rt.regenNodeJoin))

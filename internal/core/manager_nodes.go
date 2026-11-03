@@ -47,6 +47,19 @@ func (m *Manager) CreateNode(name, host string) (*model.Node, error) {
 	}
 	if err == nil {
 		m.claimNodeMTProtoDomain(n)
+		// A node with a domain names itself on its REALITY lane; one with an address
+		// follows the panel's donor — and so does one whose lane shares its TCP-TLS
+		// port, where its own name is the decoy's (see realityDestAfterRename).
+		shared := false
+		if set, serr := m.store.GetSettings(); serr == nil {
+			shared = nodeSettings(set, n).RealityShared()
+		}
+		if d := hostDomain(host); d != "" && !shared {
+			if err := m.store.SetNodeRealityDest(n.ID, d); err != nil {
+				return nil, err
+			}
+			n.RealityDest = d
+		}
 	}
 	return n, err
 }
@@ -95,11 +108,30 @@ func (m *Manager) UpdateNode(id int64, e store.NodeEdit) error {
 	if err := m.nodeEditKeepsBridges(id, e); err != nil {
 		return err
 	}
+	prev, err := m.store.GetNode(id)
+	if err != nil {
+		return err
+	}
 	if err := m.store.UpdateNode(id, e); err != nil {
 		if errors.Is(err, store.ErrNodeNameTaken) {
 			return invalidCode("err.nodeNameTaken", "нода с таким названием уже есть — имя должно быть уникальным")
 		}
 		return err
+	}
+	// Its REALITY lane follows its own name; an empty list goes back to the panel's donor.
+	// A node serving REALITY on the TCP-TLS lane's port keeps its donor list instead:
+	// its own name is the decoy's there.
+	if prev != nil {
+		shared := false
+		if masterSet, err := m.store.GetSettings(); err == nil {
+			shared = nodeSettings(masterSet, prev).RealityShared()
+		}
+		dest := realityDestAfterRename(prev.RealityDest, hostDomain(prev.Host), hostDomain(e.Host), false, shared, func() string { return "" })
+		if dest != prev.RealityDest {
+			if err := m.store.SetNodeRealityDest(id, dest); err != nil {
+				return err
+			}
+		}
 	}
 	// Re-resolve this node's own lane proxies now (mirrors the master's
 	// setProxies-on-save) so a lane edit applies on the node's next pull.
@@ -169,6 +201,16 @@ func (m *Manager) SetNodeReality(id int64, dest string, regen bool) error {
 		}
 		dest = norm
 	}
+	// The node's lane masks as a donor when its port is shared with its TLS lane: its
+	// own name there is the decoy's, so the save would leave it with a config that
+	// cannot come up.
+	if set, serr := m.store.GetSettings(); serr == nil {
+		probe := *n
+		probe.RealityDest = dest
+		if c := nodeSettings(set, &probe).RealityShareConflict(); c != "" {
+			return realityOwnNameErr(c)
+		}
+	}
 	if err := m.store.SetNodeRealityDest(id, dest); err != nil {
 		return err
 	}
@@ -206,8 +248,18 @@ func (m *Manager) SetMasterReality(dest string, regen bool) error {
 	if err != nil {
 		return err
 	}
+	// On the shared port the server's own name is the decoy's: the lane masks as a donor
+	// there, and a config that asked otherwise would never come up (see xray.Generate).
+	eff := *set
+	eff.RealityDest = norm
+	if c := eff.RealityShareConflict(); c != "" {
+		return realityOwnNameErr(c)
+	}
 	if set.RealityEnabled && norm != set.RealityDest {
 		for _, d := range strings.Split(norm, ",") {
+			if strings.EqualFold(d, set.OwnName()) {
+				continue // the server's own :443, served by this process
+			}
 			if err := validateRealityDestLive(d); err != nil {
 				return err
 			}
@@ -363,6 +415,17 @@ func (m *Manager) ApplyNodeConnections(id int64, u ConnectionsUpdate) error {
 	masterSet, err := m.store.GetSettings()
 	if err != nil {
 		return err
+	}
+	// A REALITY lane on this server's TCP-TLS port masks as a donor too: the server's
+	// own name on that port is the decoy's, so it cannot be in the SNI list. The probe
+	// carries the node as the save leaves it — an empty donor clears the node's own and
+	// follows the panel's — or the save that resolves the conflict would be refused by
+	// it, and an operator who moved the panel onto the shared port could not get the
+	// node back in line.
+	probe := *n
+	probe.RealityDest = realityDest
+	if c := withConnPorts(*nodeSettings(masterSet, &probe), u, awgPort).RealityShareConflict(); c != "" {
+		return realityOwnNameErr(c)
 	}
 	curMieruPort, curMieruTransport := 0, model.MieruTCP
 	if n.Connections != nil {

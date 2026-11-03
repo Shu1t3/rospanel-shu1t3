@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -10,11 +11,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/actor"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/core"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/i18n"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/payments"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/sub"
 )
@@ -33,7 +36,7 @@ type UserService struct {
 	pluginChats map[int64]bool // chats with a plugin's answer being worked out (offLoop)
 	offset      int64
 	lastPollErr string
-	pending     map[int64]string // chatID → "reg" (awaiting display name), "promo", "topup"
+	pending     map[int64]string // chatID → "reg" (awaiting display name), "promo", "topup", "churn"
 
 	// The bot's own @username (for invite links), and when and for which token it
 	// was looked up.
@@ -155,6 +158,11 @@ func (s *UserService) Run(ctx context.Context) {
 				log.Printf("telegram: user notify to %d failed: %v", chatID, err)
 			}
 		})
+	})
+	s.panel.SetUserSurveyor(func(chatID int64) {
+		sendCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		s.askChurn(sendCtx, chatID)
 	})
 	s.panel.SetUserMessenger(func(chatID int64, html string, buttons []model.BroadcastButton) error {
 		set, err := s.store.GetSettings()
@@ -334,6 +342,8 @@ func (s *UserService) handleMessage(ctx context.Context, client *Client, m *Mess
 			s.doPromo(ctx, client, chatID, set, u, text)
 		case "topup":
 			s.doTopupAmount(ctx, client, chatID, set, u, text)
+		case "churn":
+			s.doChurnComment(ctx, client, chatID, u, text)
 		default:
 			s.sendUserMenu(ctx, client, chatID, set, u)
 		}
@@ -1014,6 +1024,9 @@ func (s *UserService) handleUserCallback(ctx context.Context, client *Client, cb
 			s.linkByCode(ctx, client, set, chatID, code, true)
 			return
 		}
+		if s.handleChurnCallback(ctx, client, chatID, msgID, u, cb.Data) {
+			return
+		}
 		if s.handleWalletCallback(ctx, client, chatID, msgID, set, u, cb.Data) {
 			return
 		}
@@ -1325,6 +1338,10 @@ func (s *UserService) startProviderPayment(ctx context.Context, client *Client, 
 		})
 }
 
+// maxPhotoCaption is Telegram's limit for a photo's caption; a longer instruction
+// text cannot ride a picture.
+const maxPhotoCaption = 1024
+
 func (s *UserService) manualPayment(ctx context.Context, client *Client, chatID, msgID int64, u model.User, planID int64, periods int) {
 	lang := s.lang(chatID)
 	_, msg, err := s.panel.RequestPlanPayment(ctx, lang, u.ID, planID, periods)
@@ -1336,11 +1353,23 @@ func (s *UserService) manualPayment(ctx context.Context, client *Client, chatID,
 			})
 		return
 	}
-	s.edit(ctx, client, chatID, msgID, esc(msg),
-		[][]InlineButton{
-			{{Text: i18n.T(lang, "user.btnToPlans"), CallbackData: "vu:plans"}},
-			{{Text: i18n.T(lang, "user.btnMenu"), CallbackData: "vu:menu"}},
-		})
+	rows := [][]InlineButton{
+		{{Text: i18n.T(lang, "user.btnToPlans"), CallbackData: "vu:plans"}},
+		{{Text: i18n.T(lang, "user.btnMenu"), CallbackData: "vu:menu"}},
+	}
+	// The operator's own picture goes with the instructions, as a photo: a QR code is
+	// what a payer scans, and a requisites screenshot saves retyping an account
+	// number. Editing the screen into text is the fallback — no picture, or an
+	// instruction longer than a caption may be.
+	if img, ierr := s.panel.ManualPayImage(); ierr == nil && len(img) > 0 {
+		caption := esc(msg)
+		if utf8.RuneCountInString(caption) <= maxPhotoCaption {
+			if _, perr := client.UploadPhoto(ctx, chatID, payments.ManualPayImageFilename(img), caption, rows, bytes.NewReader(img)); perr == nil {
+				return
+			}
+		}
+	}
+	s.edit(ctx, client, chatID, msgID, esc(msg), rows)
 }
 
 // UserDeepLink builds a t.me link that binds an existing panel user via a

@@ -313,11 +313,12 @@ client will display.
 | `GET` | `/v1/users/{id}/referrals` | The users this user invited, with what they paid. |
 | `GET` | `/v1/billing/promos/{id}/uses` | Who used a promo code, and the money its orders brought. |
 | `GET` | `/v1/billing/referrals` | Referral totals and the top inviters. |
-| `GET` | `/v1/billing/funnel?days=30` | Of the users who joined in the last N days (0 = all time): how many took a trial, paid, paid again; plus what win-back codes did. |
+| `GET` | `/v1/billing/funnel?days=30` | Of the users who joined in the last N days (0 = all time): how many took a trial, paid, paid again; plus what win-back codes did and why lapsed users did not renew (`churn`). |
 | `POST` | `/v1/billing/orders/{id}/refund` | Return a paid plan order's price to the balance (once). |
 | `POST` | `/v1/users/{id}/balance` | Correct a user's balance. |
 | `POST` | `/v1/users/{id}/autorenew` | Turn renewal from the balance on or off (`{"on": true}`). |
 | `POST` | `/v1/users/{id}/promo` | Enter a promo code for the user (`{"code": "SPRING"}`). |
+| `POST` | `/v1/users/{id}/churn` | The user's answer to the exit survey (`{"reason": "price", "comment": "..."}`). |
 | `GET` | `/v1/users/{id}/quotes` | What the user can buy now, priced with their discount code and balance, per term. |
 | `GET` | `/v1/users/{id}/subscription?lang=ru` | The subscription page as data, to draw it yourself. |
 | `POST` | `/v1/users/{id}/telegram` | Link the user's Telegram ID (`{"chat_id": 123}`; 0 unlinks). |
@@ -355,6 +356,7 @@ update: "no free plan" is a real state and must be distinguishable from "unspeci
 ```json
 { "enabled": true, "free_plan_id": 1, "trial_plan_id": 2, "payment_note": "card 1234",
   "manual": true, "manual_label": "", "wallet": true, "topup_min": 100,
+  "topup_max": 15000,
   "ref_mode": "percent", "ref_percent": 10, "ref_days": 7, "ref_first": false }
 ```
 
@@ -364,11 +366,12 @@ beside the providers, `manual_label` is its pay-button label (empty = the defaul
 wording), and `payment_note` is the text a user paying by hand is shown.
 
 `wallet` lets users keep a balance (top-ups, paying for plans from it, renewal from it);
-`topup_min` is the smallest top-up in roubles. `ref_mode` is what a referrer earns when
+`topup_min` and `topup_max` are the smallest and largest top-up in roubles (`topup_max` is
+15000 by default, at most 1000000). `ref_mode` is what a referrer earns when
 someone they invited pays money: `off`, `percent` (`ref_percent` % of the payment, top-ups
 included, onto the referrer's balance — needs `wallet`) or `days` (`ref_days` days onto their
 plan, for a plan bought with money); `ref_first` pays only for the first such payment. Left
-out, `wallet`, `topup_min`, `ref_mode`, `ref_percent`, `ref_days` and `ref_first` keep their
+out, `wallet`, `topup_min`, `topup_max`, `ref_mode`, `ref_percent`, `ref_days` and `ref_first` keep their
 stored values.
 
 **Orders and the balance** — an order's `amount_rub` is always the money to be paid in.
@@ -407,6 +410,15 @@ leaves revenue, takes back what it bought, and can no longer be refunded to the 
 the billing settings: that many days after a paid term lapses, the user gets a one-use code for
 that discount, attached to their next payment and sent in the bot.
 
+**Churn survey** — `"churn_survey": true` in the billing settings: a day after a paid term
+lapses the user bot asks why it was not renewed, and the subscription page asks the same while
+it stays lapsed. Reasons: `price`, `quality`, `not_needed`, `competitor`, `other` (with a
+comment). One answer per lapse. A cabinet of your own asks it too: `GET /v1/users/{id}/subscription`
+carries `churn` while there is something to ask, and `POST /v1/users/{id}/churn` takes the answer
+(`source` `api`; a later answer replaces the reason). `GET /v1/billing/funnel` carries them under `churn`:
+`{"total": 12, "reasons": {"price": 5, ...}, "comments": [{"user_id": 7, "user_name": "...",
+"reason": "other", "comment": "...", "source": "bot", "created_at": ...}]}`.
+
 **Balance** — `POST /v1/users/{id}/balance` takes `{ "amount_kop": 10000, "note": "..." }`
 (either sign; the balance cannot go below zero) and answers `{ "balance_kop": ... }`.
 `GET /v1/users/{id}/wallet` answers `{ "wallet": {...}, "history": [...], "ref_link": "..." }` —
@@ -435,7 +447,7 @@ that signs people in by their subscription link finds them with `?sub_token=`.
 `GET /v1/users/{id}/subscription` has everything the subscription page shows — status,
 `blocks` (what plugins add to the page: `{type: text|markdown|notice|button, text, label, url}`),
 traffic, term, `sub_url`, one-tap imports per app (`apps`), every config (`links`), the Clash
-download (`clash_url`), the Telegram proxy per server (`telegram`: `{name, link, web_link, qr_url}` —
+download (`clash_url`), the plain WireGuard configs (`wg`: `{name, conf_url, qr_url}`, as `awg`), the Telegram proxy per server (`telegram`: `{name, link, web_link, qr_url}` —
 `link` is the `tg://proxy` that adds it in one tap), devices, the payment block (`billing`), the operator's colours
 (`brand`), `terms_url` / `privacy_url` (the operator's documents, while they have text — `GET /v1/legal`
 has the text itself) and `tg_link` — the user bot's link that binds the account to the Telegram it is
@@ -445,7 +457,9 @@ endpoints above. It keeps the subscription settings the page keeps: `links` is e
 the page would list no configs (`show_configs` off, or a required HWID — a raw link would
 bypass the device cap), `clash_url` is absent while the page's Clash button is off or under a
 required HWID, the Happ button is the encrypted link when that is on, and `maintenance` is the
-panel's maintenance mode.
+panel's maintenance mode. `churn` is the exit survey to ask — `{question, reasons: [{key, label}]}`,
+worded in `?lang` — present only while the user's paid term has lapsed and they have not
+answered; send the chosen `key` to `POST /v1/users/{id}/churn`.
 
 **Legal documents** — `GET /v1/legal` (any key) returns the operator's user agreement and privacy
 policy, written in *Settings → Branding → Documents*: `{"terms": {...}, "privacy": {...}}`, each
@@ -525,6 +539,12 @@ enabled node automatically, and each server can be edited independently.
 | `POST` | `/v1/nodes/{id}/reach` | Check a server from other countries now (takes up to a minute). |
 | `GET` | `/v1/reach` | Countries, probes per country, monitor interval and threshold of that check. |
 | `POST` | `/v1/reach` | Set them; `token` (Globalping) omitted keeps the stored one, `""` clears it. |
+| `GET` | `/v1/alerts` | Alert rules; `firing` counts the alerts open now. |
+| `GET` | `/v1/alerts/metrics` | Metrics a rule can watch, with units. |
+| `GET` | `/v1/alerts/events` | Firing history, newest first (`limit`, `before` = id to continue below); `resolved_at` 0 = still firing. |
+| `POST` | `/v1/alerts` | Add a rule: `name`, `metric`, `op` (`gt` / `lt`), `threshold`, `for_secs` (how long the condition holds before it fires), `node_id` (-1 every server, 0 the master), `enabled`. |
+| `POST` | `/v1/alerts/{id}` | Replace a rule's settings. |
+| `DELETE` | `/v1/alerts/{id}` | Delete a rule; its history stays. |
 | `GET` | `/v1/nodes/{id}/logs` | A node's recent log lines. |
 
 **Register a node** — body `{ "name": "NL #1", "host": "nl1.example.com" }`. The
@@ -580,7 +600,7 @@ target machine** (`xray -test` + a port-bind probe) before it's saved.
 | `DELETE` | `/v1/inbounds/{id}` | Delete a custom inbound. |
 
 **Create / update** — the body mirrors the panel's inbound editor: `name`, `protocol`
-(`vless` / `trojan` / `hysteria2` / `shadowsocks` / `turn-vk`), `transport` (`tcp` / `ws` / `xhttp` /
+(`vless` / `trojan` / `hysteria2` / `shadowsocks` / `turn-vk` / `wg`), `transport` (`tcp` / `ws` / `xhttp` /
 `grpc` / `httpupgrade`), `port`, `security` (`none` / `tls` / `reality`) with the matching
 keys (REALITY dest & keys, fingerprint, path/host, Hysteria2 hop range), plus optional
 advanced blocks (XHTTP `extra`, TCP HTTP masquerade, `sockopt`, extra TLS keys). The
@@ -595,6 +615,11 @@ and the Free Turn Proxy masking key (never returned) are generated. It is in no
 subscription format — users import it into an app from the subscription page
 (`vkturnproxy://`, `freeturn://`, `wingsv://`) or download `<sub>/wg/<inbound id>.conf` from the
 subscription page.
+`wg` is plain WireGuard: Xray's own WireGuard inbound on the public UDP `port`, reached directly by
+any stock WireGuard client. The server key is generated (`wg_public_key` in the response); transport
+and security are fixed, and `turn_link` does not apply. Users are peers by the tunnel identity they
+have for AmneziaWG. It is in no subscription format either — users download `<sub>/wg/<inbound id>.conf`
+(or `.png`, the same text as a QR) from the subscription page.
 `enc_mode` turns on VLESS Encryption on a `vless` inbound — `native`, `xorpub` or `random` (how
 the handshake looks on the wire), empty for off; the keys are generated (`encryption`, the
 clients' half, is in the response). With it `tcp` may go with `security: none`.
@@ -1034,6 +1059,7 @@ POST   $BASE/v1/incidents                {"kind": "maintenance", "title": "Works
 POST   $BASE/v1/incidents/{id}           same body: rewrite it (whether it is resolved is kept)
 POST   $BASE/v1/incidents/{id}/updates   {"stage": "identified", "body": "Found it", "notify": true}
 POST   $BASE/v1/incidents/{id}/resolve   {"note": "Fixed", "notify": true}       (body optional)
+POST   $BASE/v1/incidents/{id}/compensate {"hours": 3, "notify": true}         (users.manage)
 DELETE $BASE/v1/incidents/updates/{id}
 DELETE $BASE/v1/incidents/{id}
 ```
@@ -1049,6 +1075,15 @@ default); the `note` given with a resolve closes the course as a `resolved` step
 needs the broadcasts permission; when it could not go out the incident is saved anyway
 and `notify_error` says why. Maintenance that has not begun cannot be resolved — move
 it or delete it.
+
+`compensate` gives time back for a finished entry, once: `hours` (1–2160) are added to
+the subscription of every enabled user whose term was running when it began and who may
+use a server it names. Who had a running term is recorded as the entry begins (when it is
+posted, or when a maintenance window opens; `snapshot_at`), so a user who renewed later
+gets nothing. A term that ran out since gets the hours from now; terms with no end are left
+alone. The incident then carries `compensated_at`, `compensated_seconds` and
+`compensated_users`; `notify` tells each of those users through the user bot and needs the
+broadcasts permission.
 
 `/v1/metrics` is a scrape target for Prometheus, authenticated with the same API key:
 
@@ -1215,6 +1250,7 @@ body is never read).
 | `user.referred` | a user signed up by someone's invite; `data.referrer_id` |
 | `referral.reward` | an invited user's payment earned the inviter (the user in `data`) a reward; `data.reward_kop`, `data.reward_days`, `data.banked`, `data.referred_user_id`, `data.order_id` |
 | `promo.winback` | a lapsed user got a personal discount code; `data.code`, `data.percent`, `data.expires_at`, `data.attached` (already on their next payment) |
+| `user.churn_answer` | a lapsed user said why they did not renew; `data.reason`, `data.comment` (when written), `data.source` (`bot`, `page` or `api`) |
 | `promo.redeemed` | a code the user entered took effect: `data.code`, `data.kind` (`balance`, `days`, `percent`, `amount`), `data.value`, `data.plan` (days), `data.balance_kop` |
 | `payment.created` | a payment order is opened |
 | `payment.paid` | an order is paid and the plan applied; `data.renewal` for an automatic renewal from the balance, `data.undelivered` when the plan could not be applied and the money went to the balance (`kind` is then `topup`) |
@@ -1227,6 +1263,8 @@ body is never read).
 | `node.up` | the server is back; `data.down_seconds` |
 | `xray.down` | Xray stopped on a server (`data.node_id` 0 is the master); `data.reason` on the master |
 | `xray.up` | Xray is back; `data.down_seconds` |
+| `alert.fired` | an alert rule fired on a server; `data.node_id`, `name`, `host`, `rule_id`, `rule_name`, `metric`, `op`, `threshold`, `value`, `fired_at` |
+| `alert.resolved` | it cleared; the same fields plus `peak`, `resolved_at`, `duration_seconds` |
 | `incident.created` | an incident or maintenance window was posted; `data` is the incident (`id`, `kind`, `title`, `body`, `node_ids`, `servers` — the named servers' names, comma-separated, `""` for the whole service — `starts_at`, `ends_at`, `resolved_at`, `phase`, `updates`, `status_url`) |
 | `incident.updated` | it was edited, a step of its course was posted (`data.update`: `stage`, `body`, `created_at`) or one was taken back (no `data.update`; `data.updates` is the course as it now is) |
 | `incident.resolved` | it was resolved, or maintenance was marked finished; a window that simply closes at `ends_at` sends nothing |

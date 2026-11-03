@@ -656,6 +656,8 @@ const (
 	WebhookUserReferred    = "user.referred"
 	WebhookReferralReward  = "referral.reward"
 	WebhookPromoWinback    = "promo.winback"
+	// A lapsed user answered why they did not renew (data.reason, data.comment).
+	WebhookUserChurnAnswer = "user.churn_answer"
 	// A code the user entered took effect (data.kind: balance | days | percent | amount).
 	WebhookPromoRedeemed = "promo.redeemed"
 	// The term and the quota moved without a plan: the operator set limits or extended
@@ -700,6 +702,9 @@ const (
 	WebhookIncidentUpdated  = "incident.updated"
 	WebhookIncidentResolved = "incident.resolved"
 	WebhookIncidentDeleted  = "incident.deleted"
+	// An alert rule started (alert.fired) or cleared (alert.resolved) on a server.
+	WebhookAlertFired    = "alert.fired"
+	WebhookAlertResolved = "alert.resolved"
 )
 
 // WebhookEventCatalog is the stable key list the settings UI iterates over (display
@@ -731,6 +736,7 @@ var WebhookEventCatalog = []string{
 	WebhookUserReferred,
 	WebhookReferralReward,
 	WebhookPromoWinback,
+	WebhookUserChurnAnswer,
 	WebhookPromoRedeemed,
 	WebhookUserLimitsChanged,
 	WebhookUserTermStarted,
@@ -753,6 +759,8 @@ var WebhookEventCatalog = []string{
 	WebhookIncidentUpdated,
 	WebhookIncidentResolved,
 	WebhookIncidentDeleted,
+	WebhookAlertFired,
+	WebhookAlertResolved,
 }
 
 // ValidWebhookEvent reports whether k is a known webhook event key.
@@ -870,6 +878,13 @@ type Connection struct {
 	ApproxSeconds int64 `json:"approx_seconds"`
 	// Banned is whether the address is dropped at the firewall right now, by any ban.
 	Banned bool `json:"banned"`
+	// Tunnel marks the tunnel address of a WireGuard inbound: where the user's traffic
+	// came through, not a machine's address, so it is no device (see TunnelIPLike).
+	Tunnel bool `json:"tunnel,omitempty"`
+	// TunnelVia names the WireGuard protocols the user may use that such an address
+	// can come from ("WG", "TURN-VK"), for the row's label. The address is the same
+	// for all of them, so which one it was is not known — only which are possible.
+	TunnelVia []string `json:"tunnel_via,omitempty"`
 }
 
 // UptimeDay is one server's liveness on one day: how many samples were taken and
@@ -1282,10 +1297,11 @@ type Settings struct {
 	BillingManualLabel   string `json:"-"`
 
 	// WalletEnabled lets users keep a balance: top it up, pay for plans from it and
-	// have it renew their plan when it runs out. WalletTopupMin is the smallest
-	// top-up, in roubles.
+	// have it renew their plan when it runs out. WalletTopupMin and WalletTopupMax
+	// bound one top-up, in roubles.
 	WalletEnabled  bool `json:"-"`
 	WalletTopupMin int  `json:"-"`
+	WalletTopupMax int  `json:"-"`
 	// RefMode is what a referrer earns when someone they invited pays: RefOff,
 	// RefPercent (RefPercent % of the payment on their balance) or RefDays (RefDays
 	// days on their plan). RefFirstOnly pays only for that person's first payment.
@@ -1297,6 +1313,9 @@ type Settings struct {
 	BillingPeriods []PeriodOffer `json:"-"`
 	// Winback sends a user whose paid term lapsed a personal discount code.
 	Winback WinbackSettings `json:"-"`
+	// ChurnSurvey asks a user whose paid term lapsed why it was not renewed: in the
+	// user bot a day later, and on the subscription page.
+	ChurnSurvey bool `json:"-"`
 	// TrafficPacks are the extra traffic on sale to users with a paid plan that has a
 	// quota; PlanChange lets users switch plans while one is active.
 	TrafficPacks []TrafficPack `json:"-"`
@@ -1399,6 +1418,24 @@ type Settings struct {
 	ServerPlacement Placement `json:"-"`
 }
 
+// WalletTopupCeiling is the largest top-up an operator may allow, in roubles;
+// WalletTopupMaxDefault is the largest one until the operator sets their own.
+const (
+	WalletTopupCeiling    = 1_000_000
+	WalletTopupMaxDefault = 15_000
+)
+
+// TopupRange is the smallest and largest top-up a user may make, in roubles. A
+// maximum never set (0) is the default one.
+func (s *Settings) TopupRange() (lo, hi int) {
+	lo, hi = max(s.WalletTopupMin, 1), s.WalletTopupMax
+	if hi <= 0 {
+		hi = WalletTopupMaxDefault
+	}
+	hi = min(hi, WalletTopupCeiling)
+	return lo, max(hi, lo)
+}
+
 // WarpRegistered reports whether a WARP account has been provisioned.
 func (s *Settings) WarpRegistered() bool { return s.WarpPrivateKey != "" }
 
@@ -1464,6 +1501,9 @@ const (
 	// AdminEventMonthly is the summary of the month before, sent on the 1st: revenue,
 	// users, traffic, uptime, incidents.
 	AdminEventMonthly int64 = 1 << 14
+	// AdminEventAlerts carries the operator's own alert rules (model.AlertRule):
+	// a figure crossed the line they set, and the all-clear.
+	AdminEventAlerts int64 = 1 << 15
 )
 
 // AdminEventCatalog is the stable key→flag mapping the settings API/UI iterate
@@ -1487,6 +1527,7 @@ var AdminEventCatalog = []struct {
 	{"plugins", AdminEventPlugins},
 	{"reach", AdminEventReach},
 	{"monthly", AdminEventMonthly},
+	{"alerts", AdminEventAlerts},
 }
 
 // ReachSettings configure the check of every server from other countries through
@@ -1917,6 +1958,50 @@ func (s *Settings) OwnName() string {
 	return ""
 }
 
+// RealityShared reports that the REALITY lane is served on the TCP-TLS lane's port —
+// 443, shared by the front through the name in the ClientHello (see tlsfront). The
+// operator asks for it by setting the REALITY port to that one; the lane is then moved
+// behind the front, and share links still name the port they always did.
+func (s *Settings) RealityShared() bool {
+	return s.VLESSPort > 0 && s.RealityPort == s.VLESSPort
+}
+
+// RealityShareConflict names the entry in the REALITY SNI list a shared port cannot
+// serve, and "" when there is none: the server's own name belongs to the decoy on that
+// port, so a REALITY client naming it never reaches REALITY. A lane with a port of its
+// own can borrow its own name — there it is the point.
+func (s *Settings) RealityShareConflict() string {
+	if !s.RealityShared() {
+		return ""
+	}
+	own := s.OwnName()
+	if own == "" {
+		return ""
+	}
+	for _, n := range s.RealityServerNames() {
+		if strings.EqualFold(n, own) {
+			return n
+		}
+	}
+	return ""
+}
+
+// RealityTarget is where the REALITY inbound sends what is not a client. For the
+// server's own domain that is its own :443 — the decoy, with the server's real
+// certificate — dialed on loopback, with no DNS and no trip out; for a donor, the donor.
+// A shared 443 always masks as a donor: its own name belongs to the TLS listener there,
+// so a REALITY client naming it never reaches this inbound at all.
+func (s *Settings) RealityTarget() string {
+	sni := s.RealitySNI()
+	if s.RealityShared() {
+		return sni + ":443"
+	}
+	if own := s.OwnName(); own != "" && strings.EqualFold(sni, own) && s.VLESSPort > 0 {
+		return net.JoinHostPort("127.0.0.1", strconv.Itoa(s.VLESSPort))
+	}
+	return sni + ":443"
+}
+
 // RealitySNI returns the primary (first) donor domain — used as the dialed dest
 // and the sni= in share links.
 func (s *Settings) RealitySNI() string {
@@ -2328,19 +2413,34 @@ func (s *Settings) BotLang() string {
 	return "ru"
 }
 
-// DefaultRealityDest and DefaultRealityPort are the schema's REALITY donor and port.
-// A fresh install draws its own instead (RealityDonors, core.PickRealityPort): one
-// pair on every install is a signature.
+// DefaultRealityDest and DefaultRealityPort are the schema's REALITY donor and port —
+// what an install that never got its own pair carries. A fresh install draws a donor
+// (RealityDonors) and starts the lane on the TCP-TLS lane's port, 443 (see
+// cmd/rospanel.firstRunReality): one pair on every install is a signature.
 const (
 	DefaultRealityDest = "max.ru"
 	DefaultRealityPort = 8443
 )
 
-// RealityDonors are the donors a fresh install draws from. Checked from a Dutch VPS
-// on 2026-10-14 with the panel's own donor check — TLS 1.3, h2, a certificate small
-// enough for REALITY — and reachable from abroad, which many Russian sites are not.
+// RealityDonors are the donors a fresh install draws from: popular Russian sites, so
+// the name a client's hello carries is one the network sees all day.
+//
+// Every entry passed the panel's own donor check — TLS 1.3, HTTP/2, a certificate small
+// enough for REALITY — from a Dutch server AND from a Moscow home connection, on
+// 2026-11-03. Both sides matter: a donor the server cannot reach leaves a probe with no
+// answer to relay, and one whose name is filtered in Russia is dropped by the same DPI
+// the mask exists for. Re-check a site from both sides before adding it — one that drops
+// TLS 1.3 or starts refusing foreign addresses takes its lane down with it.
 var RealityDonors = []string{
-	"max.ru", "hh.ru", "ria.ru", "avito.ru", "ozon.ru", "wildberries.ru", "rbc.ru", "mts.ru",
+	// portals and media
+	"yandex.ru", "ya.ru", "vk.com", "max.ru", "rbc.ru", "ria.ru", "kommersant.ru",
+	"rutube.ru", "kinopoisk.ru", "habr.com", "vc.ru", "mos.ru",
+	// marketplaces and shops
+	"ozon.ru", "wildberries.ru", "avito.ru", "auto.ru", "mvideo.ru", "citilink.ru",
+	"dns-shop.ru", "lamoda.ru", "detmir.ru", "vseinstrumenti.ru", "lemanapro.ru",
+	// work, money, maps, travel, telecom
+	"hh.ru", "superjob.ru", "rabota.ru", "sravni.ru", "banki.ru", "2gis.ru", "cian.ru",
+	"aeroflot.ru", "s7.ru", "mts.ru", "beeline.ru", "t2.ru",
 }
 
 // MaxDeviceLimit is the highest simultaneous-device cap the panel accepts. It is

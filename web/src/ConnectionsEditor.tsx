@@ -499,6 +499,7 @@ export function ConnectionsEditor({
                     <>
                       <SettingRow
                         label={t("conn.port")}
+                        hint={t("conn.realityPortHint")}
                         field={
                           <TextInput
                             type="number"

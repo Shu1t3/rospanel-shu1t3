@@ -656,7 +656,7 @@ func (s *Supervisor) Apply(cfg *Config) error {
 	if err := os.MkdirAll(filepath.Dir(s.configPath), 0o700); err != nil {
 		return err
 	}
-	tmp := s.configPath + ".new"
+	tmp := s.stagedConfigPath()
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
@@ -770,7 +770,7 @@ func (s *Supervisor) ApplyRaw(data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(s.configPath), 0o700); err != nil {
 		return err
 	}
-	tmp := s.configPath + ".new"
+	tmp := s.stagedConfigPath()
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
@@ -825,6 +825,15 @@ func (s *Supervisor) HasBackup() bool {
 	return err == nil
 }
 
+// stagedConfigPath is where a config is written (and validated) before it is
+// renamed over the live one: config.json → config.new.json. The extension has to
+// stay last: since 26.10.21 `xray run` refuses a config file whose extension it
+// doesn't know, "-format json" or not, so a config.json.new failed every -test.
+func (s *Supervisor) stagedConfigPath() string {
+	ext := filepath.Ext(s.configPath)
+	return strings.TrimSuffix(s.configPath, ext) + ".new" + ext
+}
+
 // restoreBackupLocked promotes config.json.bak → config.json and restarts
 // Xray. Caller must hold s.runMu. Validation is skipped (the backup was the
 // last known-good config and was already validated when applied).
@@ -834,7 +843,7 @@ func (s *Supervisor) restoreBackupLocked() error {
 	if err != nil {
 		return fmt.Errorf("no backup config found")
 	}
-	tmp := s.configPath + ".new"
+	tmp := s.stagedConfigPath()
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
@@ -858,7 +867,7 @@ func (s *Supervisor) WriteConfig(cfg *Config) error {
 	if err := os.MkdirAll(filepath.Dir(s.configPath), 0o700); err != nil {
 		return err
 	}
-	tmp := s.configPath + ".new"
+	tmp := s.stagedConfigPath()
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}

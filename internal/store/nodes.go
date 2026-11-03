@@ -661,10 +661,19 @@ func (s *Store) ApplyNodeReport(nodeID, reportID int64, deltas []TrafficDelta, l
 // config with live user credentials (it would read the resulting decoy response as
 // "panel unreachable" and keep serving). PurgeDeletedNodes reclaims the row later.
 // Traffic history in traffic_daily is kept (rows carry the numeric node_id).
+//
+// The external subscriptions relayed through it lose that relay with it: a relay
+// through a server that is gone reaches nobody, and would keep its subscription's
+// delivery from being saved again.
 func (s *Store) DeleteNode(id int64) error {
-	_, err := s.db.Exec(
-		`UPDATE nodes SET deleted_at = unixepoch(), enabled = 0 WHERE id = ? AND deleted_at = 0`, id)
-	return err
+	return s.withTx(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(
+			`UPDATE nodes SET deleted_at = unixepoch(), enabled = 0 WHERE id = ? AND deleted_at = 0`, id); err != nil {
+			return err
+		}
+		_, err := tx.Exec(`DELETE FROM ext_relays WHERE server_id = ?`, id)
+		return err
+	})
 }
 
 // PurgeDeletedNodes hard-deletes tombstoned nodes whose deletion is older than the

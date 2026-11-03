@@ -15,7 +15,6 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/anytls"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/awg"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/connguard"
-	"github.com/Shu1t3/rospanel-shu1t3/internal/decoy"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/geo"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/ipblock"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/logbuf"
@@ -114,6 +113,8 @@ type Manager struct {
 	winbackAt atomic.Int64
 	// billingStandby disables financial background actions on a standby master.
 	billingStandby atomic.Bool
+	// surveyAt is when the churn survey sweep last ran (unix); hourly too.
+	surveyAt atomic.Int64
 
 	// miniSignups bounds registrations through the Mini App entrance, webSignups
 	// those from the operator's website (Signup).
@@ -172,6 +173,9 @@ type Manager struct {
 	// frontVLESS puts the master's TCP-TLS lane behind the panel's front (see tlsfront
 	// and xray.Options.FrontVLESS). Never a node's: their agents do that themselves.
 	frontVLESS bool
+	// front is that front, when this process runs one: it is told which donor names
+	// belong to the REALITY lane on a shared 443 (see shareFront). Nil otherwise.
+	front realitySharer
 
 	// statsMu runs one local stats read-and-flush at a time; quota is what TickStats
 	// watches between flushes (see manager_stats.go). statsSource replaces the Xray
@@ -242,7 +246,8 @@ type Manager struct {
 	userMessage   func(chatID int64, html string, buttons []model.BroadcastButton) error // with URL buttons, sent at once (automatic messages)
 	adminNotify   func(html string)
 	adminModerate func(reqID int64, name, plan string)
-	adminLogin    func(LoginAlert) // a sign-in from a new address, with the revoke button
+	adminLogin    func(LoginAlert)   // a sign-in from a new address, with the revoke button
+	userSurvey    func(chatID int64) // asks why the paid term was not renewed, with the answers as buttons
 
 	// notifyThrottle bounds the rate of repeatable system alerts (Xray crash loop,
 	// cert renewal errors) so a stuck condition can't flood the admin chats.
@@ -484,6 +489,8 @@ type Manager struct {
 	nodeAlerts  map[int64]*nodeAlertState
 
 	fenced atomic.Bool
+	// alerts is the operator's alert rules' state (manager_alerts.go).
+	alerts alertEngine
 
 	// reach is the reachability monitor's state (manager_reach.go); reachAPI points it
 	// at another Globalping endpoint ("" = the real one), for tests.
@@ -1198,6 +1205,7 @@ func (m *Manager) reconcileLocked() error {
 		return err
 	}
 	m.appliedBridges.Store(bridgesKey(opts.Bridges))
+	m.shareFront(set, cfg)
 	m.setApplied(users, seq)
 	logInfo("reconcile: config applied", "users", len(users))
 	m.syncTurnLocked(opts.Custom)
@@ -1207,12 +1215,6 @@ func (m *Manager) reconcileLocked() error {
 	m.syncMTProto(set, cfg)
 	m.syncAnyTLS(cfg)
 	m.syncHostFW(set, cfg)
-	// HTTP/3 advertised where Hysteria2 shares the front's port, as Caddy would.
-	if set.HysteriaEnabled && set.HysteriaPort == set.VLESSPort {
-		decoy.SetAltSvc(set.HysteriaPort)
-	} else {
-		decoy.SetAltSvc(0)
-	}
 	return m.store.MarkConfigApplied()
 }
 

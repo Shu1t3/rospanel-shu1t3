@@ -24,6 +24,10 @@ const (
 	InbShadowsocks = "shadowsocks"
 	// InbTurnVK is WireGuard behind a TURN relay (Xray's "wireguard" inbound).
 	InbTurnVK = "turn-vk"
+	// InbWireGuard is plain WireGuard: Xray's "wireguard" inbound on its own public UDP
+	// port, with no relay in front of it. Users import a config file into any stock
+	// WireGuard client.
+	InbWireGuard = "wg"
 	// inbTurnVKOld is what InbTurnVK was called until 5.1; still accepted on input.
 	inbTurnVKOld = "wireguard"
 )
@@ -71,6 +75,7 @@ const (
 	TrHysteria    = "hysteria"
 	TrShadowsocks = "shadowsocks" // placeholder: SS-2022 is raw TCP with its own AEAD
 	TrTURN        = "turn"        // placeholder: WireGuard relayed by a call service's TURN servers
+	TrWireGuard   = "wireguard"   // placeholder: WireGuard on a UDP port of its own
 )
 
 // Custom-inbound security layers. "none" is only meaningful behind a TLS-terminating
@@ -382,7 +387,20 @@ func CanonicalProtocol(p string) string {
 }
 
 // InboundProtocols lists the offered protocols, in UI order.
-var InboundProtocols = []string{InbVLESS, InbTrojan, InbHysteria, InbShadowsocks, InbTurnVK}
+var InboundProtocols = []string{InbVLESS, InbTrojan, InbHysteria, InbShadowsocks, InbTurnVK, InbWireGuard}
+
+// KnownInboundProtocol reports whether this build can generate a protocol: true for
+// every entry of InboundProtocols.
+//
+// It matters because the database can hold a row this build does not know — written by a
+// newer panel, then read by an older one after a rollback or a downgraded update. A
+// generator has to skip such a row rather than emit a config Xray will refuse whole.
+func KnownInboundProtocol(p string) bool { return contains(InboundProtocols, p) }
+
+// IsWireGuard reports whether a protocol is one of the two WireGuard inbounds — behind
+// a TURN relay or on a port of its own. Both are Xray's "wireguard" inbound with the
+// users' tunnel identities as peers; they differ in who holds the public port.
+func IsWireGuard(protocol string) bool { return protocol == InbTurnVK || protocol == InbWireGuard }
 
 // InboundTransports returns the transports valid for a protocol. Hysteria2 has
 // exactly one (its own QUIC), so the UI shows no transport control for it, and
@@ -398,6 +416,8 @@ func InboundTransports(protocol string) []string {
 		return []string{TrShadowsocks}
 	case InbTurnVK:
 		return []string{TrTURN}
+	case InbWireGuard:
+		return []string{TrWireGuard}
 	}
 	return nil
 }
@@ -414,7 +434,7 @@ func InboundSecurities(protocol, transport string) []string {
 	if protocol == InbHysteria {
 		return []string{SecTLS}
 	}
-	if protocol == InbShadowsocks || protocol == InbTurnVK {
+	if protocol == InbShadowsocks || IsWireGuard(protocol) {
 		// Shadowsocks-2022 brings its own AEAD, and WireGuard its own Noise handshake
 		// (wrapped in DTLS by the relay); there is no TLS/REALITY layer to pick, so
 		// "none" is the only (and derived, not operator-chosen) value.
@@ -614,7 +634,7 @@ func (in *Inbound) Normalize() {
 		o.CDNPort = 0
 	}
 	if (o.Security != SecTLS && in.Protocol != InbHysteria) || o.CDNHost != "" ||
-		in.Protocol == InbShadowsocks || in.Protocol == InbTurnVK { // Hysteria2 is always TLS
+		in.Protocol == InbShadowsocks || IsWireGuard(in.Protocol) { // Hysteria2 is always TLS
 		o.PinCert = false
 	}
 
@@ -635,7 +655,7 @@ func (in *Inbound) Normalize() {
 		return
 	}
 
-	if in.Protocol == InbTurnVK {
+	if IsWireGuard(in.Protocol) {
 		in.normalizeWireGuard()
 		return
 	}
@@ -871,7 +891,7 @@ func (in *Inbound) Validate() error {
 		return nil
 	}
 
-	if in.Protocol == InbTurnVK {
+	if IsWireGuard(in.Protocol) {
 		return in.validateWireGuard()
 	}
 
@@ -1002,8 +1022,8 @@ var RealityHostRe = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0
 // SupportsClash reports whether mihomo / Clash Meta can express this combination.
 func SupportsClash(protocol, transport string) bool {
 	switch protocol {
-	case InbTurnVK:
-		return false // a WireGuard config file plus a TURN client, not a proxy entry
+	case InbTurnVK, InbWireGuard:
+		return false // a WireGuard config file (plus a TURN client), not a proxy entry
 	case InbHysteria, InbShadowsocks:
 		return true
 	case InbVLESS:
@@ -1017,7 +1037,7 @@ func SupportsClash(protocol, transport string) bool {
 // SupportsSingBox reports whether sing-box can express this combination.
 func SupportsSingBox(protocol, transport string) bool {
 	switch protocol {
-	case InbTurnVK:
+	case InbTurnVK, InbWireGuard:
 		return false // as in SupportsClash
 	case InbHysteria, InbShadowsocks:
 		return true
@@ -1032,7 +1052,7 @@ func SupportsSingBox(protocol, transport string) bool {
 func (in *Inbound) UnsupportedFormats() []string {
 	// A WireGuard inbound is in no subscription format at all: users get a config file
 	// for it from the subscription page. The editor says that on its own.
-	if in.Protocol == InbTurnVK {
+	if IsWireGuard(in.Protocol) {
 		return nil
 	}
 	var out []string
@@ -1102,7 +1122,7 @@ func (r ReservedPorts) OnUDP(port int) (string, bool) { who, ok := r.UDP[port]; 
 // ProtoOf is the transport an inbound listens on: Hysteria2 is QUIC over UDP and
 // WireGuard's relay takes DTLS over UDP; everything else the panel offers is TCP.
 func ProtoOf(protocol string) string {
-	if protocol == InbHysteria || protocol == InbTurnVK {
+	if protocol == InbHysteria || IsWireGuard(protocol) {
 		return "udp"
 	}
 	return "tcp"

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/auth"
@@ -140,10 +141,13 @@ func (m *Manager) effectiveSettings(serverID int64) (*model.Settings, error) {
 // exists to prevent.
 func reservedPorts(set *model.Settings) model.ReservedPorts {
 	r := model.NewReservedPorts()
-	if set.VLESSEnabled || set.NaiveEnabled || set.ServerID == model.LocalNodeID {
+	if set.VLESSEnabled || set.NaiveEnabled || set.ServerID == model.LocalNodeID || (set.RealityEnabled && set.RealityShared()) {
 		r.HoldTCP(set.VLESSPort, "VLESS-Vision")
 	}
-	if set.RealityEnabled {
+	if set.RealityEnabled && !set.RealityShared() {
+		// A lane sharing the TCP-TLS lane's port holds nothing of its own there: the
+		// name that port goes by is the decoy's, and an operator asked for 443 should
+		// hear about that one, not about REALITY.
 		r.HoldTCP(set.RealityPort, "VLESS-XHTTP-REALITY")
 	}
 	r.HoldUDP(set.HysteriaPort, "HYSTERIA-UDP")
@@ -164,6 +168,9 @@ func reservedPorts(set *model.Settings) model.ReservedPorts {
 	}
 	if p := xray.InnerPort(xray.MTProtoInnerAddr); p != 0 {
 		r.HoldTCP(p, "MTProto (internal)")
+	}
+	if p := xray.InnerPort(xray.RealityInnerAddr); p != 0 {
+		r.HoldTCP(p, "VLESS-XHTTP-REALITY behind the front")
 	}
 	if set.HopEnd > set.HysteriaPort {
 		// The built-in hop range is a UDP funnel onto the Hysteria port: anything
@@ -229,6 +236,17 @@ func (m *Manager) holdPanelPort(reserved model.ReservedPorts) {
 // CreateInbound validates and stores a new custom inbound, generating REALITY key
 // material when the combination needs it.
 func (m *Manager) CreateInbound(ctx context.Context, in model.Inbound) (*InboundView, error) {
+	v, err := m.createInbound(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+	m.applyInboundChange(in.ServerID)
+	return v, nil
+}
+
+// createInbound is CreateInbound without putting the change into effect, so a batch
+// can apply once for all of it.
+func (m *Manager) createInbound(ctx context.Context, in model.Inbound) (*InboundView, error) {
 	if err := m.checkServerExists(in.ServerID); err != nil {
 		return nil, err
 	}
@@ -246,9 +264,88 @@ func (m *Manager) CreateInbound(ctx context.Context, in model.Inbound) (*Inbound
 	if err != nil {
 		return nil, inboundConflict(err)
 	}
-	m.applyInboundChange(in.ServerID)
 	v := inboundView(*saved)
 	return &v, nil
+}
+
+// InboundCopyFailure is one inbound a copy could not create, with why.
+type InboundCopyFailure struct {
+	Name string
+	Err  error
+}
+
+// CopyInbounds recreates the source server's inbounds ids on server to, each through
+// the same checks a create runs, and puts the result into effect once: one Xray
+// reload for the batch instead of one per inbound.
+//
+// What belongs to the source machine is not carried: REALITY, Shadowsocks, WireGuard,
+// TURN-mask and VLESS-encryption keys and the WireGuard loopback port are minted
+// afresh, and an SNI or Host that is the source's own address falls back to the
+// target's. Everything else, the CDN domain included, is copied as it is.
+//
+// A failure (a name or port taken here) skips that inbound and is reported; the rest
+// still go in.
+func (m *Manager) CopyInbounds(ctx context.Context, from, to int64, ids []int64) ([]InboundView, []InboundCopyFailure, error) {
+	if from == to {
+		return nil, nil, invalidCode("err.copySameServer", "нельзя копировать сервер сам в себя")
+	}
+	if err := m.checkServerExists(to); err != nil {
+		return nil, nil, err
+	}
+	src, err := m.effectiveSettings(from)
+	if err != nil {
+		return nil, nil, err
+	}
+	list, err := m.store.Inbounds(from)
+	if err != nil {
+		return nil, nil, err
+	}
+	want := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		want[id] = true
+	}
+	var created []InboundView
+	var failed []InboundCopyFailure
+	for _, in := range list {
+		if !want[in.ID] {
+			continue
+		}
+		v, err := m.createInbound(ctx, copiedInbound(in, to, src.Host))
+		if err != nil {
+			failed = append(failed, InboundCopyFailure{Name: in.Name, Err: err})
+			continue
+		}
+		created = append(created, *v)
+	}
+	// Every picked inbound gone from the source (deleted since the list was read):
+	// say so, rather than answer with nothing created and nothing to explain why.
+	if len(ids) > 0 && len(created) == 0 && len(failed) == 0 {
+		return nil, nil, invalidCode("err.inboundNotFound", "подключение не найдено")
+	}
+	if len(created) > 0 {
+		m.applyInboundChange(to)
+	}
+	return created, failed, nil
+}
+
+// copiedInbound is in as a new inbound on server to: no id, no place in the order, and
+// none of the material that belongs to the machine it came from.
+func copiedInbound(in model.Inbound, to int64, srcHost string) model.Inbound {
+	in.ID, in.ServerID, in.Sort, in.CreatedAt = 0, to, 0, 0
+	o := &in.Opts
+	o.RealityPrivateKey, o.RealityPublicKey, o.RealityShortID = "", "", ""
+	o.ShadowKey = ""
+	o.WGPrivateKey, o.WGPublicKey, o.WGLocalPort, o.TurnMaskKey = "", "", 0, ""
+	o.Decryption, o.Encryption = "", ""
+	if srcHost != "" {
+		if strings.EqualFold(o.SNI, srcHost) {
+			o.SNI = ""
+		}
+		if strings.EqualFold(o.Host, srcHost) {
+			o.Host = ""
+		}
+	}
+	return in
 }
 
 // UpdateInbound validates and stores an edit. The server it belongs to is taken
@@ -289,7 +386,7 @@ func (m *Manager) UpdateInbound(ctx context.Context, in model.Inbound) (*Inbound
 	}
 	// And the WireGuard identity and loopback port: a new key would strand every
 	// imported config, and a new port would move the relay's target for nothing.
-	if in.Protocol == model.InbTurnVK && cur.Protocol == model.InbTurnVK {
+	if model.IsWireGuard(in.Protocol) && in.Protocol == cur.Protocol {
 		in.Opts.WGPrivateKey = cur.Opts.WGPrivateKey
 		in.Opts.WGPublicKey = cur.Opts.WGPublicKey
 		in.Opts.WGLocalPort = cur.Opts.WGLocalPort

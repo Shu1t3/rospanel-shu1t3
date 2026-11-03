@@ -56,7 +56,7 @@ func relayOpts(granted ...int64) Options {
 	return Options{
 		PanelDest: "127.0.0.1:8080",
 		Access:    relayAccess(granted...),
-		Relays:    []Relay{{ExtID: 5, Lane: model.LaneVLESS, Link: relayLink}},
+		Relays:    []Relay{{ExtID: 5, Lanes: []string{model.LaneVLESS}, Link: relayLink}},
 	}
 }
 
@@ -332,5 +332,65 @@ func TestBeforeRestartHook(t *testing.T) {
 	waitFor(t, "the restart", func() bool { return countLines(t, filepath.Join(dir, "starts.log"), "start") == 2 })
 	if calls != 1 {
 		t.Fatalf("a restart asked %d times, want once", calls)
+	}
+}
+
+// A subscription's own routing: each rule is one more relay rule on the same route and
+// users, ahead of the rule taking the rest, its target judged like the server's own
+// lanes; the partner may be dialled through WARP or a lane, and a target that cannot be
+// built (Opera off) goes out directly. A lane only a relay names is still built.
+func TestRelayOwnRouting(t *testing.T) {
+	set := relaySettings()
+	set.WarpEnabled, set.WarpPrivateKey = true, "k"
+	set.Routing.Lanes = []model.EgressLane{{ID: "nl", Name: "NL", Enabled: true}}
+	opts := relayOpts(1)
+	opts.Relays[0].Routing = model.ExtRouting{
+		Rules: []model.ExtRule{
+			{Domains: []string{"geosite:category-ru"}, IPs: []string{"geoip:ru"}, Target: "direct"},
+			{Domains: []string{"youtube.com"}, Target: "warp"},
+			{IPs: []string{"1.1.1.0/24"}, Target: "opera"}, // Opera is off: direct
+		},
+		Rest: "nl",
+		Dial: "warp",
+	}
+	pool := map[string][]model.ProxyEndpoint{"nl": {ep("10.0.0.1")}}
+	cfg, err := Generate(set, relayUsers(1, 2), opts, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range cfg.Routing.Rules {
+		if !isRelayRule(r.RuleTag) {
+			continue
+		}
+		if r.VlessRoute == "" || len(r.User) != 1 || r.User[0] != "u1" {
+			t.Errorf("%s lost its route or users: %+v", r.RuleTag, r)
+		}
+		got = append(got, r.RuleTag+"→"+r.OutboundTag+r.BalancerTag)
+	}
+	want := []string{"relay-5-0d→direct", "relay-5-0i→direct", "relay-5-1d→warp-out", "relay-5-2i→direct", "relay-5→pool-nl"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("relay rules %v, want %v", got, want)
+	}
+	if !slices.Contains(outboundTags(cfg), "proxy-nl-0") {
+		t.Fatal("the lane only the relay names was not built")
+	}
+	for _, o := range cfg.Outbounds {
+		if o.Tag != "ext-5" {
+			continue
+		}
+		ss, _ := o.StreamSettings.(map[string]any)
+		sock, _ := ss["sockopt"].(map[string]any)
+		if sock["dialerProxy"] != "warp" {
+			t.Fatalf("partner dialled through %v, want warp", sock["dialerProxy"])
+		}
+	}
+
+	// Opera carries no UDP: a partner over Hysteria2 is dialled directly.
+	if d := relayDialer("opera", "hysteria2", true, true, nil); d != "" {
+		t.Fatalf("hysteria2 through Opera: %q", d)
+	}
+	if d := relayDialer("opera", "vless", true, true, nil); d != "opera" {
+		t.Fatalf("vless through Opera: %q", d)
 	}
 }

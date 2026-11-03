@@ -1,0 +1,47 @@
+package core
+
+import (
+	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/xray"
+)
+
+// A REALITY lane on the TCP-TLS lane's port is not a listener of its own: the front
+// carries both and tells them apart by the name in the ClientHello (tlsfront.Front.
+// Share). This file is the manager's half of that — it keeps the front's route in step
+// with every config it applies.
+
+// realitySharer is the front in front of the TCP-TLS lane's port (*tlsfront.Front):
+// only what the manager needs from it, so this package does not depend on the listener.
+type realitySharer interface {
+	Share(target string, snis []string)
+}
+
+// SetFront gives the manager the front this process runs, so it can route REALITY by
+// name. Called once at boot, before the first reconcile.
+func (m *Manager) SetFront(f realitySharer) { m.front = f }
+
+// shareFront makes the front send the donor names in cfg to the REALITY listener, or
+// stop the split when the lane went back to a port of its own. Called after the config
+// is applied, so a name never points at a listener Xray has not opened yet.
+func (m *Manager) shareFront(set *model.Settings, cfg *xray.Config) {
+	if m.front == nil {
+		return
+	}
+	snis, behind := xray.RealityRoute(cfg)
+	if !behind {
+		m.front.Share("", nil)
+		m.sup.SetPublicPort(xray.TagReality, 0)
+		return
+	}
+	m.front.Share(xray.RealityInnerAddr, snis)
+	m.sup.SetPublicPort(xray.TagReality, set.VLESSPort)
+}
+
+// realityOwnNameErr refuses a REALITY mask that is the server's own name while its port
+// is shared with the decoy: the decoy serves that name there, so a client naming it
+// never reaches the lane. The message names the offending entry and what to do instead.
+func realityOwnNameErr(name string) error {
+	return invalidCode("err.realityOwnNameOn443",
+		"{{name}} — свой домен, на 443 он остаётся за decoy: для REALITY на этом порту оставь в списке SNI донора",
+		map[string]any{"name": name})
+}

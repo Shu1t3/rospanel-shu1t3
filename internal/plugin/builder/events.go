@@ -127,6 +127,18 @@ var (
 		maybe(f("buttons", "list", "buttons", []any{map[string]any{"text": "Открыть", "url": "https://example.com"}})),
 		f("telegram_sent", "bool", "telegramSent", true),
 	}
+	alertFields = []Field{
+		f("node_id", "number", "nodeId", 0),
+		f("name", "text", "nodeName", "Германия"),
+		maybe(f("host", "text", "nodeHost", "de.example.com")),
+		f("rule_id", "number", "alertRuleId", 4),
+		f("rule_name", "text", "alertRuleName", "CPU выше 90%"),
+		f("metric", "text", "alertMetric", "cpu_percent"),
+		f("op", "text", "alertOp", "gt"),
+		f("threshold", "number", "alertThreshold", 90),
+		f("value", "number", "alertValue", 94.2),
+		f("fired_at", "time", "alertFiredAt", 1767225000),
+	}
 	nodeFields = []Field{
 		f("node_id", "number", "nodeId", 3),
 		f("name", "text", "nodeName", "Германия"),
@@ -233,6 +245,11 @@ var events = []EventInfo{
 		f("expires_at", "time", "promoExpiresAt", 1767830400),
 		f("attached", "bool", "attached", true),
 	}},
+	{Event: model.WebhookUserChurnAnswer, User: "data", Fields: []Field{
+		f("reason", "text", "churnReason", "price"),
+		maybe(f("comment", "text", "churnComment", "Слишком медленно")),
+		f("source", "text", "churnSource", "bot"),
+	}},
 	{Event: model.WebhookPromoRedeemed, User: "data", Fields: []Field{
 		f("code", "text", "code", "SPRING"),
 		f("kind", "text", "promoKind", "days"),
@@ -242,6 +259,8 @@ var events = []EventInfo{
 	}},
 	{Event: model.WebhookUserLimitsChanged, User: "data", Fields: []Field{
 		maybe(f("extended_days", "number", "extendedDays", 30)),
+		maybe(f("compensated_hours", "number", "compensatedHours", 3)),
+		maybe(f("incident_id", "number", "incidentId", 12)),
 		maybe(f("refund_order_id", "number", "refundOrderId", 501)),
 	}},
 	{Event: model.WebhookUserTermStarted, User: "data"},
@@ -306,6 +325,11 @@ var events = []EventInfo{
 		maybe(f("update.body", "text", "updateBody", "Нашли причину, чиним.")))},
 	{Event: model.WebhookIncidentResolved, Fields: with(incidentFields)},
 	{Event: model.WebhookIncidentDeleted, Fields: with(incidentFields)},
+	{Event: model.WebhookAlertFired, Fields: with(alertFields)},
+	{Event: model.WebhookAlertResolved, Fields: with(alertFields,
+		f("peak", "number", "alertPeak", 97.5),
+		f("resolved_at", "time", "alertResolvedAt", 1767226800),
+		f("duration_seconds", "number", "alertDuration", 1800))},
 }
 
 // EventCatalog is what the builder offers, the samples filled in.

@@ -98,6 +98,7 @@ var auditActions = map[string]auditRoute{
 	"POST /api/incidents":                      set("incidents"),
 	"POST /api/incidents/{id}":                 set("incidents"),
 	"POST /api/incidents/{id}/resolve":         set("incidents"),
+	"POST /api/incidents/{id}/compensate":      set("incidents"),
 	"DELETE /api/incidents/{id}":               set("incidents"),
 	"POST /api/incidents/{id}/updates":         set("incidents"),
 	"DELETE /api/incidents/updates/{id}":       set("incidents"),
@@ -112,8 +113,10 @@ var auditActions = map[string]auditRoute{
 	"POST /api/external/{id}/sync":             set("external"),
 	"POST /api/external/{id}/enabled":          set("external"),
 	"POST /api/external/{id}/relay":            set("external"),
+	"POST /api/external/{id}/routing":          set("external"),
 	"POST /api/external/{id}/servers":          set("external"),
 	"POST /api/external/servers/{id}/enabled":  set("external"),
+	"POST /api/external/servers/{id}/name":     set("external"),
 	"POST /api/settings/abuse/refresh":         set("blocklistsRefresh"),
 	"POST /api/settings/api-path":              set("apiPath"),
 	"POST /api/setup/timezone":                 set("timezone"),
@@ -147,6 +150,8 @@ var auditActions = map[string]auditRoute{
 	"POST /api/broadcasts/{id}/cancel":  act(model.AuditBroadcastChanged),
 	"POST /api/broadcasts/{id}/retry":   act(model.AuditBroadcastChanged),
 	"POST /api/billing":                 set("billing"),
+	"POST /api/billing/manual-image":    set("billing"),
+	"DELETE /api/billing/manual-image":  set("billing"),
 	"POST /api/payments":                set("payments"),
 
 	// Tariff plans keep their own actions: they are objects with a lifecycle, not a
@@ -234,6 +239,7 @@ var auditActions = map[string]auditRoute{
 	// Custom inbounds. Each of these opens, changes or closes a public listener on a
 	// server, so all four are recorded.
 	"POST /api/servers/{id}/inbounds":       set("inboundAdded"),
+	"POST /api/servers/{id}/inbounds/copy":  set("inboundsCopied"),
 	"POST /api/inbounds/{id}":               set("inboundChanged"),
 	"DELETE /api/inbounds/{id}":             set("inboundDeleted"),
 	"POST /api/inbounds/{id}/regen-reality": set("inboundRegenReality"),
@@ -265,6 +271,9 @@ var auditActions = map[string]auditRoute{
 	"POST /api/migration/rollback":      set("migration"),
 	"POST /api/migration/trial-restore": skip, // sandboxed trial restore test
 	"POST /api/stats/reset":             act(model.AuditStatsReset),
+	"POST /api/alerts":                  set("alertAdded"),
+	"PUT /api/alerts/{id}":              set("alertChanged"),
+	"DELETE /api/alerts/{id}":           set("alertDeleted"),
 
 	// The caller's own sessions. Ending one is a security action worth a row of its
 	// own; listing them is a read.
