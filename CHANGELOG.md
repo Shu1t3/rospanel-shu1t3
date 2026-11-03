@@ -1,5 +1,30 @@
 # Changelog
 
+## [5.4.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.3.1...v5.4.0) (2026-11-03)
+
+
+### Features
+
+* **alerts:** rules on a server's figures, told to the admin chats and webhooks ([e23d980](https://github.com/Shu1t3/rospanel-shu1t3/commit/e23d9802a261f869d430e1a4d773e042e6bed1f8))
+* **billing:** a picture for manual payment, shown with the instructions ([c370e5e](https://github.com/Shu1t3/rospanel-shu1t3/commit/c370e5ec2b11272f9875c8acec7fffdef12cf7f2))
+* **external:** name relayed entries by a template, flag undelivered WireGuard ([06a046a](https://github.com/Shu1t3/rospanel-shu1t3/commit/06a046a25a3fdecee4d85224eaf93253b06c0859))
+* **inbounds:** plain WireGuard inbound ([7345f67](https://github.com/Shu1t3/rospanel-shu1t3/commit/7345f67ff18e7f3033b962663eac1ee3084702f8))
+* **reality:** a fresh install accepts the donor's own twin name too ([f21af0c](https://github.com/Shu1t3/rospanel-shu1t3/commit/f21af0cfceb20bbf8f3fdaaf646c172896cf666b))
+* **reality:** draw a fresh install's donor from a wider pool of Russian sites ([44f8abd](https://github.com/Shu1t3/rospanel-shu1t3/commit/44f8abd19a07901571534c404c91fc9eea3ec22a))
+* **reality:** REALITY on 443, sharing the port with the decoy by SNI ([d54e5f9](https://github.com/Shu1t3/rospanel-shu1t3/commit/d54e5f98054c863f48300602b23bf3bb3bd7ea18))
+* **servers:** copy routing and connections from another server ([f6a2afa](https://github.com/Shu1t3/rospanel-shu1t3/commit/f6a2afabaf6177bdb3eeb5636d927c2544cd9432))
+* sync upstream v5.13.0 with fork safeguards ([78c5b39](https://github.com/Shu1t3/rospanel-shu1t3/commit/78c5b398d863c0436072500d2b5f42cf04928b3f))
+
+
+### Bug Fixes
+
+* **audit:** label a retired settings section and show nested values in the journal ([434709c](https://github.com/Shu1t3/rospanel-shu1t3/commit/434709cb0b680c6fd50fc3d4baa6d549e6bb2dfc))
+* **decoy:** stop advertising HTTP/3, it locked browsers out of the panel ([c3ca037](https://github.com/Shu1t3/rospanel-shu1t3/commit/c3ca037e7b24dd70684c5a5e9cab6c441b6ceef4))
+* **devices:** a WireGuard tunnel address is not a device ([e843ae5](https://github.com/Shu1t3/rospanel-shu1t3/commit/e843ae5e2e8db5485384d267c07506cc448f63bc))
+* **nodes:** move the front's REALITY route only when Xray took the config ([f90049b](https://github.com/Shu1t3/rospanel-shu1t3/commit/f90049b74c1559485c66c8b7f4262f50404e86aa))
+* **reality:** let a node leave its own name for the shared port ([7df42ee](https://github.com/Shu1t3/rospanel-shu1t3/commit/7df42ee5ee59a65ff507bf6f42712cd6fa944e59))
+* **xray:** skip an inbound of a protocol this build does not know ([3f65969](https://github.com/Shu1t3/rospanel-shu1t3/commit/3f65969f47e9a113dcacf4257475b7cff71ae2cd))
+
 ## [5.3.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.3.0...v5.3.1) (2026-10-24)
 
 
