@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.4.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.4.0...v5.4.1) (2026-11-03)
+
+
+### Bug Fixes
+
+* **xray:** ignore disabled REALITY settings during config generation ([4119cd3](https://github.com/Shu1t3/rospanel-shu1t3/commit/4119cd3672bbf4a1bc64246a4c3ad6fe6881b7bf))
+
 ## [5.4.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.3.1...v5.4.0) (2026-11-03)
 
 
