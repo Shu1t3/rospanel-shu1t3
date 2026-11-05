@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/url"
 	"strings"
@@ -44,20 +45,25 @@ func TestMultiHopNodeStateFollowsDownstream(t *testing.T) {
 		byName[n.Name] = n
 	}
 	entry, transit, exit := byName["entry"], byName["transit"], byName["exit"]
-	in := model.Inbound{
-		ServerID: entry.ID, Enabled: true, Name: "Multi-hop", Protocol: model.InbVLESS, Port: 8443,
-		Opts: model.InboundOpts{
-			Transport: model.TrTCP, Security: model.SecTLS,
-			MultiHop: &model.MultiHop{Transit: transit.ID, Exit: exit.ID},
-		},
-	}
-	in.Normalize()
-	if err := m.validateMultiHop(in); err != nil {
-		t.Fatal(err)
-	}
-	saved, err := m.store.CreateInbound(in)
+	// A manually configured listener keeps its port. The route command picks
+	// the next one and provisions its own VLESS TCP-TLS entry.
+	_, err = m.store.CreateInbound(model.Inbound{
+		ServerID: entry.ID, Enabled: true, Name: "Ordinary", Protocol: model.InbVLESS, Port: 28443,
+		Opts: model.InboundOpts{Transport: model.TrTCP, Security: model.SecTLS},
+	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	profile, err := m.CreateMultiHopProfile(context.Background(), entry.ID, "Multi-hop", model.MultiHop{Transit: transit.ID, Exit: exit.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := m.store.GetInbound(profile.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved == nil || profile.Port != 28444 || saved.Opts.Security != model.SecTLS {
+		t.Fatalf("unexpected generated listener: %+v", profile)
 	}
 
 	entryState, err := m.NodeDesiredState(entry)

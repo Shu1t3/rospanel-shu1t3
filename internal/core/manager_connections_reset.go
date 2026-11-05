@@ -78,11 +78,14 @@ func (m *Manager) dropServerInbounds(serverID int64) error {
 		return err
 	}
 	for _, in := range inbounds {
+		if in.Opts.MultiHop != nil {
+			continue
+		}
 		if err := m.store.DeleteInboundGrants(in.ID); err != nil {
 			return err
 		}
 	}
-	if err := m.store.DeleteServerInbounds(serverID); err != nil {
+	if err := m.store.DeleteOrdinaryInbounds(serverID); err != nil {
 		return err
 	}
 	if len(inbounds) > 0 {

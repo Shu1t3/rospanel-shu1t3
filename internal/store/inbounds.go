@@ -202,11 +202,10 @@ func (s *Store) DeleteServerInbounds(serverID int64) error {
 	return err
 }
 
-// EnabledMultiHopInbounds supplies the fleet-wide routes used to build the
-// service clients on transit and exit servers. Inbound IDs give a stable order.
-func (s *Store) EnabledMultiHopInbounds() ([]model.Inbound, error) {
-	rows, err := s.rdb.Query(`SELECT ` + inboundColumns + ` FROM inbounds
-		WHERE enabled = 1 AND json_type(opts, '$.multi_hop') = 'object' ORDER BY id`)
+// MultiHopInbounds lists profiles and their backing listeners in stable ID order.
+func (s *Store) MultiHopInbounds(enabledOnly bool) ([]model.Inbound, error) {
+	rows, err := s.rdb.Query(`SELECT `+inboundColumns+` FROM inbounds
+		WHERE (enabled = 1 OR NOT ?) AND json_type(opts, '$.multi_hop') = 'object' ORDER BY id`, enabledOnly)
 	if err != nil {
 		return nil, err
 	}
@@ -220,4 +219,11 @@ func (s *Store) EnabledMultiHopInbounds() ([]model.Inbound, error) {
 		out = append(out, *in)
 	}
 	return out, rows.Err()
+}
+
+// DeleteOrdinaryInbounds clears the manually configured listeners of a server.
+func (s *Store) DeleteOrdinaryInbounds(serverID int64) error {
+	_, err := s.db.Exec(`DELETE FROM inbounds WHERE server_id = ?
+		AND json_type(opts, '$.multi_hop') IS NOT 'object'`, serverID)
+	return err
 }

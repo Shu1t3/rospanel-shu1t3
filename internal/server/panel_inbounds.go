@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/core"
@@ -20,7 +21,9 @@ func (rt *Router) serverInbounds(w http.ResponseWriter, _ *http.Request, serverI
 		writeManagerErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, list)
+	writeJSON(w, http.StatusOK, slices.DeleteFunc(list, func(in core.InboundView) bool {
+		return in.Opts.MultiHop != nil
+	}))
 }
 
 // inboundReq is the editable shape of a custom inbound. It deliberately mirrors
@@ -167,6 +170,10 @@ func (rt *Router) createServerInbound(w http.ResponseWriter, r *http.Request, se
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	if req.MultiHop != nil {
+		writeMultiHopManaged(w)
+		return
+	}
 	in, err := req.toModel(serverID, 0)
 	if err != nil {
 		writeManagerErr(w, err)
@@ -236,6 +243,13 @@ func (rt *Router) updateInbound(w http.ResponseWriter, r *http.Request, id int64
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	if req.MultiHop != nil {
+		writeMultiHopManaged(w)
+		return
+	}
+	if !rt.isOrdinaryInbound(w, id) {
+		return
+	}
 	in, err := req.toModel(0, id)
 	if err != nil {
 		writeManagerErr(w, err)
@@ -251,6 +265,9 @@ func (rt *Router) updateInbound(w http.ResponseWriter, r *http.Request, id int64
 
 // deleteInbound removes one custom inbound.
 func (rt *Router) deleteInbound(w http.ResponseWriter, _ *http.Request, id int64) {
+	if !rt.isOrdinaryInbound(w, id) {
+		return
+	}
 	if err := rt.mgr.DeleteInbound(id); err != nil {
 		writeManagerErr(w, err)
 		return
@@ -258,9 +275,31 @@ func (rt *Router) deleteInbound(w http.ResponseWriter, _ *http.Request, id int64
 	writeOK(w)
 }
 
+// The dashboard edits routes through the profile endpoints. The versioned
+// inbound API retains its existing contract for older integrations.
+func (rt *Router) isOrdinaryInbound(w http.ResponseWriter, id int64) bool {
+	in, err := rt.mgr.Store().GetInbound(id)
+	if err != nil {
+		writeManagerErr(w, err)
+		return false
+	}
+	if in != nil && in.Opts.MultiHop != nil {
+		writeMultiHopManaged(w)
+		return false
+	}
+	return true
+}
+
+func writeMultiHopManaged(w http.ResponseWriter) {
+	writeErrCode(w, http.StatusBadRequest, "err.multiHopManaged", "управляйте маршрутом в разделе «Мульти-хоп»")
+}
+
 // regenInboundReality mints fresh REALITY material for one inbound. Its own route
 // rather than part of an edit: every client using this lane has to re-import.
 func (rt *Router) regenInboundReality(w http.ResponseWriter, _ *http.Request, id int64) {
+	if !rt.isOrdinaryInbound(w, id) {
+		return
+	}
 	v, err := rt.mgr.RegenInboundReality(id)
 	if err != nil {
 		writeManagerErr(w, err)

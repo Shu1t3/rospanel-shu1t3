@@ -240,6 +240,9 @@ var auditActions = map[string]auditRoute{
 	// server, so all four are recorded.
 	"POST /api/servers/{id}/inbounds":       set("inboundAdded"),
 	"POST /api/servers/{id}/inbounds/copy":  set("inboundsCopied"),
+	"POST /api/multi-hop":                   set("inboundAdded"),
+	"POST /api/multi-hop/{id}":              set("inboundChanged"),
+	"DELETE /api/multi-hop/{id}":            set("inboundDeleted"),
 	"POST /api/inbounds/{id}":               set("inboundChanged"),
 	"DELETE /api/inbounds/{id}":             set("inboundDeleted"),
 	"POST /api/inbounds/{id}/regen-reality": set("inboundRegenReality"),

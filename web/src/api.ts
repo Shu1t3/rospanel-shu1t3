@@ -3300,13 +3300,7 @@ export const deleteHappNode = (id: number) =>
 // belongs to exactly one server (0 = the master, a node id otherwise), because
 // its port, REALITY identity and hop range are all facts about that machine.
 
-export interface MultiHop {
-  transit: number
-  exit: number
-}
-
 export interface InboundOpts {
-  multi_hop?: MultiHop
   transport: string
   security: string
   sni?: string
@@ -3446,7 +3440,6 @@ export interface Inbound {
 // InboundInput is the editable shape sent on create/update. The server owns the
 // id, the server_id and the REALITY private key, so none of them appear here.
 export interface InboundInput {
-  multi_hop?: MultiHop | null
   enabled: boolean
   name: string
   protocol: string
@@ -3554,6 +3547,30 @@ export const deleteInbound = (id: number) =>
 
 export const regenInboundReality = (id: number) =>
   api<Inbound>(`api/inbounds/${id}/regen-reality`, { method: 'POST' })
+
+export interface MultiHopProfile {
+  id: number
+  name: string
+  entry: number
+  transit: number
+  exit: number
+  enabled: boolean
+  port: number
+}
+
+export const listMultiHopProfiles = () => api<MultiHopProfile[]>('api/multi-hop')
+
+export const createMultiHopProfile = (route: Pick<MultiHopProfile, 'name' | 'entry' | 'transit' | 'exit'>) =>
+  api<MultiHopProfile>('api/multi-hop', { method: 'POST', body: JSON.stringify(route) })
+
+export const updateMultiHopProfile = ({ id, name, transit, exit, enabled }: MultiHopProfile) =>
+  api<MultiHopProfile>(`api/multi-hop/${id}`, {
+    method: 'POST',
+    body: JSON.stringify({ name, transit, exit, enabled }),
+  })
+
+export const deleteMultiHopProfile = (id: number) =>
+  api<{ ok: boolean }>(`api/multi-hop/${id}`, { method: 'DELETE' })
 
 // ---- User groups -----------------------------------------------------------
 //

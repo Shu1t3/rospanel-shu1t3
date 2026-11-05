@@ -680,6 +680,10 @@ func (rt *Router) panelMux() http.Handler {
 	canServersManage("POST /api/nodes/{id}/connections/reset", withID(rt.resetNodeConnections))
 	// Custom inbounds. The list/create routes are keyed by SERVER id (0 = master);
 	// edit/delete are keyed by the inbound's own id, which already implies its server.
+	canServersView("GET /api/multi-hop", rt.listMultiHopProfiles)
+	canServersManage("POST /api/multi-hop", rt.createMultiHopProfile)
+	canServersManage("POST /api/multi-hop/{id}", withID(rt.updateMultiHopProfile))
+	canServersManage("DELETE /api/multi-hop/{id}", withID(rt.deleteMultiHopProfile))
 	canServersView("GET /api/inbounds/catalog", rt.inboundCatalog)
 	canServersView("GET /api/servers/{id}/inbounds", withID(rt.serverInbounds))
 	canServersManage("POST /api/servers/{id}/inbounds", withID(rt.createServerInbound))

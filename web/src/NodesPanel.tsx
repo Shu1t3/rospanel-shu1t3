@@ -21,6 +21,7 @@ import { reloadOnVersion } from "./update";
 import { useCan } from "./role";
 import { AddNodeDialog, InstallCommandModal } from "./AddNodeDialog";
 import { NodeCard } from "./NodeCard";
+import { MultiHopDialog } from "./MultiHopDialog";
 import { AlertsDialog } from "./AlertsPanel";
 import { ReachSettingsDialog } from "./ReachPanel";
 import { agentSkew, cmpVersion, serverName } from "./NodeStatus";
@@ -37,6 +38,7 @@ export function NodesPanel() {
   // the master and every node — one panel-side geosite/geoip).
   const [geo, setGeo] = useState<GeoCategories>({ geosite: [], geoip: [], iplist: [] });
   const [adding, setAdding] = useState(false);
+  const [multiHopOpen, setMultiHopOpen] = useState(false);
   const [reachSettings, setReachSettings] = useState(false);
   const [alertsOpen, setAlertsOpen] = useState(false);
   // The check from other countries is off while its settings list no countries.
@@ -185,10 +187,18 @@ export function NodesPanel() {
           <p className="text-sm text-ink">{t("general.updatingHint")}</p>
         </div>
       </Modal>
+      {multiHopOpen && (
+        <MultiHopDialog nodes={nodes} canManage={canManage} onClose={() => setMultiHopOpen(false)} />
+      )}
       <div className="flex flex-wrap items-center gap-2">
         {canManage && (
           <Button size="sm" onClick={() => setAdding(true)}>
             {t("nodes.addNode")}
+          </Button>
+        )}
+        {canServers && (
+          <Button size="sm" variant="outline" color="gray" onClick={() => setMultiHopOpen(true)}>
+            {t("inb.multiHop")}
           </Button>
         )}
         {canServers && (

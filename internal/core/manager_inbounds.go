@@ -307,9 +307,8 @@ func (m *Manager) CopyInbounds(ctx context.Context, from, to int64, ids []int64)
 	}
 	var created []InboundView
 	var failed []InboundCopyFailure
-	multiHop := false
 	for _, in := range list {
-		if !want[in.ID] {
+		if !want[in.ID] || in.Opts.MultiHop != nil {
 			continue
 		}
 		v, err := m.createInbound(ctx, copiedInbound(in, to, src.Host))
@@ -318,7 +317,6 @@ func (m *Manager) CopyInbounds(ctx context.Context, from, to int64, ids []int64)
 			continue
 		}
 		created = append(created, *v)
-		multiHop = multiHop || v.Opts.MultiHop != nil
 	}
 	// Every picked inbound gone from the source (deleted since the list was read):
 	// say so, rather than answer with nothing created and nothing to explain why.
@@ -326,7 +324,7 @@ func (m *Manager) CopyInbounds(ctx context.Context, from, to int64, ids []int64)
 		return nil, nil, invalidCode("err.inboundNotFound", "подключение не найдено")
 	}
 	if len(created) > 0 {
-		m.applyInboundChange(to, multiHop)
+		m.applyInboundChange(to, false)
 	}
 	return created, failed, nil
 }

@@ -237,7 +237,7 @@ func (m *Manager) cascadeOpts(opts *xray.Options, server int64, master *model.Se
 	for _, in := range opts.Custom {
 		m.multiHopOpts(opts, server, master, servers, in)
 	}
-	routes, err := m.store.EnabledMultiHopInbounds()
+	routes, err := m.store.MultiHopInbounds(true)
 	if err != nil {
 		logErr("multi-hop: load routes", "err", err)
 		return
@@ -286,7 +286,7 @@ func (m *Manager) NoteNodeSeenIP(n *model.Node, ip string) {
 
 // anyCascade reports whether any server has a cascade lane or multi-hop inbound.
 func (m *Manager) anyCascade() bool {
-	if routes, err := m.store.EnabledMultiHopInbounds(); err != nil || len(routes) > 0 {
+	if routes, err := m.store.MultiHopInbounds(true); err != nil || len(routes) > 0 {
 		return true
 	}
 	set, err := m.store.GetSettings()
