@@ -187,7 +187,7 @@ func customVLESS(u model.User, in model.Inbound, set *model.Settings) string {
 	if in.Opts.Flow != "" {
 		q.Set("flow", in.Opts.Flow)
 	}
-	return customAssemble("vless", u.UUID, u, in, q, set)
+	return customAssemble("vless", in.VLESSUUID(u.UUID), u, in, q, set)
 }
 
 // customTrojan builds a trojan:// link for a custom inbound.

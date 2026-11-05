@@ -40,8 +40,8 @@ type Server struct {
 func (s Server) allowsBuiltin(lane string) bool {
 	return !s.Hidden[lane] && s.Access.AllowsBuiltin(s.Set.ServerID, lane)
 }
-func (s Server) allowsInbound(id int64) bool {
-	return !s.Hidden[model.SubProtoCustom] && s.Access.AllowsInbound(id)
+func (s Server) allowsInbound(in model.Inbound) bool {
+	return !s.Hidden[model.SubProtoCustom] && in.AllowsAccess(s.Access)
 }
 func (s Server) allowsExt(id int64) bool { return s.Access.AllowsExt(id) }
 
@@ -58,7 +58,7 @@ func (s Server) Reaches() bool {
 		}
 	}
 	for _, in := range s.Custom {
-		if s.Access.AllowsInbound(in.ID) {
+		if in.AllowsAccess(s.Access) {
 			return true
 		}
 	}

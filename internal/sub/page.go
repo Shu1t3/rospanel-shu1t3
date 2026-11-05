@@ -719,7 +719,7 @@ func buildPageData(u model.User, local *model.Settings, servers []Server, billin
 			protoLinks = append(protoLinks, protoLink{s.ProtoLabelFor(model.ProtoMieru, &u), link.Mieru(u, s)})
 		}
 		for _, in := range srv.Custom {
-			if !srv.allowsInbound(in.ID) {
+			if !srv.allowsInbound(in) {
 				continue
 			}
 			if in.Protocol == model.InbWireGuard {

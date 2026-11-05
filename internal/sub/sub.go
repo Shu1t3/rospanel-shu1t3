@@ -74,7 +74,7 @@ func shareLinks(u model.User, srv Server, f linkForms) []string {
 		}
 	}
 	for _, in := range srv.Custom {
-		if !srv.allowsInbound(in.ID) || in.Opts.EncMode != "" && !f.vlessEnc {
+		if !srv.allowsInbound(in) || in.Opts.EncMode != "" && !f.vlessEnc {
 			continue
 		}
 		if l := link.Custom(u, in, set); l != "" {

@@ -27,10 +27,11 @@ func (rt *Router) serverInbounds(w http.ResponseWriter, _ *http.Request, serverI
 // model.Inbound rather than accepting it directly, so no request can set the fields
 // the panel owns — the row id, the server, or the REALITY private key.
 type inboundReq struct {
-	Enabled  bool   `json:"enabled"`
-	Name     string `json:"name"`
-	Protocol string `json:"protocol"`
-	Port     int    `json:"port"`
+	Enabled  bool            `json:"enabled"`
+	Name     string          `json:"name"`
+	Protocol string          `json:"protocol"`
+	Port     int             `json:"port"`
+	MultiHop *model.MultiHop `json:"multi_hop"`
 
 	Transport string `json:"transport"`
 	Security  string `json:"security"`
@@ -96,6 +97,7 @@ func (r inboundReq) toModel(serverID, id int64) (model.Inbound, error) {
 		Port:     r.Port,
 		Opts: model.InboundOpts{
 			Transport:   r.Transport,
+			MultiHop:    r.MultiHop,
 			Security:    r.Security,
 			SNI:         r.SNI,
 			FP:          r.FP,

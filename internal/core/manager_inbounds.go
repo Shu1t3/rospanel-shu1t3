@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -240,7 +241,7 @@ func (m *Manager) CreateInbound(ctx context.Context, in model.Inbound) (*Inbound
 	if err != nil {
 		return nil, err
 	}
-	m.applyInboundChange(in.ServerID)
+	m.applyInboundChange(in.ServerID, in.Opts.MultiHop != nil)
 	return v, nil
 }
 
@@ -306,6 +307,7 @@ func (m *Manager) CopyInbounds(ctx context.Context, from, to int64, ids []int64)
 	}
 	var created []InboundView
 	var failed []InboundCopyFailure
+	multiHop := false
 	for _, in := range list {
 		if !want[in.ID] {
 			continue
@@ -316,6 +318,7 @@ func (m *Manager) CopyInbounds(ctx context.Context, from, to int64, ids []int64)
 			continue
 		}
 		created = append(created, *v)
+		multiHop = multiHop || v.Opts.MultiHop != nil
 	}
 	// Every picked inbound gone from the source (deleted since the list was read):
 	// say so, rather than answer with nothing created and nothing to explain why.
@@ -323,7 +326,7 @@ func (m *Manager) CopyInbounds(ctx context.Context, from, to int64, ids []int64)
 		return nil, nil, invalidCode("err.inboundNotFound", "подключение не найдено")
 	}
 	if len(created) > 0 {
-		m.applyInboundChange(to)
+		m.applyInboundChange(to, multiHop)
 	}
 	return created, failed, nil
 }
@@ -404,7 +407,7 @@ func (m *Manager) UpdateInbound(ctx context.Context, in model.Inbound) (*Inbound
 	if err := m.store.UpdateInbound(in); err != nil {
 		return nil, inboundConflict(err)
 	}
-	m.applyInboundChange(in.ServerID)
+	m.applyInboundChange(in.ServerID, in.Opts.MultiHop != nil || cur.Opts.MultiHop != nil)
 	saved, err := m.store.GetInbound(in.ID)
 	if err != nil {
 		return nil, err
@@ -434,7 +437,7 @@ func (m *Manager) RegenInboundReality(id int64) (*InboundView, error) {
 	if err := m.store.UpdateInbound(*in); err != nil {
 		return nil, err
 	}
-	m.applyInboundChange(in.ServerID)
+	m.applyInboundChange(in.ServerID, false)
 	v := inboundView(*in)
 	return &v, nil
 }
@@ -456,7 +459,7 @@ func (m *Manager) DeleteInbound(id int64) error {
 	if err := m.store.DeleteInboundGrants(id); err != nil {
 		logErr("groups: grant cleanup after inbound delete failed", "inbound", id, "err", err)
 	}
-	m.applyInboundChange(in.ServerID)
+	m.applyInboundChange(in.ServerID, in.Opts.MultiHop != nil)
 	return nil
 }
 
@@ -559,6 +562,11 @@ func (m *Manager) validateAgainstSet(ctx context.Context, in model.Inbound, excl
 	m.holdPanelPort(reserved)
 	if err := model.ValidateInboundSet(next, reserved, set.BuiltinLaneLabels()); err != nil {
 		return fromFieldErr(err)
+	}
+	if prev == nil || !prev.Enabled || !reflect.DeepEqual(prev.Opts.MultiHop, in.Opts.MultiHop) {
+		if err := m.validateMultiHop(in); err != nil {
+			return err
+		}
 	}
 
 	// A REALITY donor has to actually serve TLS 1.3 + HTTP/2 with a small enough
@@ -786,12 +794,17 @@ func (m *Manager) probePort(ctx context.Context, serverID int64, network string,
 // applyInboundChange pushes the new inbound set to the server it belongs to: a
 // reconcile (and a refreshed nftables funnel set) for the master, a wake for a node
 // so its held poll returns with the fresh config.
-func (m *Manager) applyInboundChange(serverID int64) {
+func (m *Manager) applyInboundChange(serverID int64, multiHop bool) {
 	if serverID != model.LocalNodeID {
-		if m.nodes != nil {
+		if multiHop {
+			m.cascadeMoved()
+		} else if m.nodes != nil {
 			m.nodes.wakeOne(serverID)
 		}
 		return
+	}
+	if multiHop && m.nodes != nil {
+		m.nodes.wakeAll()
 	}
 	if err := EnsureHostHops(m.store); err != nil {
 		logErr("hop: re-apply failed", "err", err)

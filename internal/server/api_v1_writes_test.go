@@ -460,6 +460,19 @@ func TestMCPInboundWritesReachTheStore(t *testing.T) {
 		},
 	}
 
+	groups = append(groups, group{
+		body: map[string]any{
+			"enabled": false, "name": "land-multi-hop", "protocol": model.InbVLESS, "port": 21111,
+			"transport": model.TrTCP, "security": model.SecTLS,
+			"multi_hop": map[string]int64{"transit": 42, "exit": 43},
+		},
+		assert: func(t *testing.T, in model.Inbound) {
+			if in.Opts.MultiHop == nil || *in.Opts.MultiHop != (model.MultiHop{Transit: 42, Exit: 43}) {
+				t.Fatalf("multi_hop was not stored: %+v", in.Opts.MultiHop)
+			}
+		},
+	})
+
 	covered := map[string]bool{}
 	for _, g := range groups {
 		for name := range g.body {

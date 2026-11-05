@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -272,6 +273,7 @@ func (m *Manager) SetMasterReality(dest string, regen bool) error {
 		if err := m.regenRealityKeys(); err != nil {
 			return err
 		}
+		m.cascadeChanged()
 	}
 	m.TriggerReconcile()
 	return nil
@@ -633,7 +635,13 @@ func (m *Manager) DeleteNode(id int64) error {
 	}
 	m.nodes.dropWaiter(id)
 	m.served.forget(id)
-	m.cascadeChanged() // its cascade lanes leave the exits
+	if slices.ContainsFunc(inbounds, func(in model.Inbound) bool { return in.Opts.MultiHop != nil }) {
+		// The last multi-hop profile may be gone, but its peers still hold the
+		// credentials until they receive the updated config.
+		m.cascadeMoved()
+	} else {
+		m.cascadeChanged()
+	}
 	return nil
 }
 

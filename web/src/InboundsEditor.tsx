@@ -19,6 +19,7 @@ import {
   type XmuxForm,
   type NodeView,
 } from "./api";
+import { nodeState, serverName } from "./NodeStatus";
 import { useCan } from "./role";
 import { ServerPicker } from "./ServerDialogParts";
 import { ApplyingModal, useXrayApply } from "./apply";
@@ -138,6 +139,7 @@ function toInput(v: Inbound): InboundInput {
     port: v.port,
     transport: o.transport,
     security: o.security,
+    multi_hop: o.multi_hop ?? null,
     sni: o.sni ?? "",
     fp: o.fp || "firefox",
     // The stored path carries its leading slash; the field is typed without one.
@@ -340,6 +342,7 @@ export function InboundsEditor({
           <InboundForm
             v={editing.v}
             catalog={catalog}
+            peers={peers?.filter((peer) => peer.id !== serverId) ?? []}
             onChange={(v) => setEditing({ ...editing, v })}
             onCancel={() => setEditing(null)}
             onSave={save}
@@ -579,6 +582,7 @@ function CopyInboundsFrom({
                         </span>
                         <span className="flex flex-wrap items-center gap-2 text-[11px] text-ink-muted">
                           <Mono>{PROTOCOL_LABELS[v.protocol] ?? v.protocol}</Mono>
+                          {v.opts.multi_hop && <Mono>{t("inb.multiHop")}</Mono>}
                           {v.protocol !== "shadowsocks" && v.protocol !== "turn-vk" && v.protocol !== "wg" && (
                             <Mono>{TRANSPORT_LABELS[v.opts.transport] ?? v.opts.transport}</Mono>
                           )}
@@ -643,6 +647,7 @@ function InboundRow({
           <span className="truncate">{v.name}</span>
           <span className="flex flex-wrap items-center gap-2 text-[11px] font-normal text-ink-muted">
             <Mono>{PROTOCOL_LABELS[v.protocol] ?? v.protocol}</Mono>
+            {o.multi_hop && <Mono>{t("inb.multiHop")}</Mono>}
             {/* WireGuard's one transport is what its label already says. */}
             {!isSS && !isWG && <Mono>{TRANSPORT_LABELS[o.transport] ?? o.transport}</Mono>}
             {isSS && ssMethod && <Mono className="text-success">{ssMethod}</Mono>}
@@ -1133,6 +1138,7 @@ function LongRow({ label, value }: { label: string; value: string }) {
 function InboundForm({
   v,
   catalog,
+  peers,
   onChange,
   onCancel,
   onSave,
@@ -1140,6 +1146,7 @@ function InboundForm({
 }: {
   v: InboundInput;
   catalog: InboundCatalog;
+  peers: NodeView[];
   onChange: (v: InboundInput) => void;
   onCancel: () => void;
   onSave: () => void;
@@ -1164,6 +1171,7 @@ function InboundForm({
     onChange({
       ...v,
       protocol: p,
+      multi_hop: p === "vless" ? v.multi_hop : null,
       transport: first?.transport ?? "",
       security: first?.securities[0] ?? "tls",
       // vk-turn-proxy's own default port, so the command users copy from its README
@@ -1179,6 +1187,25 @@ function InboundForm({
       security: c?.securities.includes(v.security) ? v.security : (c?.securities[0] ?? "tls"),
     });
   };
+
+  const hops = v.multi_hop;
+  const hopPeers = peers.filter(
+    (p) => (p.enabled && (p.is_local || p.joined) && p.vless_enabled) ||
+      p.id === hops?.transit || p.id === hops?.exit,
+  );
+  const hopOptions = (selected: number, other: number) => [
+    { value: "-1", label: t("inb.multiHopSelect") },
+    ...hopPeers.filter((p) => p.id !== other).map((p) => {
+      const status = nodeState(p);
+      return {
+        value: String(p.id),
+        label: status.tone === "success" ? serverName(p) : serverName(p) + " · " + status.label,
+      };
+    }),
+    ...(selected >= 0 && !hopPeers.some((p) => p.id === selected)
+      ? [{ value: String(selected), label: "#" + selected }]
+      : []),
+  ];
 
   const isHysteria = v.protocol === "hysteria2";
   const isShadowsocks = v.protocol === "shadowsocks";
@@ -1225,6 +1252,31 @@ function InboundForm({
           onChange={(x) => set("port", num(x))}
         />
       </div>
+
+      {v.protocol === "vless" && (hops || hopPeers.length >= 2) && (
+        <SettingRow label={t("inb.multiHop")} hint={t("inb.multiHopHint")}>
+          <Switch
+            checked={!!hops}
+            onChange={(on) => set("multi_hop", on ? { transit: -1, exit: -1 } : null)}
+          />
+        </SettingRow>
+      )}
+      {hops && (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Select
+            label={t("inb.multiHopTransit")}
+            value={String(hops.transit)}
+            data={hopOptions(hops.transit, hops.exit)}
+            onChange={(x) => set("multi_hop", { ...hops, transit: Number(x) })}
+          />
+          <Select
+            label={t("inb.multiHopExit")}
+            value={String(hops.exit)}
+            data={hopOptions(hops.exit, hops.transit)}
+            onChange={(x) => set("multi_hop", { ...hops, exit: Number(x) })}
+          />
+        </div>
+      )}
 
       {!fixedTransport && (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -1503,7 +1555,7 @@ function InboundForm({
         <Button variant="light" color="gray" onClick={onCancel} disabled={busy}>
           {t("common.cancel")}
         </Button>
-        <Button onClick={onSave} loading={busy}>
+        <Button onClick={onSave} loading={busy} disabled={!!hops && (hops.transit < 0 || hops.exit < 0)}>
           {t("common.save")}
         </Button>
       </div>

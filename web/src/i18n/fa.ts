@@ -456,6 +456,9 @@ const fa: Dict = {
     mtprotoDomain: "{{value}} شبیه دامنهٔ واقعی نیست",
     mieruTransport: "mieru فقط روی TCP کار می‌کند",
     awgDNS: "DNS در AmneziaWG: نشانی‌های IP جداشده با ویرگول",
+    multiHopVLESS: "ورودی چندپرشی به VLESS با TLS یا REALITY و بدون CDN نیاز دارد.",
+    multiHopDistinct: "سه سرور متفاوت انتخاب کنید.",
+    multiHopPeer: "سرورها باید متصل باشند و VLESS TCP-TLS روی سرورهای میانی و خروجی فعال باشد.",
     cascadeSelf: "مسیر «{{lane}}»: سرور نمی‌تواند خروجی خودش باشد",
     cascadeNoServer: "مسیر «{{lane}}»: سرور خروجی یافت نشد، خاموش است یا هنوز متصل نشده",
     cascadeLaneOff: "مسیر «{{lane}}»: اتصال «{{bridge}}» که آبشار از آن می‌گذرد روی سرور «{{server}}» خاموش است",
@@ -4126,6 +4129,11 @@ const fa: Dict = {
   },
 
   inb: {
+    multiHop: "چندپرشی",
+    multiHopHint: "این سرور نقطهٔ ورود است. سروری در کشور کاربر و دو سرور دیگر با VLESS TCP-TLS انتخاب کنید.",
+    multiHopTransit: "سرور میانی",
+    multiHopExit: "سرور خروجی",
+    multiHopSelect: "یک سرور انتخاب کنید",
     copyFrom: "کپی از سرور دیگر",
     copyHint: "اتصال‌های انتخاب‌شده روی این سرور ساخته می‌شوند.",
     copyTitle: "کپی اتصال‌ها",

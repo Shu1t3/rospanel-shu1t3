@@ -59,7 +59,7 @@ func singboxProxies(u model.User, srv Server) (proxies []any, tags []string) {
 		tags = append(tags, nH)
 	}
 	for _, in := range srv.Custom {
-		if !srv.allowsInbound(in.ID) {
+		if !srv.allowsInbound(in) {
 			continue
 		}
 		if o, tag, ok := singboxCustom(u, in, set); ok {
@@ -128,7 +128,7 @@ func singboxCustom(u model.User, in model.Inbound, set *model.Settings) (map[str
 		"type": in.Protocol, "tag": tag, "server": host, "server_port": port,
 	}
 	if in.Protocol == model.InbVLESS {
-		out["uuid"] = u.UUID
+		out["uuid"] = in.VLESSUUID(u.UUID)
 		if o.Flow != "" {
 			out["flow"] = o.Flow
 		}

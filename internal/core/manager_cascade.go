@@ -28,8 +28,12 @@ import (
 // bridgeCreds is the service credential entry uses on exit: a version-4 UUID — so its
 // route bytes never collide with an ext relay's (model.ExtRoute) — and a password.
 func bridgeCreds(set *model.Settings, entry, exit int64) (uuid, password string) {
+	return serviceCreds(set, strconv.FormatInt(entry, 10)+">"+strconv.FormatInt(exit, 10))
+}
+
+func serviceCreds(set *model.Settings, scope string) (uuid, password string) {
 	mac := hmac.New(sha256.New, []byte("rospanel-bridge\x00"+set.RealityPrivateKey))
-	mac.Write([]byte(strconv.FormatInt(entry, 10) + ">" + strconv.FormatInt(exit, 10)))
+	mac.Write([]byte(scope))
 	sum := mac.Sum(nil)
 	b := sum[:16]
 	b[6] = b[6]&0x0f | 0x40
@@ -230,6 +234,19 @@ func (m *Manager) cascadeOpts(opts *xray.Options, server int64, master *model.Se
 	servers := m.cascadeServers(master, nodes)
 	opts.Cascade = m.cascadeFor(server, servers, master)
 	opts.Bridges = m.bridgesFor(server, servers, master)
+	for _, in := range opts.Custom {
+		m.multiHopOpts(opts, server, master, servers, in)
+	}
+	routes, err := m.store.EnabledMultiHopInbounds()
+	if err != nil {
+		logErr("multi-hop: load routes", "err", err)
+		return
+	}
+	for _, in := range routes {
+		if in.ServerID != server {
+			m.multiHopOpts(opts, server, master, servers, in)
+		}
+	}
 }
 
 // NoteNodeSeenIP records the address a node reached the panel from, one per family
@@ -267,8 +284,11 @@ func (m *Manager) NoteNodeSeenIP(n *model.Node, ip string) {
 	}
 }
 
-// anyCascade reports whether any server has a cascade lane.
+// anyCascade reports whether any server has a cascade lane or multi-hop inbound.
 func (m *Manager) anyCascade() bool {
+	if routes, err := m.store.EnabledMultiHopInbounds(); err != nil || len(routes) > 0 {
+		return true
+	}
 	set, err := m.store.GetSettings()
 	if err != nil {
 		return true // unknown: rebuilding is the safe side
@@ -312,11 +332,9 @@ func bridgeSources(bridges []xray.Bridge) []string {
 
 // localBridgeSources is the addresses of the master's cascade entries.
 func (m *Manager) localBridgeSources(set *model.Settings) []string {
-	nodes, err := m.store.ListNodes()
-	if err != nil {
-		return nil
-	}
-	return bridgeSources(m.bridgesFor(model.LocalNodeID, m.cascadeServers(set, nodes), set))
+	var opts xray.Options
+	m.cascadeOpts(&opts, model.LocalNodeID, set)
+	return bridgeSources(opts.Bridges)
 }
 
 // validateCascade checks a server's cascade lanes before they are saved: every exit is
@@ -549,6 +567,12 @@ func bridgesKey(bridges []xray.Bridge) string {
 		b.WriteString(x.UUID)
 		b.WriteByte('|')
 		b.WriteString(strings.Join(x.Sources, ","))
+		if hop := x.MultiHop; hop != nil {
+			b.WriteByte('|')
+			b.WriteString(strconv.FormatBool(hop.Exit))
+			b.WriteByte('|')
+			b.WriteString(hop.Next)
+		}
 		b.WriteByte(';')
 	}
 	return b.String()

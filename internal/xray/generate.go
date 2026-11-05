@@ -95,7 +95,8 @@ type Options struct {
 	Cascade map[string][]model.ProxyEndpoint
 	// Bridges are the cascade entries that leave through this server: each one's
 	// service credential on its bridge lane, let in from its own addresses only.
-	Bridges []Bridge
+	Bridges       []Bridge
+	MultiHopLinks map[int64]string // custom inbound ID to the transit's service link
 }
 
 // acceptProxy is the socket option that has Xray read the front's PROXY header.
@@ -104,11 +105,6 @@ var acceptProxy = json.RawMessage(`{"acceptProxyProtocol":true}`)
 // allowsBuiltin reports whether a user may use a built-in lane on this server.
 func (o Options) allowsBuiltin(userID int64, lane string) bool {
 	return model.AccessOf(o.Access, userID).AllowsBuiltin(o.ServerID, lane)
-}
-
-// allowsInbound reports whether a user may use a custom inbound.
-func (o Options) allowsInbound(userID, inboundID int64) bool {
-	return model.AccessOf(o.Access, userID).AllowsInbound(inboundID)
 }
 
 // Generate builds the full Xray config from settings + enabled users.
@@ -376,6 +372,8 @@ func Generate(set *model.Settings, users []model.User, opts Options, proxies map
 		return relayDialer(dial, protocol, warpActive, operaActive, active)
 	})
 	outbounds = append(outbounds, relayOuts...)
+	hopOuts, hopRules := multiHopRouting(opts, rc)
+	outbounds = append(outbounds, hopOuts...)
 
 	var observatory *Observatory
 	if len(subjects) > 0 {
@@ -435,7 +433,7 @@ func Generate(set *model.Settings, users []model.User, opts Options, proxies map
 		Inbounds:  inbounds,
 		Outbounds: outbounds,
 		Routing: compileRouting(expandGroups(rc, opts.Groups), order, warpActive, operaActive, active, unusable,
-			relayPlans, groupExpander(opts.Groups), opts.Bridges),
+			relayPlans, groupExpander(opts.Groups), opts.Bridges, hopRules),
 		Observatory: observatory,
 	}, nil
 }
@@ -794,7 +792,7 @@ func customInbound(in model.Inbound, set *model.Settings, users []model.User,
 	}
 
 	// Only the users allowed this inbound get a credential in it — the access gate.
-	allowed := allowedUsers(users, func(u model.User) bool { return opts.allowsInbound(u.ID, in.ID) })
+	allowed := allowedUsers(users, func(u model.User) bool { return in.AllowsAccess(model.AccessOf(opts.Access, u.ID)) })
 
 	switch in.Protocol {
 	case model.InbVLESS:
@@ -989,7 +987,7 @@ func customALPN(transport string) []string {
 func customVLESSClients(in model.Inbound, users []model.User) []VLESSClient {
 	out := make([]VLESSClient, 0, len(users))
 	for _, u := range users {
-		out = append(out, VLESSClient{ID: u.UUID, Flow: in.Opts.Flow, Email: model.UserEmail(u.ID)})
+		out = append(out, VLESSClient{ID: in.VLESSUUID(u.UUID), Flow: in.Opts.Flow, Email: model.UserEmail(u.ID)})
 	}
 	return out
 }
@@ -1176,7 +1174,7 @@ func UserInbounds(set *model.Settings, custom []model.Inbound, users []model.Use
 	for _, c := range custom {
 
 		allowed := allowedUsers(users, func(u model.User) bool {
-			return model.AccessOf(access, u.ID).AllowsInbound(c.ID)
+			return c.AllowsAccess(model.AccessOf(access, u.ID))
 		})
 		if len(allowed) == 0 {
 			continue
@@ -1449,7 +1447,7 @@ var privateEgressDomains = []string{
 	"full:instance-data.ec2.internal",
 }
 
-func compileRouting(rc model.RoutingConfig, order []string, warpActive, operaActive bool, active, unusable map[string]bool, relay []relayPlan, expand func([]string, bool) []string, bridges []Bridge) *Routing {
+func compileRouting(rc model.RoutingConfig, order []string, warpActive, operaActive bool, active, unusable map[string]bool, relay []relayPlan, expand func([]string, bool) []string, bridges []Bridge, hopRules []RouteRule) *Routing {
 	out := &Routing{DomainStrategy: "IPIfNonMatch"}
 	strict := rc.StrictEgress
 	byID := make(map[string]model.EgressLane, len(rc.Lanes))
@@ -1530,6 +1528,7 @@ func compileRouting(rc model.RoutingConfig, order []string, warpActive, operaAct
 	}
 	addDomainRule(out, "block", rc.BlockDomains)
 	addIPRule(out, "block", rc.BlockIPs)
+	out.Rules = append(out.Rules, hopRules...)
 
 	// A relayed external server takes its connections, ahead of every egress lane: the
 	// user picked that server (see relay.go). Its own routing may send part of them to a

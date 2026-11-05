@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/pprof"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -119,7 +120,7 @@ func makeUserView(u model.User, set *model.Settings, userBotUsername string, cus
 		v.Links = append(v.Links, namedLink{set.ProtoLabelFor(model.ProtoMTProto, &u), link.MTProto(u, set)})
 	}
 	for _, in := range custom {
-		if !access.AllowsInbound(in.ID) {
+		if !in.AllowsAccess(access) {
 			continue
 		}
 		if model.IsWireGuard(in.Protocol) {
@@ -234,10 +235,20 @@ func (rt *Router) subServers(local *model.Settings, userID int64, clientIP strin
 	// operator's weights decide who comes first, and a full server can drop out.
 	// Under the manual mode with no weights this is the old order, unchanged.
 	servers := sub.Servers(sets, custom, access)
+	bridgeUp := make(map[int64]bool, len(servers))
 	// What is down on a server stays out until it is back (core/manager_lanes_down.go).
 	for i := range servers {
-		lanes, inbounds := rt.mgr.DownLanes(servers[i].Set.ServerID)
+		set := servers[i].Set
+		lanes, inbounds := rt.mgr.DownLanes(set.ServerID)
+		bridgeUp[set.ServerID] = set.VLESSEnabled && set.Host != "" &&
+			(!set.TLSInsecure || set.TLSPinSHA256 != "") && !lanes[model.LaneVLESS]
 		sub.HideDown(&servers[i], lanes, inbounds)
+	}
+	for i := range servers {
+		servers[i].Custom = slices.DeleteFunc(servers[i].Custom, func(in model.Inbound) bool {
+			hops := in.Opts.MultiHop
+			return hops != nil && (!bridgeUp[hops.Transit] || !bridgeUp[hops.Exit])
+		})
 	}
 	servers = withoutMaintenance(servers, rt.mgr.MaintenanceHiddenServers())
 	ordered := sub.Order(servers, local.SubOrderMode, rt.mgr.CountryOfIP(clientIP),

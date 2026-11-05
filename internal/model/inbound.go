@@ -6,11 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-
-	"github.com/Shu1t3/rospanel-shu1t3/internal/datasec"
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/Shu1t3/rospanel-shu1t3/internal/datasec"
+	"github.com/google/uuid"
 )
 
 // Custom-inbound protocols. Deliberately a short list: these three cover every
@@ -122,13 +123,20 @@ type Inbound struct {
 	CreatedAt int64 `json:"created_at"`
 }
 
+// MultiHop names the two servers after this VLESS inbound's own server.
+type MultiHop struct {
+	Transit int64 `json:"transit"`
+	Exit    int64 `json:"exit"`
+}
+
 // InboundOpts is the transport/security-dependent half of an inbound. It is stored
 // as one JSON blob rather than thirty nullable columns because which fields are even
 // meaningful depends on the protocol × transport × security combination — see
 // (*Inbound).Validate, which is the single place that decides.
 type InboundOpts struct {
-	Transport string `json:"transport"`
-	Security  string `json:"security"`
+	Transport string    `json:"transport"`
+	Security  string    `json:"security"`
+	MultiHop  *MultiHop `json:"multi_hop,omitempty"`
 
 	// SNI overrides the TLS server name (empty ⇒ the server's own host). Also the
 	// value that goes into the share link's sni=.
@@ -550,6 +558,23 @@ func (in *Inbound) UsesHopping() bool {
 // rename and reorder.
 func (in *Inbound) Tag() string { return fmt.Sprintf("custom-%d", in.ID) }
 
+// AllowsAccess requires an explicit group grant for a multi-hop profile.
+func (in Inbound) AllowsAccess(access Access) bool {
+	if in.Opts.MultiHop != nil {
+		return access.Tokens[InboundToken(in.ID)]
+	}
+	return access.AllowsInbound(in.ID)
+}
+
+// VLESSUUID scopes a multi-hop profile's credential to its listener. If its
+// port is reused for a regular inbound, cached profiles cannot connect there.
+func (in Inbound) VLESSUUID(userUUID string) string {
+	if in.Opts.MultiHop == nil {
+		return userUUID
+	}
+	return uuid.NewSHA1(uuid.NameSpaceOID, fmt.Appendf(nil, "rospanel/multi-hop/%d/%s", in.ID, userUUID)).String()
+}
+
 // RealitySNI is the primary donor (the one that goes into share links).
 func (o InboundOpts) RealitySNI() string {
 	first, _, _ := strings.Cut(o.RealityDest, ",")
@@ -815,6 +840,14 @@ func (in *Inbound) Validate() error {
 		return fieldErr("err.inboundPortRange", "порт вне диапазона 1–65535")
 	}
 	o := in.Opts
+	if hops := o.MultiHop; hops != nil {
+		if in.Protocol != InbVLESS || o.Security == SecNone || o.CDNHost != "" {
+			return fieldErr("err.multiHopVLESS", "для мульти-хопа нужен VLESS с TLS или REALITY на входном сервере, без CDN")
+		}
+		if hops.Transit < 0 || hops.Exit < 0 || hops.Transit == hops.Exit || hops.Transit == in.ServerID || hops.Exit == in.ServerID {
+			return fieldErr("err.multiHopDistinct", "выберите три разных сервера для мульти-хопа")
+		}
+	}
 	if !contains(InboundTransports(in.Protocol), o.Transport) {
 		return fieldErr("err.transportUnsupported", "транспорт {{transport}} не поддерживается протоколом {{protocol}}", map[string]any{"transport": o.Transport, "protocol": in.Protocol})
 	}

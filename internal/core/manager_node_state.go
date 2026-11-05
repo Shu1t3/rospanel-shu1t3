@@ -80,6 +80,7 @@ func (m *Manager) readNodeStateInputs(n *model.Node) (*nodeStateInputs, error) {
 	x.proxies = m.getNodeProxies(n.ID)
 	// Cascade ends move with other servers' settings; in the options, they are in the
 	// fingerprint (nodeStructureKey).
+	x.opts.Custom = x.inbounds
 	m.cascadeOpts(&x.opts, n.ID, set)
 	return x, nil
 }
@@ -223,12 +224,13 @@ func nodeStructureKey(n *model.Node, x *nodeStateInputs, managerOpts xray.Option
 		Opts     xray.Options
 		Pinned   string
 		// Built per node from other servers' settings (cascadeOpts), so not in opts.
-		Cascade map[string][]model.ProxyEndpoint
-		Bridges []xray.Bridge
+		Cascade       map[string][]model.ProxyEndpoint
+		Bridges       []xray.Bridge
+		MultiHopLinks map[int64]string
 		// The node's Xray version is left out above, but whether it reads the udp hop
 		// mask is not: the config is written for it (generateNodeState).
 		LegacyHop bool
-	}{x.geoGen, set, node, x.inbounds, x.relays, x.proxies, opts, xray.PinnedVersion, x.opts.Cascade, x.opts.Bridges, nodeLegacyHop(n)}))
+	}{x.geoGen, set, node, x.inbounds, x.relays, x.proxies, opts, xray.PinnedVersion, x.opts.Cascade, x.opts.Bridges, x.opts.MultiHopLinks, nodeLegacyHop(n)}))
 	if !d.ok {
 		return key, false
 	}

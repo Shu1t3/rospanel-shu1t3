@@ -456,6 +456,9 @@ const en: Dict = {
     mtprotoDomain: "{{value}} does not look like a real domain",
     mieruTransport: "mieru runs on TCP only",
     awgDNS: "AmneziaWG DNS: IP addresses separated by commas",
+    multiHopVLESS: "Multi-hop requires VLESS with TLS or REALITY on the entry server, without a CDN.",
+    multiHopDistinct: "Select three distinct servers for multi-hop.",
+    multiHopPeer: "Multi-hop requires joined servers and VLESS TCP-TLS on the transit and exit.",
     cascadeSelf: "lane “{{lane}}”: a server cannot be its own exit",
     cascadeNoServer: "lane “{{lane}}”: the exit server is not found, switched off or not connected yet",
     cascadeLaneOff: "lane “{{lane}}”: the connection “{{bridge}}” the cascade goes over is off on server “{{server}}”",
@@ -4126,6 +4129,11 @@ const en: Dict = {
   },
 
   inb: {
+    multiHop: "Multi-hop",
+    multiHopHint: "This server is the entry. Use an entry in the client’s country and choose two downstream servers with VLESS TCP-TLS.",
+    multiHopTransit: "Transit server",
+    multiHopExit: "Exit server",
+    multiHopSelect: "Select a server",
     copyFrom: "Copy from another server",
     copyHint: "The picked connections are created on this server.",
     copyTitle: "Copy connections",

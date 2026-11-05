@@ -456,6 +456,9 @@ const zh: Dict = {
     mtprotoDomain: "{{value}} 看起来不像真实的域名",
     mieruTransport: "mieru 仅支持 TCP",
     awgDNS: "AmneziaWG DNS：用逗号分隔的 IP 地址",
+    multiHopVLESS: "多跳入口需要使用 TLS 或 REALITY 的 VLESS，且无需 CDN。",
+    multiHopDistinct: "请选择三台不同的服务器。",
+    multiHopPeer: "服务器必须已接入面板，且中转和出口服务器必须启用 VLESS TCP-TLS。",
     cascadeSelf: "通道“{{lane}}”：服务器不能作为自己的出口",
     cascadeNoServer: "通道“{{lane}}”：出口服务器不存在、已关闭或尚未连接",
     cascadeLaneOff: "通道“{{lane}}”：级联所经过的连接“{{bridge}}”在服务器“{{server}}”上已关闭",
@@ -4101,6 +4104,11 @@ const zh: Dict = {
   },
 
   inb: {
+    multiHop: "多跳",
+    multiHopHint: "此服务器作为入口。请在客户端所在国家配置入口，并选择另外两台启用了 VLESS TCP-TLS 的服务器。",
+    multiHopTransit: "中转服务器",
+    multiHopExit: "出口服务器",
+    multiHopSelect: "选择服务器",
     copyFrom: "从其他服务器复制",
     copyHint: "所选连接将在此服务器上创建。",
     copyTitle: "复制连接",

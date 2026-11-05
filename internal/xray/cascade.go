@@ -24,7 +24,14 @@ type Bridge struct {
 	// Sources are the entry's addresses; the credential from any other is dropped.
 	// None known drops it from everywhere — a bridge that cannot be pinned to its
 	// entry is a credential anyone holding it could use.
-	Sources []string
+	Sources  []string
+	MultiHop *MultiHopBridge
+}
+
+// MultiHopBridge pins a service client to the next leg or to the final egress.
+type MultiHopBridge struct {
+	Next string
+	Exit bool
 }
 
 // addBridgeClients puts each bridge on the lane it reaches this server over — only a

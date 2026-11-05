@@ -88,7 +88,7 @@ func clashProxies(u model.User, srv Server, caps clashCaps) []clashProxy {
 		}
 	}
 	for _, in := range srv.Custom {
-		if !srv.allowsInbound(in.ID) || in.Opts.EncMode != "" && !caps.vlessEnc || in.Opts.PinCert && !caps.pin {
+		if !srv.allowsInbound(in) || in.Opts.EncMode != "" && !caps.vlessEnc || in.Opts.PinCert && !caps.pin {
 			continue
 		}
 		if p, ok := clashCustom(u, in, set, sv); ok {
@@ -171,7 +171,7 @@ func clashCustom(u model.User, in model.Inbound, set *model.Settings, sv string)
 	fmt.Fprintf(&b, "  - {name: %q, type: %s, server: %q, port: %d",
 		n, in.Protocol, host, port)
 	if in.Protocol == model.InbVLESS {
-		fmt.Fprintf(&b, ", uuid: %q", u.UUID)
+		fmt.Fprintf(&b, ", uuid: %q", in.VLESSUUID(u.UUID))
 		if o.Flow != "" {
 			fmt.Fprintf(&b, ", flow: %s", o.Flow)
 		}

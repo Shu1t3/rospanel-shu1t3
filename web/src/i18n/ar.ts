@@ -447,6 +447,9 @@ const ar: Dict = {
     mtprotoDomain: "{{value}} لا يبدو نطاقًا حقيقيًا",
     mieruTransport: "يعمل mieru عبر TCP فقط",
     awgDNS: "DNS لـ AmneziaWG: عناوين IP مفصولة بفواصل",
+    multiHopVLESS: "يتطلب الاتصال متعدد القفزات VLESS مع TLS أو REALITY على خادم الدخول دون CDN.",
+    multiHopDistinct: "اختر ثلاثة خوادم مختلفة.",
+    multiHopPeer: "يجب ربط الخوادم وتفعيل VLESS TCP-TLS على خادمي العبور والخروج.",
     cascadeSelf: "المسار «{{lane}}»: لا يمكن أن يكون الخادم مخرجًا لنفسه",
     cascadeNoServer: "المسار «{{lane}}»: خادم المخرج غير موجود أو متوقف أو لم يتصل بعد",
     cascadeLaneOff: "المسار «{{lane}}»: الاتصال «{{bridge}}» الذي يمر عبره التسلسل متوقف على الخادم «{{server}}»",
@@ -4010,6 +4013,11 @@ const ar: Dict = {
   },
 
   inb: {
+    multiHop: "متعدد القفزات",
+    multiHopHint: "يستقبل هذا الخادم الاتصال. استخدم خادمًا في بلد العميل واختر خادمين آخرين يدعمان VLESS TCP-TLS.",
+    multiHopTransit: "خادم العبور",
+    multiHopExit: "خادم الخروج",
+    multiHopSelect: "اختر خادمًا",
     copyFrom: "نسخ من خادم آخر",
     copyHint: "تُنشأ الاتصالات المختارة على هذا الخادم.",
     copyTitle: "نسخ الاتصالات",

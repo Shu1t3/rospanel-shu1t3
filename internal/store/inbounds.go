@@ -201,3 +201,23 @@ func (s *Store) DeleteServerInbounds(serverID int64) error {
 	_, err := s.db.Exec(`DELETE FROM inbounds WHERE server_id = ?`, serverID)
 	return err
 }
+
+// EnabledMultiHopInbounds supplies the fleet-wide routes used to build the
+// service clients on transit and exit servers. Inbound IDs give a stable order.
+func (s *Store) EnabledMultiHopInbounds() ([]model.Inbound, error) {
+	rows, err := s.rdb.Query(`SELECT ` + inboundColumns + ` FROM inbounds
+		WHERE enabled = 1 AND json_type(opts, '$.multi_hop') = 'object' ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.Inbound
+	for rows.Next() {
+		in, err := scanInbound(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *in)
+	}
+	return out, rows.Err()
+}

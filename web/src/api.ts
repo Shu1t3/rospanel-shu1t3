@@ -3300,7 +3300,13 @@ export const deleteHappNode = (id: number) =>
 // belongs to exactly one server (0 = the master, a node id otherwise), because
 // its port, REALITY identity and hop range are all facts about that machine.
 
+export interface MultiHop {
+  transit: number
+  exit: number
+}
+
 export interface InboundOpts {
+  multi_hop?: MultiHop
   transport: string
   security: string
   sni?: string
@@ -3440,6 +3446,7 @@ export interface Inbound {
 // InboundInput is the editable shape sent on create/update. The server owns the
 // id, the server_id and the REALITY private key, so none of them appear here.
 export interface InboundInput {
+  multi_hop?: MultiHop | null
   enabled: boolean
   name: string
   protocol: string

@@ -9,6 +9,10 @@ import "slices"
 // A reference field added to Inbound or InboundOpts has to be copied here:
 // TestInboundCloneSharesNothing fills every field and fails on any the copy still shares.
 func (in Inbound) Clone() Inbound {
+	if in.Opts.MultiHop != nil {
+		hops := *in.Opts.MultiHop
+		in.Opts.MultiHop = &hops
+	}
 	in.Opts.XHTTPExtra = slices.Clone(in.Opts.XHTTPExtra)
 	in.Opts.HeaderHosts = slices.Clone(in.Opts.HeaderHosts)
 	in.Opts.HeaderPaths = slices.Clone(in.Opts.HeaderPaths)
