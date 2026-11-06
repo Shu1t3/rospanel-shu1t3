@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.7.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.6.0...v5.7.0) (2026-11-06)
+
+
+### Features
+
+* add protected reverse multi-hop routes ([23fd243](https://github.com/Shu1t3/rospanel-shu1t3/commit/23fd2437b160c28a1b5db465984258a5344e763c))
+
 ## [5.6.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.5.0...v5.6.0) (2026-11-06)
 
 
