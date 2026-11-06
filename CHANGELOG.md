@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.8.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.7.0...v5.8.0) (2026-11-06)
+
+
+### Features
+
+* allow multi-hop routes to return to their entry ([7360899](https://github.com/Shu1t3/rospanel-shu1t3/commit/7360899d75a3baf7eac71548822abf0b61ad6fae))
+
 ## [5.7.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.6.0...v5.7.0) (2026-11-06)
 
 
