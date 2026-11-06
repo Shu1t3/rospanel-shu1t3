@@ -234,7 +234,6 @@ type HTTPInboundSettings struct {
 	Accounts []ProxyUser `json:"accounts,omitempty"`
 }
 
-
 // WireGuardSettings is the "settings" object for a WireGuard outbound (WARP).
 type WireGuardSettings struct {
 	SecretKey string          `json:"secretKey"`
@@ -286,9 +285,10 @@ type VLESSInboundSettings struct {
 
 // VLESSClient is one VLESS user.
 type VLESSClient struct {
-	ID    string `json:"id"`             // UUID
-	Flow  string `json:"flow,omitempty"` // "xtls-rprx-vision"
-	Email string `json:"email,omitempty"`
+	ID      string        `json:"id"`             // UUID
+	Flow    string        `json:"flow,omitempty"` // "xtls-rprx-vision"
+	Email   string        `json:"email,omitempty"`
+	Reverse *VLESSReverse `json:"reverse,omitempty"`
 }
 
 // Fallback routes non-VLESS traffic on the shared port. Dest is an int port or

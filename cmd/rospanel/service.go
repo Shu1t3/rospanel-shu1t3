@@ -301,6 +301,7 @@ func runServer(dataDir string) {
 	runBG("access flush", accessFlushLoop(mgr))
 	// Puts back the ports a firewall reload took out of the host firewall (hostfw).
 	runBG("hostfw", func(ctx context.Context) { hostfw.Keep(ctx, time.Minute) })
+	runBG("reverse route firewall", mgr.KeepReverseGuard)
 	// Audit-log + connection-row retention: drops rows past their windows.
 	runBG("retention", retentionLoop(mgr))
 	// Re-applies the addresses banned by hand: they never expire, so a ban that did

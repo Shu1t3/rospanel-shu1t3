@@ -10,7 +10,7 @@ import "slices"
 // TestInboundCloneSharesNothing fills every field and fails on any the copy still shares.
 func (in Inbound) Clone() Inbound {
 	if in.Opts.MultiHop != nil {
-		hops := *in.Opts.MultiHop
+		hops := cloneMultiHop(*in.Opts.MultiHop)
 		in.Opts.MultiHop = &hops
 	}
 	in.Opts.XHTTPExtra = slices.Clone(in.Opts.XHTTPExtra)
@@ -19,4 +19,19 @@ func (in Inbound) Clone() Inbound {
 	in.Opts.Sockopt = slices.Clone(in.Opts.Sockopt)
 	in.Opts.TLSExtra = slices.Clone(in.Opts.TLSExtra)
 	return in
+}
+
+func cloneMultiHop(hops MultiHop) MultiHop {
+	hops.Reverse = hops.Reverse.Clone()
+	if hops.Via != nil {
+		via := append([]int64{}, (*hops.Via)...)
+		hops.Via = &via
+	}
+	if hops.Pending != nil {
+		pending := *hops.Pending
+		pending.Reverse = pending.Reverse.Clone()
+		pending.Nodes = append([]int64{}, pending.Nodes...)
+		hops.Pending = &pending
+	}
+	return hops
 }

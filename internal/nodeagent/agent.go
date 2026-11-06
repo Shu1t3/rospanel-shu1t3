@@ -31,6 +31,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/geo"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/h2fix"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/hop"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/hostfw"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/http80"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/ipblock"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/logbuf"
@@ -112,7 +113,8 @@ func jitter(d time.Duration) time.Duration {
 // Agent is the running node: it owns the local Xray supervisor and the decoy
 // server, holds the long-poll to the panel, and reports traffic back.
 type Agent struct {
-	dataDir string
+	reverseGuard hostfw.ReverseGuard
+	dataDir      string
 	// A self-update the operator asked for: tried again until updateUntil while the
 	// release is still without its binaries (they are uploaded a minute or two after it
 	// is published), at most once per updateRetry. updateErr is why the last attempt
@@ -368,6 +370,7 @@ func Run(ctx context.Context, dataDir string) error {
 	go a.shapeLoop(ctx) // per-user speed caps, from this node's own address view
 	go a.quotaLoop(ctx) // quotas between the minute-long traffic samples
 	go keepHostFW(ctx)  // a firewall reload drops the ports we opened
+	go a.reverseGuard.Keep(ctx)
 	a.syncLoop(ctx)
 	a.shutdown()
 	return nil
@@ -1193,19 +1196,20 @@ func (a *Agent) buildSyncRequest() nodeapi.SyncRequest {
 	_ = a.turn.Retry() // still failing is reported below, as TurnDown
 	conns, connsMore := a.takeConns(connsChunkMax)
 	req := nodeapi.SyncRequest{
-		ConfigHash:   hash,
-		DeltaRev:     nodeapi.DeltaRev,
-		Naive:        true,
-		Mieru:        true,
-		AnyTLS:       a.anytls != nil,
-		MieruError:   a.mieruError(),
-		MTProto:      a.mtproto != nil,
-		MTProtoError: a.mtprotoError(),
-		UpdateError:  a.updateErr,
-		TurnDown:     a.turn.Failed(),
-		StateTag:     a.splitTag(),
-		NodeVersion:  version.Version,
-		XrayVersion:  a.sup.Version(),
+		ReverseChainGuard: ipblock.CanEnforce(),
+		ConfigHash:        hash,
+		DeltaRev:          nodeapi.DeltaRev,
+		Naive:             true,
+		Mieru:             true,
+		AnyTLS:            a.anytls != nil,
+		MieruError:        a.mieruError(),
+		MTProto:           a.mtproto != nil,
+		MTProtoError:      a.mtprotoError(),
+		UpdateError:       a.updateErr,
+		TurnDown:          a.turn.Failed(),
+		StateTag:          a.splitTag(),
+		NodeVersion:       version.Version,
+		XrayVersion:       a.sup.Version(),
 		// Serving, not Running: a sync that happens to land during a deliberate
 		// restart (cert renewal, config push, operator bounce) must not report the
 		// node as down for a whole poll cycle over a one-second gap.
@@ -1234,6 +1238,11 @@ func (a *Agent) buildSyncRequest() nodeapi.SyncRequest {
 		ProbeResults:   a.takeProbeResults(),
 		ConfigCheck:    a.takeConfigCheck(),
 		SyncFails:      a.recentSyncFails(),
+	}
+	if a.sup.Running() && !req.Revoked {
+		if meta, ok := a.currentMeta(); ok {
+			req.MultiHopApplied = meta.MultiHopAcks
+		}
 	}
 	// Sites share the panel's 1 MB body cap with traffic, conns and logs, none of
 	// which this feature bounds. Sites are advisory, so they yield: measure the rest
@@ -1433,7 +1442,12 @@ func (a *Agent) applyUsers(st *nodeapi.NodeState) error {
 			a.front.Stop()
 		}
 	}
-	how, err := a.sup.ApplyRawLive(a.sup.APIAddr(), data)
+	var how xray.RawApply
+	err := a.reverseGuard.Apply(m.ReversePolicy, func() error {
+		var err error
+		how, err = a.sup.ApplyRawLive(a.sup.APIAddr(), data)
+		return err
+	})
 	if a.front != nil {
 		a.sup.SetPublicPort(xray.TagVLESS, public)
 		a.frontPort.Store(int64(public))

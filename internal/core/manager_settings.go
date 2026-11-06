@@ -253,7 +253,7 @@ func (m *Manager) genOptsFor(serverID int64) (xray.Options, error) {
 	}
 	opts.Custom = list
 	if set, err := m.store.GetSettings(); err == nil {
-		m.cascadeOpts(&opts, serverID, set)
+		m.cascadeOpts(&opts, serverID, set, false)
 	}
 	return opts, nil
 }

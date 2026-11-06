@@ -31,6 +31,11 @@ func (rt *Router) apiCreateInbound(w http.ResponseWriter, r *http.Request, serve
 		writeAPIErr(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
+	if in.Opts.MultiHop != nil && (in.Opts.MultiHop.Via != nil || in.Opts.MultiHop.Pending != nil ||
+		in.Opts.MultiHop.Revision != "" || in.Opts.MultiHop.Reverse != nil) {
+		writeAPIErr(w, http.StatusBadRequest, "err.multiHopManaged", "управляйте маршрутом в разделе «Мульти-хоп»")
+		return
+	}
 	v, err := rt.mgr.CreateInbound(r.Context(), in)
 	if err != nil {
 		writeAPIManagerErr(w, err)

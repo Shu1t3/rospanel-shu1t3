@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/awg"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/hostfw"
 )
 
 // PathPrefix is the fixed sub-path under the panel's random node-API segment, so
@@ -75,6 +76,8 @@ type JoinResponse struct {
 // SyncRequest is the body of every long-poll. The node states what it currently
 // has applied (config_hash) and reports its health + accumulated traffic deltas.
 type SyncRequest struct {
+	ReverseChainGuard bool     `json:"reverse_chain_guard,omitempty"`
+	MultiHopApplied   []string `json:"multi_hop_applied,omitempty"`
 	// ConfigHash is the hash of the state the node has applied: NodeState.Hash, or for
 	// a split state its SplitState.Hash as the node computes it over what it holds.
 	ConfigHash string `json:"config_hash"`
@@ -495,12 +498,14 @@ type NodeState struct {
 // NodeMeta is the host-level configuration the agent needs that isn't part of the
 // Xray config itself: what to get a cert for, the port-hopping range, the decoy.
 type NodeMeta struct {
-	Host           string `json:"host"`
-	SNI            string `json:"sni"`
-	ACMEEmail      string `json:"acme_email"`
-	ACMEProvider   string `json:"acme_provider"`
-	ZeroSSLEABKID  string `json:"zerossl_eab_kid,omitempty"`
-	ZeroSSLEABHMAC string `json:"zerossl_eab_hmac,omitempty"`
+	ReversePolicy  *hostfw.ReversePolicy `json:"reverse_policy,omitempty"`
+	MultiHopAcks   []string              `json:"multi_hop_acks,omitempty"`
+	Host           string                `json:"host"`
+	SNI            string                `json:"sni"`
+	ACMEEmail      string                `json:"acme_email"`
+	ACMEProvider   string                `json:"acme_provider"`
+	ZeroSSLEABKID  string                `json:"zerossl_eab_kid,omitempty"`
+	ZeroSSLEABHMAC string                `json:"zerossl_eab_hmac,omitempty"`
 
 	HysteriaEnabled bool `json:"hysteria_enabled"`
 	HysteriaPort    int  `json:"hysteria_port"`

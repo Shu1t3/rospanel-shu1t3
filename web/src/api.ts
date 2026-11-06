@@ -3548,25 +3548,33 @@ export const deleteInbound = (id: number) =>
 export const regenInboundReality = (id: number) =>
   api<Inbound>(`api/inbounds/${id}/regen-reality`, { method: 'POST' })
 
+export interface MultiHopReverse {
+  relay_port: number
+  transit_port: number
+  transit_ip: string
+  transit_ips: string[]
+  relay_sources: string[]
+}
+
 export interface MultiHopProfile {
   id: number
   name: string
-  entry: number
-  transit: number
-  exit: number
+  nodes: number[]
   enabled: boolean
   port: number
+  applying?: boolean
+  reverse?: MultiHopReverse
 }
 
 export const listMultiHopProfiles = () => api<MultiHopProfile[]>('api/multi-hop')
 
-export const createMultiHopProfile = (route: Pick<MultiHopProfile, 'name' | 'entry' | 'transit' | 'exit'>) =>
+export const createMultiHopProfile = (route: Pick<MultiHopProfile, 'name' | 'nodes' | 'reverse'>) =>
   api<MultiHopProfile>('api/multi-hop', { method: 'POST', body: JSON.stringify(route) })
 
-export const updateMultiHopProfile = ({ id, name, transit, exit, enabled }: MultiHopProfile) =>
+export const updateMultiHopProfile = ({ id, name, nodes, enabled, reverse }: MultiHopProfile) =>
   api<MultiHopProfile>(`api/multi-hop/${id}`, {
     method: 'POST',
-    body: JSON.stringify({ name, transit, exit, enabled }),
+    body: JSON.stringify({ name, nodes, enabled, reverse }),
   })
 
 export const deleteMultiHopProfile = (id: number) =>

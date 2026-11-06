@@ -636,7 +636,9 @@ combo, node offline) returns `400` with the reason. Inbounds a client can't repr
 silently dropped from Clash/sing-box subscriptions rather than emitted broken.
 
 An inbound is addressable by an access group via the `inbound:<id>` grant token (see
-**Groups**).
+**Groups**). The legacy `multi_hop` write shape accepts `transit` and `exit` server IDs.
+Manage ordered proxy chains in **Servers → Multi-hop**. The external inbound editor
+rejects updates to ordered chains so a legacy write cannot replace their topology.
 
 `GET /v1/inbounds/catalog` publishes what can be combined with what — every protocol ×
 transport, the `security` modes each allows, which subscription formats cannot carry it,

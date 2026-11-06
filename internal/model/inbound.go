@@ -123,10 +123,75 @@ type Inbound struct {
 	CreatedAt int64 `json:"created_at"`
 }
 
-// MultiHop names the two servers after this VLESS inbound's own server.
+// MultiHop lists the servers after the inbound's own server in connection order.
+// A nil Via reads the original transit/exit format. An empty Via means local exit.
 type MultiHop struct {
-	Transit int64 `json:"transit"`
-	Exit    int64 `json:"exit"`
+	Transit  int64            `json:"transit"`
+	Exit     int64            `json:"exit"`
+	Via      *[]int64         `json:"via,omitempty"`
+	Revision string           `json:"revision,omitempty"`
+	Pending  *MultiHopPending `json:"pending,omitempty"`
+	Reverse  *MultiHopReverse `json:"reverse,omitempty"`
+}
+
+// MultiHopPending describes a deployment while the backing inbound still serves
+// the old route. Initial reserves an inbound ID and port without publishing it.
+type MultiHopPending struct {
+	Nodes      []int64          `json:"nodes"`
+	Name       string           `json:"name"`
+	Revision   string           `json:"revision"`
+	Initial    bool             `json:"initial,omitempty"`
+	Ready      int              `json:"ready,omitempty"`
+	ApplyEntry bool             `json:"apply_entry,omitempty"`
+	Legacy     bool             `json:"legacy,omitempty"`
+	Reverse    *MultiHopReverse `json:"reverse,omitempty"`
+}
+
+func (p *MultiHopPending) Chain() []int64 {
+	if p.Reverse != nil {
+		return p.Reverse.Route
+	}
+	return p.Nodes
+}
+
+func (h *MultiHop) Provisioning() bool {
+	return h != nil && h.Pending != nil && h.Pending.Initial
+}
+
+// Chain includes the entry, which is owned by the inbound.
+func (h MultiHop) Chain(entry int64) []int64 {
+	if h.Reverse != nil && len(h.Reverse.Route) > 0 {
+		return append([]int64{entry}, h.Reverse.Route[1:]...)
+	}
+	if h.Via == nil {
+		return []int64{entry, h.Transit, h.Exit}
+	}
+	return append([]int64{entry}, (*h.Via)...)
+}
+
+// ValidChain checks the roles of this profile. A protected route may use
+// one machine for its entry and exit, but R and B must be separate.
+func (h MultiHop) ValidChain(entry int64) bool {
+	chain := h.Chain(entry)
+	if h.Reverse != nil {
+		return h.Reverse.Valid(chain)
+	}
+	return ValidMultiHopChain(chain)
+}
+
+// ValidMultiHopChain rejects loops and missing node IDs. The master is node zero.
+func ValidMultiHopChain(nodes []int64) bool {
+	if len(nodes) == 0 {
+		return false
+	}
+	seen := make(map[int64]bool, len(nodes))
+	for _, id := range nodes {
+		if id < 0 || seen[id] {
+			return false
+		}
+		seen[id] = true
+	}
+	return true
 }
 
 // InboundOpts is the transport/security-dependent half of an inbound. It is stored
@@ -844,8 +909,11 @@ func (in *Inbound) Validate() error {
 		if in.Protocol != InbVLESS || o.Security == SecNone || o.CDNHost != "" {
 			return fieldErr("err.multiHopVLESS", "для мульти-хопа нужен VLESS с TLS или REALITY на входном сервере, без CDN")
 		}
-		if hops.Transit < 0 || hops.Exit < 0 || hops.Transit == hops.Exit || hops.Transit == in.ServerID || hops.Exit == in.ServerID {
-			return fieldErr("err.multiHopDistinct", "выберите три разных сервера для мульти-хопа")
+		if hops.Reverse != nil && !hops.ValidChain(in.ServerID) {
+			return fieldErr("err.multiHopReverse", "проверьте роли, служебные порты и IP-адреса защищённого маршрута")
+		}
+		if hops.Reverse == nil && !hops.ValidChain(in.ServerID) {
+			return fieldErr("err.multiHopDistinct", "выберите один или несколько разных серверов для мульти-хопа")
 		}
 	}
 	if !contains(InboundTransports(in.Protocol), o.Transport) {

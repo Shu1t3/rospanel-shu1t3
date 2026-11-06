@@ -173,18 +173,26 @@ func (s *Store) CreateInbound(in model.Inbound) (*model.Inbound, error) {
 	return s.GetInbound(id)
 }
 
-// UpdateInbound overwrites an inbound's editable fields. server_id is deliberately
-// not among them: moving an inbound between servers would carry a port that is free
-// on one box onto another where it may not be, so the UI deletes and re-creates.
+// UpdateInbound overwrites an inbound's editable fields on its existing server.
 func (s *Store) UpdateInbound(in model.Inbound) error {
+	return s.updateInbound(in, false)
+}
+
+// UpdateMultiHopInbound also allows moving a profile to a validated entry server.
+func (s *Store) UpdateMultiHopInbound(in model.Inbound) error {
+	return s.updateInbound(in, true)
+}
+
+func (s *Store) updateInbound(in model.Inbound, move bool) error {
 	opts, err := marshalInboundOpts(in.Opts)
 	if err != nil {
 		return err
 	}
 	_, err = s.db.Exec(`
-		UPDATE inbounds SET enabled = ?, sort = ?, name = ?, protocol = ?, port = ?, opts = ?
-		WHERE id = ?`,
-		boolToInt(in.Enabled), in.Sort, in.Name, in.Protocol, in.Port, opts, in.ID)
+		UPDATE inbounds SET server_id = CASE WHEN ? THEN ? ELSE server_id END,
+			enabled = ?, sort = ?, name = ?, protocol = ?, port = ?, opts = ?
+		WHERE id = ? AND (NOT ? OR json_type(opts, '$.multi_hop') = 'object')`,
+		move, in.ServerID, boolToInt(in.Enabled), in.Sort, in.Name, in.Protocol, in.Port, opts, in.ID, move)
 	return mapInboundConflict(err)
 }
 
@@ -204,8 +212,16 @@ func (s *Store) DeleteServerInbounds(serverID int64) error {
 
 // MultiHopInbounds lists profiles and their backing listeners in stable ID order.
 func (s *Store) MultiHopInbounds(enabledOnly bool) ([]model.Inbound, error) {
+	return s.readMultiHopInbounds("(enabled = 1 OR NOT ?)", enabledOnly)
+}
+
+func (s *Store) DeployingMultiHopInbounds() ([]model.Inbound, error) {
+	return s.readMultiHopInbounds(`enabled = 1 AND json_type(opts, '$.multi_hop.pending') = 'object'`)
+}
+
+func (s *Store) readMultiHopInbounds(filter string, args ...any) ([]model.Inbound, error) {
 	rows, err := s.rdb.Query(`SELECT `+inboundColumns+` FROM inbounds
-		WHERE (enabled = 1 OR NOT ?) AND json_type(opts, '$.multi_hop') = 'object' ORDER BY id`, enabledOnly)
+		WHERE `+filter+` AND json_type(opts, '$.multi_hop') = 'object' ORDER BY id`, args...)
 	if err != nil {
 		return nil, err
 	}

@@ -23,7 +23,14 @@ func TestMultiHopAgainstRealXray(t *testing.T) {
 	if bin == "" || ip == "" {
 		t.Skip("set RP_XRAY_BIN and RP_MULTI_HOP_TEST_IP")
 	}
+	for _, length := range []int{1, 2, 3, 5, 12} {
+		t.Run(fmt.Sprintf("%d-nodes", length), func(t *testing.T) {
+			testMultiHopAgainstRealXray(t, bin, ip, length)
+		})
+	}
+}
 
+func testMultiHopAgainstRealXray(t *testing.T, bin, ip string, length int) {
 	target, err := net.Listen("tcp", net.JoinHostPort(ip, "0"))
 	if err != nil {
 		t.Fatal(err)
@@ -35,9 +42,29 @@ func TestMultiHopAgainstRealXray(t *testing.T) {
 	t.Cleanup(func() { _ = origin.Close() })
 	targetURL := "http://" + target.Addr().String()
 
+	udp, err := net.ListenPacket("udp", net.JoinHostPort(ip, "0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udp.Close()
+	go func() {
+		buf := make([]byte, 512)
+		for {
+			n, addr, err := udp.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			_, _ = udp.WriteTo(buf[:n], addr)
+		}
+	}()
+
 	dir := t.TempDir()
 	cert, key, pin := selfSignedCert(t, dir)
-	entryPort, transitPort, exitPort, clientPort := freePort(t, "tcp"), freePort(t, "tcp"), freePort(t, "tcp"), freePort(t, "tcp")
+	ports := make([]int, length)
+	for i := range ports {
+		ports[i] = freePort(t, "tcp")
+	}
+	entryPort, clientPort := ports[0], freePort(t, "tcp")
 	serviceLink := func(port int, id string) string {
 		return fmt.Sprintf("vless://%s@127.0.0.1:%d?security=tls&sni=test&flow=%s&pcs=%s", id, port, VisionFlow, pin)
 	}
@@ -108,41 +135,62 @@ func TestMultiHopAgainstRealXray(t *testing.T) {
 		}
 		return cfg
 	}
+	via := make([]int64, length-1)
+	for i := range via {
+		via[i] = int64(i + 1)
+	}
 	in := model.Inbound{
 		ID: 3, Name: "multi-hop", Port: entryPort, Protocol: model.InbVLESS, Enabled: true,
-		Opts: model.InboundOpts{Transport: model.TrTCP, Security: model.SecTLS, MultiHop: &model.MultiHop{Transit: 1, Exit: 2}},
+		Opts: model.InboundOpts{Transport: model.TrTCP, Security: model.SecTLS, MultiHop: &model.MultiHop{Via: &via}},
 	}
 	in.Normalize()
 	allowed := model.User{ID: 1, UUID: "11111111-1111-4111-8111-111111111111"}
 	denied := model.User{ID: 2, UUID: "22222222-2222-4222-8222-222222222222"}
-	transitID, exitID := "33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444"
-	bridge := func(id, role string, hop MultiHopBridge) Bridge {
-		return Bridge{Email: "bridge-multi-hop-3-" + role, UUID: id, Lane: model.BridgeVision, Sources: []string{"127.0.0.1"}, MultiHop: &hop}
+	serviceID := func(i int) string { return fmt.Sprintf("33333333-3333-4333-8333-%012d", i) }
+	configs := make([]*Config, length)
+	stops := make([]func(), length)
+	for i := length - 1; i > 0; i-- {
+		hop := MultiHopBridge{Exit: i == length-1}
+		if !hop.Exit {
+			hop.Next = serviceLink(ports[i+1], serviceID(i+1))
+		}
+		bridge := Bridge{
+			Email: fmt.Sprintf("bridge-multi-hop-3-%d", i), UUID: serviceID(i),
+			Lane: model.BridgeVision, Sources: []string{"127.0.0.1"}, MultiHop: &hop,
+		}
+		configs[i] = generate(ports[i], nil, Options{Bridges: []Bridge{bridge}})
+		stops[i] = start(fmt.Sprintf("hop-%d", i), ports[i], configs[i])
 	}
-	exit := generate(exitPort, nil, Options{Bridges: []Bridge{bridge(exitID, "exit", MultiHopBridge{Exit: true})}})
-	transit := generate(transitPort, nil, Options{Bridges: []Bridge{bridge(transitID, "transit", MultiHopBridge{Next: serviceLink(exitPort, exitID)})}})
+	next := MultiHopLocalExit
+	if length > 1 {
+		next = serviceLink(ports[1], serviceID(1))
+	}
 	entry := generate(entryPort, []model.User{allowed, denied}, Options{
-		Custom: []model.Inbound{in}, MultiHopLinks: map[int64]string{in.ID: serviceLink(transitPort, transitID)},
+		Custom: []model.Inbound{in}, MultiHopLinks: map[int64]string{in.ID: next},
 		Access: map[int64]model.Access{allowed.ID: {Tokens: map[string]bool{model.InboundToken(in.ID): true}}},
 	})
-	stopExit := start("exit", exitPort, exit)
-	stopTransit := start("transit", transitPort, transit)
 	start("entry", entryPort, entry)
 
-	client := func(name string, port int, user model.User) {
+	client := func(name string, port, udpPort int, user model.User) {
 		o, ok := linkOutbound(serviceLink(entryPort, in.VLESSUUID(user.UUID)), "entry", false)
 		if !ok {
 			t.Fatal("cannot generate client outbound")
 		}
+		inbounds := []map[string]any{{"listen": "127.0.0.1", "port": port, "protocol": "http"}}
+		if udpPort != 0 {
+			inbounds = append(inbounds, map[string]any{
+				"listen": "127.0.0.1", "port": udpPort, "protocol": "dokodemo-door",
+				"settings": map[string]any{"address": ip, "port": udp.LocalAddr().(*net.UDPAddr).Port, "network": "udp"},
+			})
+		}
 		start(name, port, map[string]any{
-			"log":       map[string]string{"loglevel": "debug"},
-			"inbounds":  []map[string]any{{"listen": "127.0.0.1", "port": port, "protocol": "http"}},
-			"outbounds": []map[string]any{o},
+			"log": map[string]string{"loglevel": "debug"}, "inbounds": inbounds, "outbounds": []map[string]any{o},
 		})
 	}
-	client("client", clientPort, allowed)
+	udpPort := freePort(t, "udp")
+	client("client", clientPort, udpPort, allowed)
 	deniedPort := freePort(t, "tcp")
-	client("denied", deniedPort, denied)
+	client("denied", deniedPort, 0, denied)
 	request := func(port int, want string) {
 		t.Helper()
 		proxy, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", port))
@@ -166,14 +214,44 @@ func TestMultiHopAgainstRealXray(t *testing.T) {
 			t.Fatalf("origin response = %q, status = %v, err = %v", data, resp.Status, err)
 		}
 	}
+	requestUDP := func(want bool) {
+		t.Helper()
+		c, err := net.Dial("udp", fmt.Sprintf("127.0.0.1:%d", udpPort))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		timeout := time.Second
+		if want {
+			timeout = max(4*time.Second, time.Duration(length)*500*time.Millisecond)
+		}
+		_ = c.SetDeadline(time.Now().Add(timeout))
+		if _, err := c.Write([]byte("through the exit")); err != nil {
+			t.Fatal(err)
+		}
+		var buf [64]byte
+		n, err := c.Read(buf[:])
+		if want && (err != nil || string(buf[:n]) != "through the exit") {
+			t.Fatalf("UDP through chain: %q (%v)", buf[:n], err)
+		}
+		if !want && err == nil {
+			t.Fatal("UDP leaked to the origin")
+		}
+	}
 	request(clientPort, "through the exit")
+	requestUDP(true)
 	request(deniedPort, "")
-	stopExit()
-	request(clientPort, "")
-	start("exit-recovered", exitPort, exit)
-	request(clientPort, "through the exit")
-	stopTransit()
-	request(clientPort, "")
-	start("transit-recovered", transitPort, transit)
-	request(clientPort, "through the exit")
+	// For the longer smoke case, interrupt one representative middle hop.
+	first, last := 1, length
+	if length > 5 {
+		first, last = length/2, length/2+1
+	}
+	for i := first; i < last; i++ {
+		stops[i]()
+		request(clientPort, "")
+		requestUDP(false)
+		start(fmt.Sprintf("hop-%d-recovered", i), ports[i], configs[i])
+		request(clientPort, "through the exit")
+		requestUDP(true)
+	}
 }

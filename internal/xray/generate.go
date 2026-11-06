@@ -6,6 +6,7 @@ import (
 	"hash/fnv"
 	"log/slog"
 	"net"
+	"slices"
 	"strings"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/awg"
@@ -96,7 +97,9 @@ type Options struct {
 	// Bridges are the cascade entries that leave through this server: each one's
 	// service credential on its bridge lane, let in from its own addresses only.
 	Bridges       []Bridge
-	MultiHopLinks map[int64]string // custom inbound ID to the transit's service link
+	MultiHopLinks map[int64]string // custom inbound ID to the next service link
+	MultiHopAcks  []string         // deployment receipts for the generated config
+	ReverseChains []ReverseChain
 }
 
 // acceptProxy is the socket option that has Xray read the front's PROXY header.
@@ -372,6 +375,9 @@ func Generate(set *model.Settings, users []model.User, opts Options, proxies map
 		return relayDialer(dial, protocol, warpActive, operaActive, active)
 	})
 	outbounds = append(outbounds, relayOuts...)
+	reverseIn, reverseOut, relayRules, reverseRules := reverseChainConfig(opts.ReverseChains, sharedCert, rc)
+	inbounds = append(inbounds, reverseIn...)
+	outbounds = append(outbounds, reverseOut...)
 	hopOuts, hopRules := multiHopRouting(opts, rc)
 	outbounds = append(outbounds, hopOuts...)
 
@@ -410,6 +416,10 @@ func Generate(set *model.Settings, users []model.User, opts Options, proxies map
 		inbounds = append(inbounds, innerInbound(TagMTProto, listen, port, laneClients(set.MTProtoEnabled, model.LaneMTProto, users, opts.allowsBuiltin), sniff))
 	}
 
+	routing := compileRouting(expandGroups(rc, opts.Groups), order, warpActive, operaActive, active, unusable,
+		relayPlans, groupExpander(opts.Groups), opts.Bridges, append(reverseRules, hopRules...))
+	// Keep API dispatch first and scope the relay exception to its own listener.
+	routing.Rules = slices.Insert(routing.Rules, 1, relayRules...)
 	return &Config{
 		Log:   &Log{Loglevel: "warning"},
 		Stats: &Stats{},
@@ -429,11 +439,10 @@ func Generate(set *model.Settings, users []model.User, opts Options, proxies map
 				StatsOutboundUplink: true, StatsOutboundDownlink: true,
 			},
 		},
-		DNS:       dns,
-		Inbounds:  inbounds,
-		Outbounds: outbounds,
-		Routing: compileRouting(expandGroups(rc, opts.Groups), order, warpActive, operaActive, active, unusable,
-			relayPlans, groupExpander(opts.Groups), opts.Bridges, hopRules),
+		DNS:         dns,
+		Inbounds:    inbounds,
+		Outbounds:   outbounds,
+		Routing:     routing,
 		Observatory: observatory,
 	}, nil
 }

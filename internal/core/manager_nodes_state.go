@@ -277,6 +277,8 @@ func (m *Manager) generateNodeState(n *model.Node, x *nodeStateInputs, users []m
 		acmeProvider, eabKID, eabHMAC = n.ACMEProvider, n.ZeroSSLEABKID, n.ZeroSSLEABHMAC
 	}
 	meta := nodeapi.NodeMeta{
+		ReversePolicy:     xray.ReverseNetworkPolicy(opts.ReverseChains),
+		MultiHopAcks:      opts.MultiHopAcks,
 		Host:              n.Host,
 		SNI:               n.Host,
 		ACMEEmail:         acmeEmail,

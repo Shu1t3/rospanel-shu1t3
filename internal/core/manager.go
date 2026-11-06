@@ -16,6 +16,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/awg"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/connguard"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/geo"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/hostfw"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/ipblock"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/logbuf"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/mieru"
@@ -414,7 +415,12 @@ type Manager struct {
 	nodeTurnDown map[int64][]int
 	// lanesDown tracks which lanes of which server are down and since when, to leave
 	// them out of subscriptions (manager_lanes_down.go).
-	lanesDown lanesDown
+	lanesDown           lanesDown
+	multiHopWrites      sync.Mutex
+	multiHopAppliedMu   sync.Mutex
+	reverseCapabilities sync.Map
+	reverseGuard        hostfw.ReverseGuard
+	multiHopApplied     map[int64]multiHopApplied
 	// appliedBridges is bridgesKey of the cascade bridges the running config was fully
 	// applied with (see syncUsers).
 	appliedBridges atomic.Value
@@ -595,6 +601,7 @@ func New(st *store.Store, sup *xray.Supervisor, opts xray.Options, tls TLSPaths,
 	m.runAsync(func() { m.guard.cleanupLoop(m.done) })
 	m.claimNodeMTProtoDomains() // before the first node state is built
 	m.runAsync(m.nodeWatchLoop)
+	m.runAsync(m.multiHopLoop)
 	m.runAsync(m.reachLoop)
 	m.runAsync(m.reconcileLoop)
 	m.runAsync(m.proxyLoop)
@@ -817,6 +824,11 @@ func (m *Manager) runAsync(fn func()) {
 		defer m.wg.Done()
 		fn()
 	}()
+}
+
+// KeepReverseGuard restores the protected-route policy after firewall reloads.
+func (m *Manager) KeepReverseGuard(ctx context.Context) {
+	m.reverseGuard.Keep(ctx)
 }
 
 // untilClose is a context that ends after d or when the manager closes, whichever
@@ -1199,7 +1211,7 @@ func (m *Manager) reconcileLocked() error {
 		_ = m.store.SetConfigError(err.Error())
 		return err
 	}
-	if err := m.sup.Apply(cfg); err != nil {
+	if err := m.reverseGuard.Apply(xray.ReverseNetworkPolicy(opts.ReverseChains), func() error { return m.sup.Apply(cfg) }); err != nil {
 		logErr("reconcile: applying config failed", "err", err)
 		_ = m.store.SetConfigError(err.Error())
 		return err
@@ -1215,6 +1227,7 @@ func (m *Manager) reconcileLocked() error {
 	m.syncMTProto(set, cfg)
 	m.syncAnyTLS(cfg)
 	m.syncHostFW(set, cfg)
+	m.noteMultiHopApplied(model.LocalNodeID, opts.MultiHopAcks)
 	return m.store.MarkConfigApplied()
 }
 

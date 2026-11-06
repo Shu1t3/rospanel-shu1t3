@@ -5,11 +5,13 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/nodeapi"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/xray"
 )
@@ -64,6 +66,13 @@ func TestMultiHopNodeStateFollowsDownstream(t *testing.T) {
 	}
 	if saved == nil || profile.Port != 28444 || saved.Opts.Security != model.SecTLS {
 		t.Fatalf("unexpected generated listener: %+v", profile)
+	}
+
+	// Keep a v5.6-format listener as an upgrade fixture. Newly created profiles,
+	// including those using the legacy API, deploy through the rollout state machine.
+	saved.Opts.MultiHop.Pending = nil
+	if err := m.store.UpdateInbound(*saved); err != nil {
+		t.Fatal(err)
 	}
 
 	entryState, err := m.NodeDesiredState(entry)
@@ -126,5 +135,130 @@ func TestMultiHopNodeStateFollowsDownstream(t *testing.T) {
 		!bytes.Contains(blocked.XrayConfig, []byte(`"inboundTag":["`+saved.Tag()+`"],"outboundTag":"block"`)) ||
 		bytes.Contains(blocked.XrayConfig, []byte(transit.Host)) {
 		t.Fatalf("a disabled exit must block the entry profile: %v", err)
+	}
+}
+
+func TestMultiHopRolloutKeepsPreviousRouteUntilEntryApplies(t *testing.T) {
+	t.Parallel()
+	m := nodeTestManager(t)
+	if err := m.store.SetRealityKeys("master-priv", "master-pub", "ab", "/rp"); err != nil {
+		t.Fatal(err)
+	}
+	yes := true
+	var nodes []*model.Node
+	for i := 0; i < 6; i++ {
+		host := fmt.Sprintf("192.0.2.%d", i+1)
+		n, err := m.store.CreateNode(fmt.Sprintf("Hop %d", i), host, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := m.store.UpdateNode(n.ID, store.NodeEdit{Name: n.Name, Host: host, VLESS: &yes}); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.store.UpdateNodeStatus(n.ID, model.NodeStatusUpdate{LastSeen: time.Now().Unix(), XrayRunning: true, XrayVersion: xray.PinnedVersion, CertSHA256: strings.Repeat("ab", 32)}); err != nil {
+			t.Fatal(err)
+		}
+		n, err = m.store.GetNode(n.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		nodes = append(nodes, n)
+	}
+	old, err := m.store.CreateInbound(model.Inbound{
+		ServerID: nodes[0].ID, Port: 28443, Name: "Legacy", Enabled: true, Protocol: model.InbVLESS,
+		Opts: model.InboundOpts{Transport: model.TrTCP, Security: model.SecTLS,
+			MultiHop: &model.MultiHop{Transit: nodes[1].ID, Exit: nodes[2].ID}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	get := func() *model.Inbound {
+		t.Helper()
+		in, err := m.store.GetInbound(old.ID)
+		if err != nil || in == nil {
+			t.Fatalf("read backing inbound: %v", err)
+		}
+		return in
+	}
+	chain := []int64{nodes[1].ID, nodes[3].ID, nodes[2].ID, nodes[4].ID, nodes[5].ID}
+	profile, err := m.UpdateMultiHopChain(context.Background(), old.ID, "Updated", chain, true)
+	if err != nil || !profile.Applying || !slices.Equal(profile.Nodes, chain) {
+		t.Fatalf("save new route: %+v (%v)", profile, err)
+	}
+	state := func(n *model.Node) *nodeapi.NodeState {
+		t.Helper()
+		st, err := m.NodeDesiredState(n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+	advance := func() {
+		t.Helper()
+		if err := m.advanceMultiHop(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ack := func(n *model.Node) {
+		t.Helper()
+		acks := state(n).Meta.MultiHopAcks
+		if len(acks) != 1 {
+			t.Fatalf("%s reports %v, want exactly one deployment receipt", n.Name, acks)
+		}
+		m.noteMultiHopApplied(n.ID, acks)
+	}
+	checkOld := func() {
+		t.Helper()
+		in := get()
+		if in.ServerID != old.ServerID || in.Port != old.Port || in.Name != old.Name || in.Opts.MultiHop.Via != nil {
+			t.Fatalf("published legacy entry changed before new entry applied: %+v", in)
+		}
+		cfg := state(nodes[0]).XrayConfig
+		if !bytes.Contains(cfg, []byte(nodes[1].Host)) || bytes.Contains(cfg, []byte(nodes[3].Host)) {
+			t.Fatal("old entry must continue using the complete old route")
+		}
+	}
+	checkOld()
+	advance()
+	if get().Opts.MultiHop.Pending.Ready != 0 || len(state(nodes[4]).Meta.MultiHopAcks) != 0 {
+		t.Fatal("rollout advanced without an exit receipt")
+	}
+	ack(nodes[5])
+	advance()
+	ack(nodes[4])
+	advance()
+	// After a restart the deployment stays installed, but receipts must be
+	// refreshed before switching an entry.
+	m.multiHopApplied = nil
+	ack(nodes[2])
+	advance()
+	if get().Opts.MultiHop.Pending.Ready != 2 {
+		t.Fatal("rollout advanced without re-confirming the deployed suffix")
+	}
+	ack(nodes[5])
+	ack(nodes[4])
+	advance()
+	ack(nodes[3])
+	advance()
+	checkOld()
+	if !get().Opts.MultiHop.Pending.ApplyEntry {
+		t.Fatal("entry should be staged after all downstream hops have applied")
+	}
+	newEntry := state(nodes[1])
+	if !bytes.Contains(newEntry.XrayConfig, []byte(nodes[3].Host)) || len(newEntry.Meta.MultiHopAcks) != 1 {
+		t.Fatal("new entry should now be able to apply its VLESS listener")
+	}
+	advance()
+	checkOld()
+	ack(nodes[1])
+	advance()
+	in := get()
+	if in.ID != old.ID || in.Port != old.Port || in.ServerID != chain[0] ||
+		in.Name != "Updated" || in.Opts.MultiHop.Pending != nil || !slices.Equal(in.Opts.MultiHop.Chain(in.ServerID), chain) ||
+		in.VLESSUUID("example") != old.VLESSUUID("example") {
+		t.Fatalf("new chain was not published with its original identity: %+v", in)
+	}
+	if cfg := state(nodes[0]).XrayConfig; bytes.Contains(cfg, []byte(old.Tag())) {
+		t.Fatal("old entry still contains the moved listener")
 	}
 }

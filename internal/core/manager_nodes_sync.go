@@ -7,6 +7,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/nodeapi"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/xray"
 )
 
 // ingestNodeAbuse matches a node's reported destinations against the blocklists,
@@ -86,7 +87,14 @@ func (m *Manager) IngestNodeSync(n *model.Node, req nodeapi.SyncRequest) (*nodea
 	// can tell it to stop — but it is untrusted (being disabled is often WHY), so we
 	// must NOT apply its reported traffic/devices/status. Revoke before any ingest.
 	if !n.Enabled {
+		m.reverseCapabilities.Delete(n.ID)
+		m.noteMultiHopApplied(n.ID, nil)
 		return &nodeapi.SyncResponse{Revoked: true, AckReport: req.ReportID}, nil
+	}
+	if req.ReverseChainGuard && xray.VersionMatchesPinned(req.XrayVersion) {
+		m.reverseCapabilities.Store(n.ID, true)
+	} else {
+		m.reverseCapabilities.Delete(n.ID)
 	}
 	now := time.Now()
 	// Before anything else: did the Xray we asked this node to bounce actually come
@@ -174,6 +182,12 @@ func (m *Manager) IngestNodeSync(n *model.Node, req nodeapi.SyncRequest) (*nodea
 		ServesAnyTLS:   req.AnyTLS,
 		ServesMTProto:  req.MTProto,
 	})
+
+	if req.XrayRunning {
+		m.noteMultiHopApplied(n.ID, req.MultiHopApplied)
+	} else {
+		m.noteMultiHopApplied(n.ID, nil)
+	}
 
 	// Everything below names users, and a node is believed only about its own (see
 	// manager_node_served.go). When that cannot be told, nothing is taken: the traffic

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -261,6 +262,12 @@ func (m *Manager) createInbound(ctx context.Context, in model.Inbound) (*Inbound
 	if err := m.validateAgainstSet(ctx, in, 0); err != nil {
 		return nil, err
 	}
+	if hops := in.Opts.MultiHop; hops != nil && in.Enabled {
+		if hops.Pending == nil {
+			hops.Pending = newMultiHopDeployment(hops.Chain(in.ServerID), in.Name, true, hops.Via == nil, hops.Reverse)
+		}
+		hops.Pending.Name = in.Name
+	}
 	saved, err := m.store.CreateInbound(in)
 	if err != nil {
 		return nil, inboundConflict(err)
@@ -360,6 +367,22 @@ func (m *Manager) UpdateInbound(ctx context.Context, in model.Inbound) (*Inbound
 	if cur == nil {
 		return nil, invalidCode("err.inboundNotFound", "подключение не найдено")
 	}
+	if cur.Opts.MultiHop != nil || in.Opts.MultiHop != nil {
+		m.multiHopWrites.Lock()
+		defer m.multiHopWrites.Unlock()
+		cur, err = m.store.GetInbound(in.ID)
+		if err != nil {
+			return nil, err
+		}
+		if cur == nil {
+			return nil, invalidCode("err.inboundNotFound", "подключение не найдено")
+		}
+	}
+	if cur.Opts.MultiHop != nil && (cur.Opts.MultiHop.Via != nil || cur.Opts.MultiHop.Reverse != nil) ||
+		in.Opts.MultiHop != nil && (in.Opts.MultiHop.Via != nil || in.Opts.MultiHop.Pending != nil ||
+			in.Opts.MultiHop.Revision != "" || in.Opts.MultiHop.Reverse != nil) {
+		return nil, invalidCode("err.multiHopManaged", "управляйте маршрутом в разделе «Мульти-хоп»")
+	}
 	in.ServerID = cur.ServerID
 	in.CreatedAt = cur.CreatedAt
 	in.Sort = cur.Sort
@@ -401,6 +424,21 @@ func (m *Manager) UpdateInbound(ctx context.Context, in model.Inbound) (*Inbound
 	}
 	if err := m.validateAgainstSet(ctx, in, in.ID); err != nil {
 		return nil, err
+	}
+	if hops := in.Opts.MultiHop; hops != nil && in.Enabled {
+		chain := hops.Chain(in.ServerID)
+		old := cur.Opts.MultiHop
+		switch {
+		case old == nil || !cur.Enabled:
+			hops.Pending = newMultiHopDeployment(chain, in.Name, true, true, nil)
+		case old.Pending != nil && old.Pending.ApplyEntry:
+			return nil, invalidCode("err.multiHopApplying", "дождитесь применения предыдущего изменения маршрута")
+		case old.Provisioning() || !slices.Equal(chain, old.Chain(cur.ServerID)):
+			old.Pending = newMultiHopDeployment(chain, in.Name, old.Provisioning(), true, nil)
+			in.Opts.MultiHop = old
+		default:
+			hops.Revision = old.Revision
+		}
 	}
 	if err := m.store.UpdateInbound(in); err != nil {
 		return nil, inboundConflict(err)
@@ -558,6 +596,9 @@ func (m *Manager) validateAgainstSet(ctx context.Context, in model.Inbound, excl
 	next = append(next, in)
 	reserved := reservedPorts(set)
 	m.holdPanelPort(reserved)
+	if err := m.holdProtectedPorts(in.ServerID, reserved); err != nil {
+		return err
+	}
 	if err := model.ValidateInboundSet(next, reserved, set.BuiltinLaneLabels()); err != nil {
 		return fromFieldErr(err)
 	}
@@ -565,6 +606,10 @@ func (m *Manager) validateAgainstSet(ctx context.Context, in model.Inbound, excl
 		if err := m.validateMultiHop(in); err != nil {
 			return err
 		}
+	}
+
+	if err := m.validateProtectedPorts(ctx, in); err != nil {
+		return err
 	}
 
 	// A REALITY donor has to actually serve TLS 1.3 + HTTP/2 with a small enough
@@ -663,7 +708,7 @@ func (m *Manager) candidateConfig(serverID int64, custom []model.Inbound) (*xray
 	opts := m.genOpts()
 	opts.Custom = custom
 	if master, err := m.store.GetSettings(); err == nil {
-		m.cascadeOpts(&opts, serverID, master)
+		m.cascadeOpts(&opts, serverID, master, true)
 	}
 
 	if serverID == model.LocalNodeID {

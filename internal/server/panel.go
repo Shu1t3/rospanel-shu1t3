@@ -247,7 +247,10 @@ func (rt *Router) subServers(local *model.Settings, userID int64, clientIP strin
 	for i := range servers {
 		servers[i].Custom = slices.DeleteFunc(servers[i].Custom, func(in model.Inbound) bool {
 			hops := in.Opts.MultiHop
-			return hops != nil && (!bridgeUp[hops.Transit] || !bridgeUp[hops.Exit])
+			return hops != nil && (hops.Provisioning() ||
+				hops.Reverse == nil && slices.ContainsFunc(hops.Chain(in.ServerID)[1:], func(id int64) bool {
+					return !bridgeUp[id]
+				}))
 		})
 	}
 	servers = withoutMaintenance(servers, rt.mgr.MaintenanceHiddenServers())

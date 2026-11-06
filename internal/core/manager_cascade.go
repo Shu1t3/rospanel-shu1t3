@@ -225,7 +225,7 @@ func (m *Manager) entryAddrs(s cascadeServer) []string {
 
 // cascadeOpts fills a server's options with its cascade lanes' upstreams and the
 // entries it is the exit of.
-func (m *Manager) cascadeOpts(opts *xray.Options, server int64, master *model.Settings) {
+func (m *Manager) cascadeOpts(opts *xray.Options, server int64, master *model.Settings, validating bool) {
 	nodes, err := m.store.ListNodes()
 	if err != nil {
 		logErr("cascade: nodes", "err", err)
@@ -234,17 +234,56 @@ func (m *Manager) cascadeOpts(opts *xray.Options, server int64, master *model.Se
 	servers := m.cascadeServers(master, nodes)
 	opts.Cascade = m.cascadeFor(server, servers, master)
 	opts.Bridges = m.bridgesFor(server, servers, master)
-	for _, in := range opts.Custom {
-		m.multiHopOpts(opts, server, master, servers, in)
-	}
 	routes, err := m.store.MultiHopInbounds(true)
 	if err != nil {
 		logErr("multi-hop: load routes", "err", err)
 		return
 	}
+	if validating {
+		for _, in := range opts.Custom {
+			m.addMultiHopRoute(opts, server, master, servers, in, 0)
+		}
+	} else if slices.ContainsFunc(opts.Custom, func(in model.Inbound) bool { return in.Opts.MultiHop != nil }) {
+		// Read each route's entry and deployment from the same snapshot. Otherwise
+		// a sync could see the old entry query and the newly promoted topology.
+		opts.Custom = slices.DeleteFunc(slices.Clone(opts.Custom), func(in model.Inbound) bool {
+			return in.Opts.MultiHop != nil
+		})
+	}
 	for _, in := range routes {
-		if in.ServerID != server {
-			m.multiHopOpts(opts, server, master, servers, in)
+		hops := in.Opts.MultiHop
+		if in.ServerID == server && !validating {
+			opts.Custom = append(opts.Custom, in)
+		}
+		if in.ServerID != server || !validating {
+			m.addMultiHopRoute(opts, server, master, servers, in, 0)
+		}
+		if pending := hops.Pending; pending != nil && pending.Reverse != nil {
+			if !pending.Reverse.Valid(pending.Chain()) {
+				continue
+			}
+			staged := stagedMultiHopInbound(in, pending)
+			hop := m.protectedHop(staged, server, master, servers, pending.ApplyEntry, pending.Ready > 0)
+			if hop.Entry != nil && !slices.ContainsFunc(opts.Custom, func(in model.Inbound) bool { return in.ID == staged.ID }) {
+				opts.Custom = append(opts.Custom, staged)
+			}
+			addProtectedHop(opts, hop, true)
+			continue
+		}
+		if pending := hops.Pending; pending != nil && usableMultiHop(pending.Nodes, master, servers) {
+			staged := stagedMultiHopInbound(in, pending)
+			first := max(1, len(pending.Nodes)-1-pending.Ready)
+			if pending.ApplyEntry && server == staged.ServerID {
+				if !slices.ContainsFunc(opts.Custom, func(in model.Inbound) bool { return in.ID == staged.ID }) {
+					opts.Custom = append(opts.Custom, staged)
+				}
+				m.addMultiHopRoute(opts, server, master, servers, staged, 0)
+				if ack := multiHopEntryAck(staged, opts.MultiHopLinks[staged.ID]); ack != "" {
+					opts.MultiHopAcks = append(opts.MultiHopAcks, ack)
+				}
+			} else {
+				m.addMultiHopRoute(opts, server, master, servers, staged, first)
+			}
 		}
 	}
 }
@@ -333,7 +372,7 @@ func bridgeSources(bridges []xray.Bridge) []string {
 // localBridgeSources is the addresses of the master's cascade entries.
 func (m *Manager) localBridgeSources(set *model.Settings) []string {
 	var opts xray.Options
-	m.cascadeOpts(&opts, model.LocalNodeID, set)
+	m.cascadeOpts(&opts, model.LocalNodeID, set, false)
 	return bridgeSources(opts.Bridges)
 }
 

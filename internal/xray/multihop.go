@@ -6,6 +6,9 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 )
 
+// MultiHopLocalExit explicitly enables terminal egress on a single-node route.
+const MultiHopLocalExit = "local-exit"
+
 // Each leg has a dedicated rule. A missing or unusable next leg keeps the rule
 // in place, pointing at blackhole instead of falling through to ordinary egress.
 func multiHopRouting(opts Options, rc model.RoutingConfig) ([]Outbound, []RouteRule) {
@@ -42,7 +45,8 @@ func multiHopRouting(opts Options, rc model.RoutingConfig) ([]Outbound, []RouteR
 	for _, in := range opts.Custom {
 		if in.Enabled && in.Opts.MultiHop != nil {
 			tag := in.Tag()
-			add(RouteRule{InboundTag: []string{tag}, RuleTag: "multi-hop-" + tag}, opts.MultiHopLinks[in.ID], false)
+			link := opts.MultiHopLinks[in.ID]
+			add(RouteRule{InboundTag: []string{tag}, RuleTag: "multi-hop-" + tag}, link, link == MultiHopLocalExit)
 		}
 	}
 	for _, bridge := range opts.Bridges {
