@@ -464,7 +464,7 @@ const zh: Dict = {
     multiHopManaged: "请在多跳部分管理此路由。",
     multiHopPort: "入口服务器在 28443–28506 范围内没有空闲的 TCP 端口。",
     multiHopNotFound: "找不到多跳配置。",
-    multiHopDistinct: "请选择一台或多台不同的服务器。",
+    multiHopDistinct: "入口服务器只能在经过中转服务器后再次用作出口。其余服务器必须互不相同。",
     multiHopPeer: "请接入服务器，并在入口之后的每台服务器上启用 VLESS TCP-TLS。",
     cascadeSelf: "通道“{{lane}}”：服务器不能作为自己的出口",
     cascadeNoServer: "通道“{{lane}}”：出口服务器不存在、已关闭或尚未连接",

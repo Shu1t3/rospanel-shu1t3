@@ -101,7 +101,8 @@ export function MultiHopDialog({ nodes, canManage, onClose }: {
 
   const options = (index: number, profile: MultiHopProfile) => {
     const value = profile.nodes[index];
-    const canShare = (other: number) => profile.reverse && ((index === 0 && other === 3) || (index === 3 && other === 0));
+    const last = profile.nodes.length - 1;
+    const canShare = (other: number) => last >= 2 && ((index === 0 && other === last) || (index === last && other === 0));
     const list = nodes
       .filter((n) => n.id === value || (joined(n) && (profile.reverse || index === 0 || n.vless_enabled) &&
         !(profile.reverse && index === 2 && n.is_local) &&
@@ -145,11 +146,13 @@ export function MultiHopDialog({ nodes, canManage, onClose }: {
     if (draft?.reverse) setDraft({ ...draft, reverse: { ...draft.reverse, ...changes } });
   };
 
-  const ready = draft && draft.name.trim() && draft.nodes.every((id) => id >= 0) &&
+  const order = draft?.nodes ?? [];
+  const distinct = order.length >= 3 && order[0] === order[order.length - 1] ? order.slice(0, -1) : order;
+  const ready = draft && draft.name.trim() && order.every((id) => id >= 0) && new Set(distinct).size === distinct.length &&
     (!draft.reverse || (draft.reverse.relay_port > 0 && draft.reverse.relay_port <= 65535 &&
       draft.reverse.transit_port > 0 && draft.reverse.transit_port <= 65535 &&
       draft.reverse.transit_ip.trim() && ipList(draft.reverse.relay_sources).length > 0));
-  const canAdd = draft && draft.nodes.length < Math.min(entries.length, peers.length + 1);
+  const canAdd = draft && entries.length > 1 && draft.nodes.length < peers.length + 1;
   const add = () => {
     if (!draft) return;
     const order = [...draft.nodes];

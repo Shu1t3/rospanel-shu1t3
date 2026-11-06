@@ -28,7 +28,7 @@ func (r *MultiHopReverse) Clone() *MultiHopReverse {
 }
 
 func (r MultiHopReverse) Valid(nodes []int64) bool {
-	if len(nodes) != 4 || !ValidMultiHopChain(nodes[:3]) || nodes[3] < 0 ||
+	if len(nodes) != 4 || !validDistinctMultiHopNodes(nodes[:3]) || nodes[3] < 0 ||
 		nodes[3] == nodes[1] || nodes[3] == nodes[2] || nodes[2] == LocalNodeID ||
 		r.RelayPort < 1 || r.RelayPort > 65535 || r.TransitPort < 1 || r.TransitPort > 65535 ||
 		len(r.RelaySources) == 0 {

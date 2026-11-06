@@ -145,7 +145,7 @@ func validateMultiHopNodes(nodes []int64, reverse *model.MultiHopReverse) error 
 			return invalidCode("err.multiHopReverse", "проверьте роли, служебные порты и IP-адреса защищённого маршрута")
 		}
 	} else if !model.ValidMultiHopChain(nodes) {
-		return invalidCode("err.multiHopDistinct", "выберите один или несколько разных серверов для мульти-хопа")
+		return invalidCode("err.multiHopDistinct", "вход можно повторить только как выход после транзитного сервера, остальные серверы должны быть разными")
 	}
 	return nil
 }

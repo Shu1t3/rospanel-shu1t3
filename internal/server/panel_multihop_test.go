@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -67,6 +68,15 @@ func TestMultiHopPanelOwnsExistingRoutes(t *testing.T) {
 	if updated == nil || updated.Opts.MultiHop == nil || updated.Opts.MultiHop.Exit != 3 ||
 		updated.Port != old.Port || updated.Opts.Transport != old.Opts.Transport || updated.Opts.Path != old.Opts.Path {
 		t.Fatalf("the entry changed on route edit: %+v", updated)
+	}
+	editPath := fmt.Sprintf("/api/multi-hop/%d", saved.ID)
+	body = request(http.MethodPost, editPath, `{"name":"Return","nodes":[0,1,0],"enabled":false}`, http.StatusOK)
+	var route core.MultiHopProfile
+	if err := json.Unmarshal(body, &route); err != nil || !slices.Equal(route.Nodes, []int64{0, 1, 0}) {
+		t.Fatalf("return route missing: %s (%v)", body, err)
+	}
+	for _, chain := range []string{`[0,0]`, `[0,1,0,2]`, `[0,1,1,0]`} {
+		request(http.MethodPost, editPath, `{"name":"Invalid","nodes":`+chain+`,"enabled":false}`, http.StatusBadRequest)
 	}
 	group, err = st.GetGroup(group.ID)
 	if err != nil || group == nil || len(group.Grants) != 1 || group.Grants[0] != grant {

@@ -41,7 +41,7 @@ func (rt *Router) createMultiHopProfile(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if req.Entry == nil || req.Transit == nil || req.Exit == nil {
-		writeErrCode(w, http.StatusBadRequest, "err.multiHopDistinct", "выберите один или несколько разных серверов для мульти-хопа")
+		writeErrCode(w, http.StatusBadRequest, "err.multiHopDistinct", "укажите все серверы маршрута")
 		return
 	}
 	profile, err := rt.mgr.CreateMultiHopProfile(r.Context(), *req.Entry, req.Name, model.MultiHop{Transit: *req.Transit, Exit: *req.Exit})
@@ -70,7 +70,7 @@ func (rt *Router) updateMultiHopProfile(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if req.Transit == nil || req.Exit == nil {
-		writeErrCode(w, http.StatusBadRequest, "err.multiHopDistinct", "выберите один или несколько разных серверов для мульти-хопа")
+		writeErrCode(w, http.StatusBadRequest, "err.multiHopDistinct", "укажите все серверы маршрута")
 		return
 	}
 	profile, err := rt.mgr.UpdateMultiHopProfile(r.Context(), id, req.Name, model.MultiHop{Transit: *req.Transit, Exit: *req.Exit}, req.Enabled)

@@ -241,7 +241,7 @@ func (m *Manager) cascadeOpts(opts *xray.Options, server int64, master *model.Se
 	}
 	if validating {
 		for _, in := range opts.Custom {
-			m.addMultiHopRoute(opts, server, master, servers, in, 0)
+			m.addMultiHopRoute(opts, server, master, servers, in, 0, false)
 		}
 	} else if slices.ContainsFunc(opts.Custom, func(in model.Inbound) bool { return in.Opts.MultiHop != nil }) {
 		// Read each route's entry and deployment from the same snapshot. Otherwise
@@ -256,7 +256,7 @@ func (m *Manager) cascadeOpts(opts *xray.Options, server int64, master *model.Se
 			opts.Custom = append(opts.Custom, in)
 		}
 		if in.ServerID != server || !validating {
-			m.addMultiHopRoute(opts, server, master, servers, in, 0)
+			m.addMultiHopRoute(opts, server, master, servers, in, 0, false)
 		}
 		if pending := hops.Pending; pending != nil && pending.Reverse != nil {
 			if !pending.Reverse.Valid(pending.Chain()) {
@@ -277,12 +277,13 @@ func (m *Manager) cascadeOpts(opts *xray.Options, server int64, master *model.Se
 				if !slices.ContainsFunc(opts.Custom, func(in model.Inbound) bool { return in.ID == staged.ID }) {
 					opts.Custom = append(opts.Custom, staged)
 				}
-				m.addMultiHopRoute(opts, server, master, servers, staged, 0)
+				first = 0
+			}
+			m.addMultiHopRoute(opts, server, master, servers, staged, first, true)
+			if first == 0 {
 				if ack := multiHopEntryAck(staged, opts.MultiHopLinks[staged.ID]); ack != "" {
 					opts.MultiHopAcks = append(opts.MultiHopAcks, ack)
 				}
-			} else {
-				m.addMultiHopRoute(opts, server, master, servers, staged, first)
 			}
 		}
 	}

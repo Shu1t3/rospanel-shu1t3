@@ -464,7 +464,7 @@ const en: Dict = {
     multiHopManaged: "Manage this route in the Multi-hop section.",
     multiHopPort: "The entry server has no free TCP port in the range 28443–28506.",
     multiHopNotFound: "Multi-hop profile not found.",
-    multiHopDistinct: "Select one or more distinct servers.",
+    multiHopDistinct: "The entry can be reused only as the exit after a transit server. All other servers must be distinct.",
     multiHopPeer: "Join the servers and enable VLESS TCP-TLS on every server after the entry.",
     cascadeSelf: "lane “{{lane}}”: a server cannot be its own exit",
     cascadeNoServer: "lane “{{lane}}”: the exit server is not found, switched off or not connected yet",

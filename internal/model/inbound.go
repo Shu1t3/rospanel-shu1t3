@@ -179,8 +179,15 @@ func (h MultiHop) ValidChain(entry int64) bool {
 	return ValidMultiHopChain(chain)
 }
 
-// ValidMultiHopChain rejects loops and missing node IDs. The master is node zero.
+// ValidMultiHopChain allows returning to the entry after at least one transit.
 func ValidMultiHopChain(nodes []int64) bool {
+	if len(nodes) >= 3 && nodes[0] == nodes[len(nodes)-1] {
+		nodes = nodes[:len(nodes)-1]
+	}
+	return validDistinctMultiHopNodes(nodes)
+}
+
+func validDistinctMultiHopNodes(nodes []int64) bool {
 	if len(nodes) == 0 {
 		return false
 	}
@@ -913,7 +920,7 @@ func (in *Inbound) Validate() error {
 			return fieldErr("err.multiHopReverse", "проверьте роли, служебные порты и IP-адреса защищённого маршрута")
 		}
 		if hops.Reverse == nil && !hops.ValidChain(in.ServerID) {
-			return fieldErr("err.multiHopDistinct", "выберите один или несколько разных серверов для мульти-хопа")
+			return fieldErr("err.multiHopDistinct", "вход можно повторить только как выход после транзитного сервера, остальные серверы должны быть разными")
 		}
 	}
 	if !contains(InboundTransports(in.Protocol), o.Transport) {

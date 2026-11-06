@@ -25,12 +25,15 @@ func TestMultiHopAgainstRealXray(t *testing.T) {
 	}
 	for _, length := range []int{1, 2, 3, 5, 12} {
 		t.Run(fmt.Sprintf("%d-nodes", length), func(t *testing.T) {
-			testMultiHopAgainstRealXray(t, bin, ip, length)
+			testMultiHopAgainstRealXray(t, bin, ip, length, false)
 		})
 	}
+	t.Run("return-to-entry", func(t *testing.T) {
+		testMultiHopAgainstRealXray(t, bin, ip, 3, true)
+	})
 }
 
-func testMultiHopAgainstRealXray(t *testing.T, bin, ip string, length int) {
+func testMultiHopAgainstRealXray(t *testing.T, bin, ip string, length int, returnToEntry bool) {
 	target, err := net.Listen("tcp", net.JoinHostPort(ip, "0"))
 	if err != nil {
 		t.Fatal(err)
@@ -120,7 +123,12 @@ func testMultiHopAgainstRealXray(t *testing.T, bin, ip string, length int) {
 		t.Helper()
 		set := &model.Settings{Host: "test", SNI: "test", CertPath: cert, KeyPath: key, VLESSEnabled: port != entryPort, VLESSPort: port}
 		if port == entryPort {
-			set.VLESSPort = freePort(t, "tcp")
+			if returnToEntry {
+				set.VLESSEnabled = true
+				set.VLESSPort = ports[length-1]
+			} else {
+				set.VLESSPort = freePort(t, "tcp")
+			}
 		}
 		opts.PanelDest = "127.0.0.1:1"
 		cfg, err := Generate(set, users, opts, nil)
@@ -139,6 +147,9 @@ func testMultiHopAgainstRealXray(t *testing.T, bin, ip string, length int) {
 	for i := range via {
 		via[i] = int64(i + 1)
 	}
+	if returnToEntry {
+		via[len(via)-1] = model.LocalNodeID
+	}
 	in := model.Inbound{
 		ID: 3, Name: "multi-hop", Port: entryPort, Protocol: model.InbVLESS, Enabled: true,
 		Opts: model.InboundOpts{Transport: model.TrTCP, Security: model.SecTLS, MultiHop: &model.MultiHop{Via: &via}},
@@ -149,6 +160,7 @@ func testMultiHopAgainstRealXray(t *testing.T, bin, ip string, length int) {
 	serviceID := func(i int) string { return fmt.Sprintf("33333333-3333-4333-8333-%012d", i) }
 	configs := make([]*Config, length)
 	stops := make([]func(), length)
+	var entryBridges []Bridge
 	for i := length - 1; i > 0; i-- {
 		hop := MultiHopBridge{Exit: i == length-1}
 		if !hop.Exit {
@@ -158,6 +170,10 @@ func testMultiHopAgainstRealXray(t *testing.T, bin, ip string, length int) {
 			Email: fmt.Sprintf("bridge-multi-hop-3-%d", i), UUID: serviceID(i),
 			Lane: model.BridgeVision, Sources: []string{"127.0.0.1"}, MultiHop: &hop,
 		}
+		if returnToEntry && hop.Exit {
+			entryBridges = append(entryBridges, bridge)
+			continue
+		}
 		configs[i] = generate(ports[i], nil, Options{Bridges: []Bridge{bridge}})
 		stops[i] = start(fmt.Sprintf("hop-%d", i), ports[i], configs[i])
 	}
@@ -166,7 +182,7 @@ func testMultiHopAgainstRealXray(t *testing.T, bin, ip string, length int) {
 		next = serviceLink(ports[1], serviceID(1))
 	}
 	entry := generate(entryPort, []model.User{allowed, denied}, Options{
-		Custom: []model.Inbound{in}, MultiHopLinks: map[int64]string{in.ID: next},
+		Bridges: entryBridges, Custom: []model.Inbound{in}, MultiHopLinks: map[int64]string{in.ID: next},
 		Access: map[int64]model.Access{allowed.ID: {Tokens: map[string]bool{model.InboundToken(in.ID): true}}},
 	})
 	start("entry", entryPort, entry)
@@ -243,6 +259,9 @@ func testMultiHopAgainstRealXray(t *testing.T, bin, ip string, length int) {
 	request(deniedPort, "")
 	// For the longer smoke case, interrupt one representative middle hop.
 	first, last := 1, length
+	if returnToEntry {
+		last--
+	}
 	if length > 5 {
 		first, last = length/2, length/2+1
 	}

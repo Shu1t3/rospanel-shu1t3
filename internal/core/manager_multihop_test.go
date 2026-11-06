@@ -140,6 +140,12 @@ func TestMultiHopNodeStateFollowsDownstream(t *testing.T) {
 
 func TestMultiHopRolloutKeepsPreviousRouteUntilEntryApplies(t *testing.T) {
 	t.Parallel()
+	t.Run("distinct exit", func(t *testing.T) { testMultiHopRollout(t, false) })
+	t.Run("return to entry", func(t *testing.T) { testMultiHopRollout(t, true) })
+}
+
+func testMultiHopRollout(t *testing.T, returnToEntry bool) {
+	t.Helper()
 	m := nodeTestManager(t)
 	if err := m.store.SetRealityKeys("master-priv", "master-pub", "ab", "/rp"); err != nil {
 		t.Fatal(err)
@@ -180,7 +186,11 @@ func TestMultiHopRolloutKeepsPreviousRouteUntilEntryApplies(t *testing.T) {
 		}
 		return in
 	}
-	chain := []int64{nodes[1].ID, nodes[3].ID, nodes[2].ID, nodes[4].ID, nodes[5].ID}
+	exit := nodes[5]
+	if returnToEntry {
+		exit = nodes[1]
+	}
+	chain := []int64{nodes[1].ID, nodes[3].ID, nodes[2].ID, nodes[4].ID, exit.ID}
 	profile, err := m.UpdateMultiHopChain(context.Background(), old.ID, "Updated", chain, true)
 	if err != nil || !profile.Applying || !slices.Equal(profile.Nodes, chain) {
 		t.Fatalf("save new route: %+v (%v)", profile, err)
@@ -199,11 +209,11 @@ func TestMultiHopRolloutKeepsPreviousRouteUntilEntryApplies(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ack := func(n *model.Node) {
+	ack := func(n *model.Node, want int) {
 		t.Helper()
 		acks := state(n).Meta.MultiHopAcks
-		if len(acks) != 1 {
-			t.Fatalf("%s reports %v, want exactly one deployment receipt", n.Name, acks)
+		if len(acks) != want {
+			t.Fatalf("%s reports %v, want %d deployment receipts", n.Name, acks, want)
 		}
 		m.noteMultiHopApplied(n.ID, acks)
 	}
@@ -223,40 +233,51 @@ func TestMultiHopRolloutKeepsPreviousRouteUntilEntryApplies(t *testing.T) {
 	if get().Opts.MultiHop.Pending.Ready != 0 || len(state(nodes[4]).Meta.MultiHopAcks) != 0 {
 		t.Fatal("rollout advanced without an exit receipt")
 	}
-	ack(nodes[5])
+	ack(exit, 1)
 	advance()
-	ack(nodes[4])
+	ack(nodes[4], 1)
 	advance()
 	// After a restart the deployment stays installed, but receipts must be
 	// refreshed before switching an entry.
 	m.multiHopApplied = nil
-	ack(nodes[2])
+	ack(nodes[2], 1)
 	advance()
 	if get().Opts.MultiHop.Pending.Ready != 2 {
 		t.Fatal("rollout advanced without re-confirming the deployed suffix")
 	}
-	ack(nodes[5])
-	ack(nodes[4])
+	ack(exit, 1)
+	ack(nodes[4], 1)
 	advance()
-	ack(nodes[3])
+	ack(nodes[3], 1)
 	advance()
 	checkOld()
 	if !get().Opts.MultiHop.Pending.ApplyEntry {
 		t.Fatal("entry should be staged after all downstream hops have applied")
 	}
+	entryAcks := 1
+	if returnToEntry {
+		entryAcks = 2
+	}
 	newEntry := state(nodes[1])
-	if !bytes.Contains(newEntry.XrayConfig, []byte(nodes[3].Host)) || len(newEntry.Meta.MultiHopAcks) != 1 {
+	if !bytes.Contains(newEntry.XrayConfig, []byte(nodes[3].Host)) || len(newEntry.Meta.MultiHopAcks) != entryAcks {
 		t.Fatal("new entry should now be able to apply its VLESS listener")
 	}
 	advance()
 	checkOld()
-	ack(nodes[1])
+	ack(nodes[1], entryAcks)
 	advance()
 	in := get()
 	if in.ID != old.ID || in.Port != old.Port || in.ServerID != chain[0] ||
 		in.Name != "Updated" || in.Opts.MultiHop.Pending != nil || !slices.Equal(in.Opts.MultiHop.Chain(in.ServerID), chain) ||
 		in.VLESSUUID("example") != old.VLESSUUID("example") {
 		t.Fatalf("new chain was not published with its original identity: %+v", in)
+	}
+	if returnToEntry {
+		cfg := state(nodes[1]).XrayConfig
+		if !bytes.Contains(cfg, []byte(nodes[3].Host)) ||
+			!bytes.Contains(cfg, []byte(`"outboundTag":"multi-hop-exit"`)) {
+			t.Fatal("published config must keep the entry link and the final egress on the same server")
+		}
 	}
 	if cfg := state(nodes[0]).XrayConfig; bytes.Contains(cfg, []byte(old.Tag())) {
 		t.Fatal("old entry still contains the moved listener")

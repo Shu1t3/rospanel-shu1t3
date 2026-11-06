@@ -114,7 +114,7 @@ func multiHopEntryAck(in model.Inbound, link string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(key)))
 }
 
-func (m *Manager) addMultiHopRoute(opts *xray.Options, server int64, master *model.Settings, servers map[int64]cascadeServer, in model.Inbound, first int) {
+func (m *Manager) addMultiHopRoute(opts *xray.Options, server int64, master *model.Settings, servers map[int64]cascadeServer, in model.Inbound, first int, staged bool) {
 	hops := in.Opts.MultiHop
 	if hops == nil || !in.Enabled || in.Protocol != model.InbVLESS || hops.Provisioning() {
 		return
@@ -124,22 +124,30 @@ func (m *Manager) addMultiHopRoute(opts *xray.Options, server int64, master *mod
 		return
 	}
 	chain := hops.Chain(in.ServerID)
-	index := slices.Index(chain, server)
-	if index < first || !usableMultiHop(chain, master, servers) {
+	if first >= len(chain) {
 		return
 	}
-	if index == 0 {
-		if opts.MultiHopLinks == nil {
-			opts.MultiHopLinks = make(map[int64]string)
+	index := slices.Index(chain[first:], server)
+	if index < 0 || !usableMultiHop(chain, master, servers) {
+		return
+	}
+	for i := first + index; i < len(chain); i++ {
+		if chain[i] != server {
+			continue
 		}
-		opts.MultiHopLinks[in.ID] = m.multiHopEntryLink(in, master, servers, chain)
-		return
-	}
-	bridge := m.multiHopBridge(in, master, servers, chain, index)
-	opts.Bridges = append(opts.Bridges, bridge)
-	if first > 0 && hops.Revision != "" {
-		if ack := multiHopBridgeAck(bridge); ack != "" {
-			opts.MultiHopAcks = append(opts.MultiHopAcks, ack)
+		if i == 0 {
+			if opts.MultiHopLinks == nil {
+				opts.MultiHopLinks = make(map[int64]string)
+			}
+			opts.MultiHopLinks[in.ID] = m.multiHopEntryLink(in, master, servers, chain)
+			continue
+		}
+		bridge := m.multiHopBridge(in, master, servers, chain, i)
+		opts.Bridges = append(opts.Bridges, bridge)
+		if staged {
+			if ack := multiHopBridgeAck(bridge); ack != "" {
+				opts.MultiHopAcks = append(opts.MultiHopAcks, ack)
+			}
 		}
 	}
 }
