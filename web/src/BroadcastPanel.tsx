@@ -6,10 +6,12 @@ import {
   type Broadcast,
   type BroadcastAudience,
   type BroadcastButton,
+  type Group,
   broadcastAudience,
   cancelBroadcast,
   createBroadcast,
   listBroadcasts,
+  listGroups,
   pauseBroadcast,
   resumeBroadcast,
   retryBroadcast,
@@ -52,14 +54,19 @@ const audiences = (): { value: string; label: string; days?: boolean }[] => [
   { value: "seen", label: i18n.t("bc.audSeen"), days: true },
   { value: "unseen", label: i18n.t("bc.audUnseen"), days: true },
   { value: "never", label: i18n.t("bc.audNever") },
+  { value: "group", label: i18n.t("bc.audGroup") },
 ];
 
-// audienceLabel turns a stored audience ("seen:7") back into words for the history,
+// audienceLabel turns a stored audience ("seen:7", "group:3") back into words for the history,
 // where the run is over and the picker that produced it is long reset.
-function audienceLabel(a: string): string {
-  const [kind, days] = a.split(":");
+function audienceLabel(a: string, groups?: Group[]): string {
+  const [kind, param] = a.split(":");
+  if (kind === "group") {
+    const g = groups?.find((x) => String(x.id) === param);
+    return g ? `${i18n.t("bc.audGroup")}: ${g.name}` : `${i18n.t("bc.audGroup")} #${param}`;
+  }
   const base = audiences().find((x) => x.value === kind)?.label ?? kind;
-  return days ? `${base} ${i18n.t("bc.days", { count: Number(days) })}` : base;
+  return param ? `${base} ${i18n.t("bc.days", { count: Number(param) })}` : base;
 }
 
 const dayChoices = () =>
@@ -123,14 +130,19 @@ export function BroadcastPanel({ userBot }: { userBot: boolean }) {
   // re-polls this list, and collapsing it under the operator mid-read would be worse
   // than carrying the expansion.
   const history = useShowMore(list);
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [selectedGroupId, setSelectedGroupId] = useState("");
   const [text, setText] = useState("");
   const [audienceKind, setAudienceKind] = useState("all");
   const [audienceDays, setAudienceDays] = useState("7");
+  const isGroup = audienceKind === "group";
   const needsDays = !!audiences().find((a) => a.value === audienceKind)?.days;
-  // What the server stores and resolves: the horizon rides inside the value.
-  const audience: BroadcastAudience = needsDays
-    ? `${audienceKind}:${audienceDays}`
-    : audienceKind;
+  // What the server stores and resolves: the horizon or group id rides inside the value.
+  const audience: BroadcastAudience = isGroup
+    ? `group:${selectedGroupId}`
+    : needsDays
+      ? `${audienceKind}:${audienceDays}`
+      : audienceKind;
   // The inline keyboard, as rows the operator edits. Each carries a key of its own:
   // deleting the middle button must take that button's inputs with it, not shift the
   // one below into its DOM (and its caret).
@@ -156,6 +168,14 @@ export function BroadcastPanel({ userBot }: { userBot: boolean }) {
   // biome-ignore lint/correctness/useExhaustiveDependencies: runs once on mount; the loader is redefined every render, so listing it would refetch in a loop
   useEffect(() => {
     load().finally(() => setLoaded(true));
+    listGroups()
+      .then((g) => {
+        setGroups(g);
+        if (g.length > 0) {
+          setSelectedGroupId((prev) => prev || String(g[0].id));
+        }
+      })
+      .catch(() => setGroups([]));
   }, []);
 
   // Poll only while something is actually moving, and stop the moment it isn't.
@@ -172,6 +192,11 @@ export function BroadcastPanel({ userBot }: { userBot: boolean }) {
   }, [list]);
 
   useEffect(() => {
+    if (isGroup && !selectedGroupId) {
+      setReach(0);
+      setHookReach(0);
+      return;
+    }
     let dropped = false;
     broadcastAudience(audience)
       .then((r) => {
@@ -183,13 +208,16 @@ export function BroadcastPanel({ userBot }: { userBot: boolean }) {
     return () => {
       dropped = true;
     };
-  }, [audience]);
+  }, [audience, isGroup, selectedGroupId]);
 
   const limit = media ? CAPTION_MAX : TEXT_MAX;
   const overLimit = [...text].length > limit;
   const empty = !text.trim() && !media;
   const badButton = buttons.some((b) => !b.text.trim() || !b.url.trim());
-  const canSend = !empty && !overLimit && !badButton;
+  const hasValidGroup =
+    !isGroup ||
+    (!!selectedGroupId && groups.some((g) => String(g.id) === selectedGroupId));
+  const canSend = !empty && !overLimit && !badButton && hasValidGroup;
   const payload = {
     text,
     audience,
@@ -304,6 +332,26 @@ export function BroadcastPanel({ userBot }: { userBot: boolean }) {
                   value={audienceDays}
                   onChange={setAudienceDays}
                 />
+              </div>
+            )}
+            {isGroup && (
+              <div className="flex w-full flex-wrap items-center gap-2 pt-1">
+                <span className={cn(MICRO, "w-full sm:w-16")}>{t("bc.group")}</span>
+                <div className="min-w-0 flex-1 sm:max-w-80">
+                  <Select
+                    data={
+                      groups.length === 0
+                        ? [{ value: "", label: t("bc.noGroups") }]
+                        : groups.map((g) => ({
+                            value: String(g.id),
+                            label: g.name,
+                          }))
+                    }
+                    value={selectedGroupId}
+                    onChange={setSelectedGroupId}
+                    placeholder={t("bc.pickGroup")}
+                  />
+                </div>
               </div>
             )}
             {/* The count the operator is really deciding on. A sentence, not a
@@ -479,7 +527,7 @@ export function BroadcastPanel({ userBot }: { userBot: boolean }) {
         ) : (
           <>
             {history.shown.map((b) => (
-              <BroadcastRow key={b.id} b={b} onControl={control} />
+              <BroadcastRow key={b.id} b={b} groups={groups} onControl={control} />
             ))}
             <ShowMore rest={history.rest} onClick={history.showMore} className="p-3.5" />
           </>
@@ -491,9 +539,11 @@ export function BroadcastPanel({ userBot }: { userBot: boolean }) {
 
 function BroadcastRow({
   b,
+  groups,
   onControl,
 }: {
   b: Broadcast;
+  groups: Group[];
   onControl: (fn: () => Promise<Broadcast>) => void;
 }) {
   // Every terminal state, skipped included — it is part of total, and omitting it
@@ -518,7 +568,7 @@ function BroadcastRow({
           {st.label}
         </Badge>
         <span className="truncate text-[11px] text-ink-muted">
-          {audienceLabel(b.audience)}
+          {audienceLabel(b.audience, groups)}
         </span>
         {b.created_by && (
           <span className="truncate text-[11px] text-ink-muted">{b.created_by}</span>

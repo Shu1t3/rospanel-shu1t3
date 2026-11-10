@@ -1,6 +1,7 @@
 package core
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -93,12 +94,12 @@ func TestAudienceTargeting(t *testing.T) {
 // truth is "the panel didn't understand you".
 func TestAudienceValidation(t *testing.T) {
 	t.Parallel()
-	for _, bad := range []string{"seen:", "seen:0", "seen:abc", "seen:9999", "nonsense", "unseen:-1"} {
+	for _, bad := range []string{"seen:", "seen:0", "seen:abc", "seen:9999", "nonsense", "unseen:-1", "group:", "group:0", "group:-1", "group:abc"} {
 		if model.ValidAudience(bad) {
 			t.Errorf("%q accepted as an audience", bad)
 		}
 	}
-	for _, good := range []string{"all", "never", "seen:1", "unseen:30", "expiring:7"} {
+	for _, good := range []string{"all", "never", "seen:1", "unseen:30", "expiring:7", "group:1", "group:42"} {
 		if !model.ValidAudience(good) {
 			t.Errorf("%q rejected", good)
 		}
@@ -162,5 +163,53 @@ func TestAudiencePreviewMatchesTheSend(t *testing.T) {
 		if _, err := m.AudiencePreview(bad); err == nil {
 			t.Errorf("%q previewed a count instead of being refused", bad)
 		}
+	}
+}
+
+func TestAudienceGroupTargeting(t *testing.T) {
+	t.Parallel()
+	m := bcManager(t)
+
+	grp, err := m.store.CreateGroup("VIP-Clients", nil, 0)
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+
+	u1 := mkUser(t, m, "u1", 0)
+	u2 := mkUser(t, m, "u2", 0)
+	u3 := mkUser(t, m, "u3", 0)
+
+	if err := m.store.SetGroupMembers(grp.ID, []int64{u1, u2}); err != nil {
+		t.Fatalf("SetGroupMembers: %v", err)
+	}
+
+	subscribeChat(t, m, 101, u1)
+	subscribeChat(t, m, 102, u2)
+	subscribeChat(t, m, 103, u3)
+
+	groupAudience := "group:" + strconv.FormatInt(grp.ID, 10)
+	chats, err := m.audienceChats(groupAudience)
+	if err != nil {
+		t.Fatalf("audienceChats: %v", err)
+	}
+	if len(chats) != 2 || chats[0] != 101 || chats[1] != 102 {
+		t.Fatalf("audienceChats got %v, want [101 102]", chats)
+	}
+
+	count, err := m.AudiencePreview(groupAudience)
+	if err != nil {
+		t.Fatalf("AudiencePreview: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("AudiencePreview got %d, want 2", count)
+	}
+
+	// Unknown group ID returns error
+	if _, err := m.AudiencePreview("group:999999"); err == nil {
+		t.Fatalf("expected error for non-existent group preview")
+	}
+
+	if err := m.validateBroadcast(&model.Broadcast{Text: "hi", Audience: "group:999999"}); err == nil {
+		t.Fatalf("expected error for non-existent group broadcast validation")
 	}
 }

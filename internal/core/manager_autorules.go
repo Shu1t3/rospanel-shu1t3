@@ -86,7 +86,7 @@ func (m *Manager) SaveAutoRule(r *model.AutoRule) error {
 		r.DiscountDays = 0
 	}
 	b := model.Broadcast{Text: strings.TrimSpace(r.Text), Buttons: r.Buttons, Audience: model.AudienceAll}
-	if err := validateBroadcast(&b); err != nil {
+	if err := m.validateBroadcast(&b); err != nil {
 		return err
 	}
 	r.Text, r.Buttons = b.Text, b.Buttons

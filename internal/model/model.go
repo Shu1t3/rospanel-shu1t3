@@ -476,7 +476,21 @@ const (
 	AudienceSeenPrefix     = "seen:"     // connected within the last N days
 	AudienceUnseenPrefix   = "unseen:"   // not seen for N days (never counts)
 	AudienceExpiringPrefix = "expiring:" // subscription runs out within N days
+	AudienceGroupPrefix    = "group:"    // members of a user group
 )
+
+// AudienceGroupID extracts the group id from a parameterised group audience ("group:12").
+func AudienceGroupID(audience string) (int64, bool) {
+	rest, ok := strings.CutPrefix(audience, AudienceGroupPrefix)
+	if !ok {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(rest, 10, 64)
+	if err != nil || id <= 0 {
+		return 0, false
+	}
+	return id, true
+}
 
 // AudienceDays extracts the N from a parameterised audience, and reports whether the
 // value is one. Bounded so a typo can't turn "not seen for 90 days" into a filter
@@ -505,6 +519,9 @@ func ValidAudience(a string) bool {
 		if _, ok := AudienceDays(a, p); ok {
 			return true
 		}
+	}
+	if _, ok := AudienceGroupID(a); ok {
+		return true
 	}
 	return false
 }

@@ -110,6 +110,24 @@ func (s *Store) GetGroup(id int64) (*model.Group, error) {
 	return &g, mrows.Err()
 }
 
+// GroupMemberIDs returns the IDs of all users in a group.
+func (s *Store) GroupMemberIDs(groupID int64) ([]int64, error) {
+	mrows, err := s.rdb.Query(`SELECT user_id FROM group_members WHERE group_id = ?`, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer mrows.Close()
+	var out []int64
+	for mrows.Next() {
+		var uid int64
+		if err := mrows.Scan(&uid); err != nil {
+			return nil, err
+		}
+		out = append(out, uid)
+	}
+	return out, mrows.Err()
+}
+
 // groupGrants returns a group's grant tokens.
 func (s *Store) groupGrants(id int64) ([]string, error) {
 	rows, err := s.rdb.Query(`SELECT token FROM group_grants WHERE group_id = ?`, id)

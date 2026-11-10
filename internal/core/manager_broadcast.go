@@ -40,7 +40,7 @@ func (m *Manager) CreateBroadcast(ctx context.Context, b *model.Broadcast) (*mod
 	if b.Audience == "" {
 		b.Audience = model.AudienceAll
 	}
-	if err := validateBroadcast(b); err != nil {
+	if err := m.validateBroadcast(b); err != nil {
 		return nil, err
 	}
 	now := time.Now().Unix()
@@ -271,9 +271,18 @@ func (m *Manager) emitBroadcast(b *model.Broadcast, users []model.User) {
 	m.EmitWebhook(model.WebhookBroadcastSent, d)
 }
 
-func validateBroadcast(b *model.Broadcast) error {
+func (m *Manager) validateBroadcast(b *model.Broadcast) error {
 	if !model.ValidAudience(b.Audience) {
 		return invalidCode("err.unknownAudience", "неизвестная аудитория")
+	}
+	if gid, ok := model.AudienceGroupID(b.Audience); ok {
+		g, err := m.store.GetGroup(gid)
+		if err != nil {
+			return err
+		}
+		if g == nil {
+			return invalidCode("err.groupNotFound", "группа не найдена")
+		}
 	}
 	switch b.MediaKind {
 	case "", "photo", "document":
@@ -323,6 +332,18 @@ func (m *Manager) audienceChats(audience string) ([]int64, error) {
 	}
 	byID, byChat := rosterMaps(users)
 
+	var groupMembers map[int64]bool
+	if gid, ok := model.AudienceGroupID(audience); ok {
+		memberIDs, err := m.store.GroupMemberIDs(gid)
+		if err != nil {
+			return nil, err
+		}
+		groupMembers = make(map[int64]bool, len(memberIDs))
+		for _, uid := range memberIDs {
+			groupMembers[uid] = true
+		}
+	}
+
 	now := time.Now().Unix()
 	out := make([]int64, 0, len(subs))
 	for _, s := range subs {
@@ -336,11 +357,13 @@ func (m *Manager) audienceChats(audience string) ([]int64, error) {
 			continue // the account said no to mailings (the API, the operator)
 		}
 		keep := false
-		switch audience {
-		case model.AudienceAll:
+		switch {
+		case audience == model.AudienceAll:
 			keep = true
-		case model.AudienceUnlinked:
+		case audience == model.AudienceUnlinked:
 			keep = !linked
+		case groupMembers != nil:
+			keep = linked && groupMembers[u.ID]
 		default:
 			keep = linked && audienceKeeps(audience, u, now)
 		}
@@ -435,9 +458,26 @@ func (m *Manager) audienceHookUsers(audience string, bot bool) ([]model.User, er
 		}
 	}
 	now := time.Now().Unix()
+	var groupMembers map[int64]bool
+	if gid, ok := model.AudienceGroupID(audience); ok {
+		memberIDs, err := m.store.GroupMemberIDs(gid)
+		if err != nil {
+			return nil, err
+		}
+		groupMembers = make(map[int64]bool, len(memberIDs))
+		for _, uid := range memberIDs {
+			groupMembers[uid] = true
+		}
+	}
 	var out []model.User
 	for _, u := range users {
-		if reached[u.ID] || u.MailingOff || (u.TgChatID != 0 && optedOut[u.TgChatID]) || !audienceKeeps(audience, u, now) {
+		match := false
+		if groupMembers != nil {
+			match = groupMembers[u.ID]
+		} else {
+			match = audienceKeeps(audience, u, now)
+		}
+		if reached[u.ID] || u.MailingOff || (u.TgChatID != 0 && optedOut[u.TgChatID]) || !match {
 			continue
 		}
 		out = append(out, u)
@@ -478,6 +518,15 @@ func (m *Manager) AudiencePreview(audience string) (int, error) {
 	if !model.ValidAudience(audience) {
 		return 0, invalidCode("err.unknownAudience", "неизвестная аудитория")
 	}
+	if gid, ok := model.AudienceGroupID(audience); ok {
+		g, err := m.store.GetGroup(gid)
+		if err != nil {
+			return 0, err
+		}
+		if g == nil {
+			return 0, invalidCode("err.groupNotFound", "группа не найдена")
+		}
+	}
 	chats, err := m.audienceChats(audience)
 	if err != nil {
 		return 0, err
@@ -515,7 +564,7 @@ func (m *Manager) ValidateBroadcast(b *model.Broadcast) error {
 	if strings.TrimSpace(b.Audience) == "" {
 		b.Audience = model.AudienceAll
 	}
-	return validateBroadcast(b)
+	return m.validateBroadcast(b)
 }
 
 // SetBroadcastStatus applies an operator control (pause / resume / cancel). Terminal
