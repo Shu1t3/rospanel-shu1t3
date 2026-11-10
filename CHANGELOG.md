@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.10.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.9.0...v5.10.0) (2026-11-10)
+
+
+### Features
+
+* sync upstream v5.15.0 preserving fork safeguards ([5e8f730](https://github.com/Shu1t3/rospanel-shu1t3/commit/5e8f730a8ae7f9962a89e4f85147557f632fd331))
+
 ## [5.9.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.8.0...v5.9.0) (2026-11-10)
 
 
