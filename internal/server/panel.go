@@ -109,6 +109,9 @@ func makeUserView(u model.User, set *model.Settings, userBotUsername string, cus
 	if link.NaiveOn(set) && access.AllowsBuiltin(model.LocalNodeID, model.LaneNaive) {
 		v.Links = append(v.Links, namedLink{set.ProtoLabelFor(model.ProtoNaive, &u), link.Naive(u, set)})
 	}
+	if link.TrustTunnelOn(set) && access.AllowsBuiltin(model.LocalNodeID, model.LaneTrustTunnel) {
+		v.Links = append(v.Links, namedLink{set.ProtoLabelFor(model.ProtoTrustTunnel, &u), link.TrustTunnel(u, set)})
+	}
 	if link.AnyTLSOn(set) && access.AllowsBuiltin(model.LocalNodeID, model.LaneAnyTLS) {
 		v.Links = append(v.Links, namedLink{set.ProtoLabelFor(model.ProtoAnyTLS, &u), link.AnyTLS(u, set)})
 	}
@@ -800,6 +803,8 @@ func (rt *Router) panelMux() http.Handler {
 	authedOwner("GET /api/debug/pprof/symbol", pprofHandler(pprof.Symbol))
 	authedOwner("GET /api/debug/pprof/trace", pprofHandler(pprof.Trace))
 	// Content-hashed build assets (JS/CSS/fonts) never change for a given URL → cache forever.
+	// The handler gzips each file once on its first request and answers with Vary, so a
+	// cache keeps the two forms apart (see spaAssets).
 	mux.Handle("GET /assets/", cacheControl(rt.assets, "public, max-age=31536000, immutable"))
 	// No /favicon.* routes: the build has no such files. Vite emits only what is
 	// imported, under a hashed name in assets/, and the tab's icon comes from

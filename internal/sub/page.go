@@ -119,12 +119,8 @@ type pageText struct {
 	RenewTitle     string
 	WzOpen         string
 	WzStep1        string
-	WzStep1Hint    string
 	WzStep2        string
-	WzStep2Hint    string
 	WzStep3        string
-	WzStep3Hint    string
-	WzAdd          string
 	WzOther        string
 	WzBack         string
 	WzNext         string
@@ -235,12 +231,8 @@ func text(lang i18n.Lang) pageText {
 		RenewTitle:     t("sub.renewTitle"),
 		WzOpen:         t("sub.wzOpen"),
 		WzStep1:        t("sub.wzStep1"),
-		WzStep1Hint:    t("sub.wzStep1Hint"),
 		WzStep2:        t("sub.wzStep2"),
-		WzStep2Hint:    t("sub.wzStep2Hint"),
 		WzStep3:        t("sub.wzStep3"),
-		WzStep3Hint:    t("sub.wzStep3Hint"),
-		WzAdd:          t("sub.wzAdd"),
 		WzOther:        t("sub.wzOther"),
 		WzBack:         t("sub.wzBack"),
 		WzNext:         t("sub.wzNext"),
@@ -385,11 +377,8 @@ type awgCard struct {
 	QRURL   string
 }
 
-type pageData struct {
-	Lang      i18n.Lang
-	L         pageText
-	Name      string
-	BrandName string // panel display name (defaults to the stock RosPanel name)
+// pageColors is one theme as the page's CSS variables take it.
+type pageColors struct {
 	Brand     string // accent colour #rrggbb
 	BrandDark string // darker accent for hover/active states
 	AccentFg  string // accent text colour adjusted for the surface
@@ -401,12 +390,47 @@ type pageData struct {
 	Muted     string // secondary text colour
 	Bg        string // page background base
 	Surface   string // card background
-	IsDefault bool   // true when the stock RosPanel name is in effect
-	SubURL    string
-	Access    Access
-	Links     []protoLink
-	DeepLinks []DeepLink
-	Wizard    []WizardPlatform
+	Glow      string // what the top of the background fades from: white, or the surface on a dark theme
+	Scheme    string // CSS color-scheme: light | dark, for the browser's own controls
+}
+
+func colorsOf(t branding.Theme) pageColors {
+	c := pageColors{
+		Brand:     t.Accent,
+		BrandDark: branding.Darken(t.Accent, 0.16),
+		AccentFg:  branding.Fg(t.Accent, t.Surface),
+		OnBrand:   branding.OnFill(t.Accent),
+		SuccessFg: branding.Fg("#059669", t.Surface),
+		WarningFg: branding.Fg("#ea580c", t.Surface),
+		DangerFg:  branding.Fg("#dc2626", t.Surface),
+		Ink:       t.Text,
+		Muted:     t.Muted,
+		Bg:        t.Bg,
+		Surface:   t.Surface,
+		Glow:      "#ffffff",
+		Scheme:    "light",
+	}
+	if branding.IsDark(t) {
+		c.Glow, c.Scheme = t.Surface, "dark"
+	}
+	return c
+}
+
+type pageData struct {
+	Lang       i18n.Lang
+	L          pageText
+	Name       string
+	BrandName  string      // panel display name (defaults to the stock RosPanel name)
+	pageColors             // the light theme
+	Dark       *pageColors // the dark theme, for a dark system
+	IsDefault  bool        // true when the stock RosPanel name is in effect
+	SubURL     string
+	Access     Access
+	Links      []protoLink
+	DeepLinks  []DeepLink
+	// Wizard is the connect wizard per platform; empty (every platform's client
+	// switched off) hides it.
+	Wizard []WizardPlatform
 	// AWG lists one card per server whose AmneziaWG lane the user may use: the
 	// config file to import and its QR.
 	AWG []awgCard
@@ -622,6 +646,15 @@ type protoLink struct {
 	URL   string
 }
 
+// Open is the link as a button's href for a lane whose app opens the link itself
+// rather than a subscription — TrustTunnel's tt:// — and "" for the rest.
+func (p protoLink) Open() template.URL {
+	if strings.HasPrefix(p.URL, "tt://?") {
+		return template.URL(p.URL) //nolint:gosec // link.TrustTunnel's: tt:// and base64url
+	}
+	return ""
+}
+
 // subStatus maps the derived user status to a label + badge color class.
 func subStatus(s string, lang i18n.Lang) (label, class string) {
 	switch s {
@@ -712,6 +745,11 @@ func buildPageData(u model.User, local *model.Settings, servers []Server, billin
 		if link.NaiveOn(s) && srv.allowsBuiltin(model.LaneNaive) {
 			protoLinks = append(protoLinks, protoLink{s.ProtoLabelFor(model.ProtoNaive, &u), link.Naive(u, s)})
 		}
+		// TrustTunnel's apps import the tt:// link, not a subscription: it is on the
+		// page only (ShareLinks leaves it out).
+		if link.TrustTunnelOn(s) && srv.allowsBuiltin(model.LaneTrustTunnel) {
+			protoLinks = append(protoLinks, protoLink{s.ProtoLabelFor(model.ProtoTrustTunnel, &u), link.TrustTunnel(u, s)})
+		}
 		if link.AnyTLSOn(s) && srv.allowsBuiltin(model.LaneAnyTLS) {
 			protoLinks = append(protoLinks, protoLink{s.ProtoLabelFor(model.ProtoAnyTLS, &u), link.AnyTLS(u, s)})
 		}
@@ -785,23 +823,15 @@ func buildPageData(u model.User, local *model.Settings, servers []Server, billin
 	if isDefault {
 		brandName = i18n.T(lang, "sub.defaultBrand")
 	}
-	theme := branding.ParseTheme(local.PanelTheme)
+	pal := branding.ParsePalette(local.PanelTheme)
+	dark := colorsOf(pal.Dark)
 	data := pageData{
 		Lang:        lang,
 		L:           text(lang),
 		Name:        u.Name,
 		BrandName:   brandName,
-		Brand:       theme.Accent,
-		BrandDark:   branding.Darken(theme.Accent, 0.16),
-		AccentFg:    branding.Fg(theme.Accent, theme.Surface),
-		OnBrand:     branding.OnFill(theme.Accent),
-		SuccessFg:   branding.Fg("#059669", theme.Surface),
-		WarningFg:   branding.Fg("#ea580c", theme.Surface),
-		DangerFg:    branding.Fg("#dc2626", theme.Surface),
-		Ink:         theme.Text,
-		Muted:       theme.Muted,
-		Bg:          theme.Bg,
-		Surface:     theme.Surface,
+		pageColors:  colorsOf(pal.Light),
+		Dark:        &dark,
 		IsDefault:   isDefault,
 		SubURL:      subURL,
 		Links:       protoLinks,
@@ -809,8 +839,7 @@ func buildPageData(u model.User, local *model.Settings, servers []Server, billin
 		WG:          wgCards,
 		Turn:        turnCards,
 		Telegram:    tgCards,
-		DeepLinks:   DeepLinks(subURL, lang, local.SubHappCrypt),
-		Wizard:      Wizard(lang),
+		DeepLinks:   DeepLinks(subURL, lang, local),
 		StatusLabel: statusLabel,
 		StatusClass: statusClass,
 		Used:        fmtBytes(used),
@@ -829,6 +858,7 @@ func buildPageData(u model.User, local *model.Settings, servers []Server, billin
 		ShowConfigs:  local.SubShowConfigs && showDownload,
 		ShowDownload: showDownload && local.SubShowClash,
 	}
+	data.Wizard = Wizard(lang, local, data.DeepLinks)
 	if u.DataLimit > 0 {
 		data.HasLimit = true
 		data.Limit = fmtBytes(u.DataLimit)

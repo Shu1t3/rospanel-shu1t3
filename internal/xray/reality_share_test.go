@@ -81,8 +81,10 @@ func TestRealityOnTheSharedPortRefusesItsOwnName(t *testing.T) {
 	}
 }
 
-// Before shared-port REALITY, disabled lanes could retain the TLS port and
-// the server's own name. Those settings must not prevent custom lanes from starting.
+// A disabled lane keeps its port and donor list, so a server that switched REALITY off
+// can still sit on the shared port masking as its own name. Nothing is generated for it,
+// and those leftovers must not fail the config every other lane and custom inbound
+// needs — the panel would only record the error and keep serving the stale one.
 func TestDisabledRealityWithLegacySharedPortKeepsCustomXHTTP(t *testing.T) {
 	set := realityOn443()
 	set.RealityEnabled = false

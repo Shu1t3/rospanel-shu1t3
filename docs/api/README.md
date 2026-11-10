@@ -1,5 +1,8 @@
 # RosPanel REST API
 
+**Interactive reference:** [Swagger UI](reference.md) — every endpoint, rendered from the same OpenAPI document.
+
+
 The external REST API lets a surrounding system (a billing service, a Telegram
 shop, a provisioning script) manage the panel over HTTP with an API key. It calls
 the same internal logic the admin panel does, so the two never drift.
@@ -672,7 +675,7 @@ link all expose only what's granted.
 A **grant token** names one connection:
 
 - `builtin:<server_id>:<lane>` — a built-in lane, where `<lane>` is `vless`, `reality`,
-  `hysteria2`, `naive`, `anytls`, `mieru`, `awg` or `mtproto` and `<server_id>` is `0` for the master or a node id
+  `hysteria2`, `naive`, `trusttunnel`, `anytls`, `mieru`, `awg` or `mtproto` and `<server_id>` is `0` for the master or a node id
   from `GET /v1/nodes`.
 - `inbound:<id>` — a custom inbound, by the id from `GET /v1/servers/{id}/inbounds`.
 
@@ -1124,6 +1127,31 @@ the one endpoint outside the `{"data": …}` envelope — point a scheduler at i
 copies off the box. **Restore is deliberately not exposed**: it is staged on disk and
 applied at the next start, so over an API it would be a request that silently replaces
 everything on the next restart.
+
+## Subscription response headers
+
+`GET /v1/users/{id}/subscription` returns the address; the response a client actually
+fetches carries what an app shows without parsing the profile:
+
+| Header | Means |
+| --- | --- |
+| `Profile-Title` | the title, base64 after the `base64:` prefix |
+| `Profile-Update-Interval` | hours between refreshes; absent when the panel is set to never |
+| `Subscription-Userinfo` | `upload=…; download=…; total=…; expire=…` in bytes and unix seconds; `total=0` is unlimited, `expire=0` never ends |
+| `Profile-Web-Page-Url` | the user's page, while one is reachable |
+| `support-url` | the operator's support or Telegram link, when set |
+| `Announce` | the operator's announcement, `base64:`-prefixed; Happ and v2RayTun print it as a line |
+| `Moved-Permanently-To` | where this subscription has moved to, the user's token already in it |
+
+`Moved-Permanently-To` is the domain move: set the address once in **Settings →
+Subscriptions**, with `{token}` where the token goes
+(`https://new.example.com/sub/{token}`), and from then on every client that reads the header
+refreshes from there — the user does not import a link again. Clients that ignore the header
+keep working through the old address. Clear the field once the panel is the home clients
+should talk to.
+
+With auto-routing on, Happ and INCY also get `routing` (the deeplink itself, not its URL) and
+`routing-enable: 1`; Clash and Mihomo get the rules inside the YAML instead.
 
 ## MCP (AI assistants)
 

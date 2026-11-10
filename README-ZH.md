@@ -9,12 +9,12 @@
 ![Release](https://img.shields.io/github/v/release/AppsGanin/rospanel?label=版本&sort=semver&color=2ea44f)
 ![Downloads](https://img.shields.io/github/downloads/AppsGanin/rospanel/total?label=下载量&color=6f42c1)
 ![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)
-![Xray-core](https://img.shields.io/badge/Xray--core-v26.10.21-2b2b2b)
+![Xray-core](https://img.shields.io/badge/Xray--core-v26.11.9-2b2b2b)
 ![React](https://img.shields.io/badge/UI-React%20%2B%20Vite%20%2B%20Tailwind-61DAFB?logo=react&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Linux-555?logo=linux&logoColor=white)
 ![Deploy](https://img.shields.io/badge/deploy-single%20binary%20%7C%20Docker-2496ED?logo=docker&logoColor=white)
 
-[English](README.md) · [Русский](README-RU.md) · **简体中文** · [العربية](README-AR.md) · [فارسی](README-FA.md)
+[English](README.md) · [Русский](README-RU.md) · **简体中文** · [العربية](README-AR.md) · [فارسی](README-FA.md) · [文档](https://appsganin.github.io/rospanel/zh/)
 
 [简介](#简介) · [获取服务器](#️-获取服务器) · [快速开始](#-快速开始) · [功能](#-功能) · [CLI](#️-cli) · [架构](#-架构) · [免责声明](#️-免责声明) · [开发](#-开发) · [支持项目](#-支持项目)
 
@@ -193,13 +193,13 @@ rospanel node status                  # 本地状态
 
 一份配置、一套凭据：**VLESS-Vision**（TCP/443 + uTLS）、**VLESS-XHTTP-REALITY**
 （伪装成他人站点的 TLS）、**Hysteria2**（UDP + 端口跳跃）。此外，每台服务器还支持**自定义入站**：
-VLESS / Trojan / Hysteria2，可搭配任意传输方式（TCP、WebSocket、XHTTP、gRPC、HTTPUpgrade），拥有独立的端口、
+VLESS / Trojan / Hysteria2，可搭配任意传输方式（TCP、WebSocket、XHTTP、gRPC、HTTPUpgrade），以及 **Shadowsocks-2022**（raw TCP），拥有独立的端口、
 REALITY 密钥、跳跃范围以及**细粒度的传输参数调整**（XHTTP `extra`、HTTP 伪装、sockopt、额外的 TLS 字段）——
 可逐项填写，也可直接写原始 JSON；保存前会在目标机器上校验配置（`xray -test` + 端口绑定），
 客户端无法处理的组合会被自动排除在 Clash/sing-box 订阅之外。连接编辑器中的“**恢复出厂默认**”按钮可将协议、
 端口、指纹和反 DPI 设置还原为全新安装时的状态，并删除该服务器的自定义入站（REALITY/AmneziaWG 密钥以及
 REALITY 伪装目标和端口会保留；主服务器会先为配置创建快照）。面板隐藏在**秘密路径**之后；
-其他任何路径都返回伪装站点（11 种模板）。**探测检测**会识别扫描隐藏面板的 IP——即请求了大量伪装站点中不存在的路径的 IP——
+其他任何路径都返回伪装站点（12 种模板）。**探测检测**会识别扫描隐藏面板的 IP——即请求了大量伪装站点中不存在的路径的 IP——
 并记录下来供管理员查看；响应本身不会改变，因此扫描器看到的始终只是伪装站点，伪装不会暴露。
 还可以选择**在防火墙上丢弃该 IP**（nftables）和/或发送新扫描器的**每日摘要**——两者默认关闭，仅记录是安全的基线。
 TLS 开箱即用——**ACME**（Let's Encrypt / ZeroSSL）自动续期；证书也可以**为纯 IP 签发，无需域名和 DNS**。
@@ -248,6 +248,10 @@ Clash Verge Rev、Mihomo Party、Sparkle、ClashMetaForAndroid、ClashMi）；�
 当证书受信任时，它会下发给 sing-box 客户端、Clash 配置（已支持它的 mihomo 内核）、v2rayN、Shadowrocket、
 Throne、Exclave、Karing 和 NekoBox。
 
+**TrustTunnel**（AdGuard 的协议）是位于 VLESS-TCP-TLS 端口上、基于 HTTP/2 的内置通道，与其共用证书和伪装站点：
+支持 TCP 和 UDP，登录名为 `tt-u<id>`，密码为用户的 UUID。需要拥有受信任证书的域名：应用无法通过 IP 连接。
+其应用（iOS、Android、macOS 版 TrustTunnel 及 CLI 客户端）从订阅页面导入 `tt://` 链接。
+
 **MTProto（Telegram 代理）** 是一条使用独立
 TCP端口的内置通道，端口自动选择，默认开启：Telegram 本身通过服务器连接，无需 VPN 应用。采用
 fakeTLS，每个用户的密钥由其 UUID 派生——被停用的用户随之失去，重置 UUID
@@ -282,7 +286,8 @@ N 天，密钥闲置期间不计时，从首次连接起开始计算（续期会
 到期用户可自动删除。每个用户都可以有一条管理员**备注**（来源、约定事项——仅在面板和 API 中可见，从不向客户展示）
 和若干**标签**（`vip`、`reseller-a`），列表可按标签筛选，搜索也会覆盖标签；名称旁还会显示 Xray 客户端 ID（`u12`），
 看到日志就能立刻对应到账户。**导入与导出**：用户页面可读取 **Marzban** 数据库或 `GET /api/users` 导出、
-**3x-ui** 的 `x-ui.db`，以及本面板**自己的导出文件**——并可一键生成该导出。导入的用户保留**相同的 UUID 和密码**、
+**Marzneshin**、**Rebecca**、**Remnawave**、**3x-ui** 的 `x-ui.db`，以及本面板**自己的导出文件**——并可一键生成该导出。导入的用户保留**相同的 UUID 和密码**
+（Marzneshin 除外：会重新生成 UUID，密钥作为订阅令牌保留，客户端会自动刷新）、
 限额、到期时间（包括从首次连接开始计算的期限——Marzban 的 `on_hold`、3x-ui 的“首次使用后开始”）、已用流量、
 备注和标签，因此没有人需要在应用中重新添加服务器；只要来源中有订阅令牌，令牌也会一并迁移（3x-ui 的 `subId`、
 Marzban 导出，以及本面板自己的导出总是包含），因此把域名迁移到新安装后，所有现有订阅链接依然可用。
@@ -337,8 +342,9 @@ iptoasn 表）统计不同的源 IP；不依赖任何外部服务。
 客户端内的**公告**（Happ、v2RayTun）可以直接在应用里显示一段短文本。**Happ 加密链接**（*设置 → 订阅*）：
 Happ 按钮通过 `happ://crypt4/…` 添加订阅，应用不会显示订阅地址；同一链接也可以从用户卡片中复制。
 
-三步完成的**连接向导**：自动识别平台，然后是 Happ 的官方下载（iPhone 单独提供俄罗斯 App Store 链接），
-最后一键添加订阅。添加到主屏幕后，页面会像应用一样打开。在 Telegram 内打开时，它看起来就是 Telegram 的一部分：
+三步完成的**连接向导**：自动识别平台，然后下载该平台的应用（默认 Happ；每个平台可单独选择应用），
+最后一键添加订阅。页面上的**应用按钮**（*设置 → 订阅*）可以排序、关闭，也可以添加自己的客户端（名称、平台、
+带 `{url}`、`{url_enc}` 或 `{url_b64}` 的导入链接）；每个应用都有按平台的下载链接，内置应用已预填。添加到主屏幕后，页面会像应用一样打开。在 Telegram 内打开时，它看起来就是 Telegram 的一部分：
 标题栏颜色、系统返回按钮、触感反馈。期限选项会显示每日价格和节省金额。
 
 固定地址上的 **Mini App**（每个安装随机生成，显示在*设置 → Telegram* 中）——链接中不含令牌：Telegram 对用户数据签名，
@@ -531,7 +537,7 @@ Telegram 中的**管理员机器人**：用户管理、套餐、订阅 QR 码、
 现成的 **Grafana 仪表盘**见 [docs/grafana/rospanel.json](docs/grafana/rospanel.json)（Dashboards → New → Import）。
 **MCP 服务器**将同一套 API 提供给 AI 助手，工具列表由该 OpenAPI 文档生成：把 `…/v1/mcp/<key>` 粘贴到支持 URL 的助手中即可，
 无需在任何地方安装任何东西。密钥的方法决定助手能获得哪些工具：如果只想让助手查看，请勾选“只读”。详见
-[docs/api.md](docs/api.md)。
+[docs/api/](docs/api/)。
 
 **从外部系统注册**——`POST /v1/signup` 按客户在外部系统中的 ID（邮箱、账号）注册客户，遵循机器人的规则：
 关闭注册、邀请码、审核、频率限制、每个 ID 一个账户和一次试用。请为外部系统的密钥勾选此方法，而不是创建用户的方法。
@@ -579,8 +585,9 @@ https://vpn.example.com/<api-path>/v1/mcp/<key>
 
 #### 🎨 品牌与主题
 
-用你自己的名称和 Logo 替换“RosPanel”——在面板和订阅页面中均生效。强调色会重新渲染整个界面，
-**深色模式**会自动适配文本、状态和图表。
+用你自己的名称和 Logo 替换“RosPanel”——在面板和订阅页面中均生效。两套配色——**浅色和深色**，
+各有自己的强调色、文本、背景和表面色。面板、订阅页、状态页和文档会跟随系统显示对应配色；
+面板顶栏可固定其中一种。
 
 #### 🛡️ 滥用检测
 

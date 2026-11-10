@@ -184,6 +184,16 @@ func buildConnectionsStatus(set *model.Settings) *ConnectionsStatus {
 				Enabled:     set.NaiveEnabled,
 			},
 			{
+				Key:         "trusttunnel",
+				Name:        model.ProtoTrustTunnel,
+				DisplayName: set.TrustTunnelName,
+				Transport:   "HTTP/2 CONNECT (TrustTunnel)",
+				Security:    "TLS",
+				Port:        strconv.Itoa(vlessPort),
+				Note:        "",
+				Enabled:     set.TrustTunnelEnabled,
+			},
+			{
 				Key:         "anytls",
 				Name:        model.ProtoAnyTLS,
 				DisplayName: set.AnyTLSName,
@@ -275,6 +285,7 @@ var connNameKeys = []struct{ key, proto string }{
 	{"naive", model.ProtoNaive},
 	{"mieru", model.ProtoMieru},
 	{"anytls", model.ProtoAnyTLS},
+	{"trusttunnel", model.ProtoTrustTunnel},
 }
 
 // validateConnNames trims and checks the custom node names, returning them keyed
@@ -496,7 +507,7 @@ func (m *Manager) ApplyConnections(u ConnectionsUpdate) error {
 	// The TCP-TLS lane's own port is not "taken" for REALITY — it is shared: the front
 	// carries both and routes by the name in the ClientHello (see realityListen).
 	shared := set.VLESSPort > 0 && u.RealityPort == set.VLESSPort
-	realityHeld := set.RealityEnabled && set.RealityPrivateKey != "" && set.RealityPort == u.RealityPort
+	realityHeld := set.RealityOn() && set.RealityPort == u.RealityPort
 	if u.Protocols["reality"] && !realityHeld && !shared && !portFree("tcp", u.RealityPort) {
 		return invalidCode("err.tcpPortTaken", "TCP-порт {{port}} уже занят — выберите другой", map[string]any{"port": u.RealityPort})
 	}
@@ -525,10 +536,12 @@ func (m *Manager) ApplyConnections(u ConnectionsUpdate) error {
 	}
 	realityDest := strings.Join(dests, ",")
 	// On the shared port the server's own name belongs to the decoy, so a REALITY client
-	// naming it would never reach REALITY: the lane masks as a donor there.
+	// naming it would never reach REALITY: the lane masks as a donor there. Only while the
+	// lane is on — a disabled lane is not generated, and refusing this save would leave an
+	// operator unable to switch REALITY off (see xray.Generate).
 	eff := withConnPorts(*set, u, 0)
 	eff.RealityDest = realityDest
-	if c := eff.RealityShareConflict(); c != "" {
+	if c := eff.RealityShareConflict(); eff.RealityEnabled && c != "" {
 		return realityOwnNameErr(c)
 	}
 	// Live TLS probe each donor only when REALITY is on and the set changed — a
@@ -626,6 +639,9 @@ func (m *Manager) ApplyConnections(u ConnectionsUpdate) error {
 	if err := m.store.SetAnyTLSName(connNames["anytls"]); err != nil {
 		return err
 	}
+	if err := m.store.SetTrustTunnelName(connNames["trusttunnel"]); err != nil {
+		return err
+	}
 	if err := m.store.SetHysteriaPorts(u.HysteriaPort, u.HopStart, u.HopEnd, interval, obfs); err != nil {
 		return err
 	}
@@ -692,6 +708,12 @@ func (m *Manager) SetMasterProtocols(vless, hysteria, reality bool) error {
 		}
 		if strings.TrimSpace(set.RealityDest) == "" {
 			return invalidCode("err.setRealityDestFirst", "сначала задайте домен маскировки REALITY во вкладке «Подключения»")
+		}
+		// Leftovers of a lane that was off can be ones a live lane cannot carry — its
+		// own name on the shared port. Refused here by the same rule the saves use: a
+		// lane switched on against it would fail generation instead.
+		if c := set.RealityShareConflict(); c != "" {
+			return realityOwnNameErr(c)
 		}
 	}
 	for name, en := range map[string]bool{

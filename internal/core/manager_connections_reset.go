@@ -23,7 +23,7 @@ import (
 // schema's pair would break every link to land on the one value all installs share.
 func DefaultConnections() ConnectionsUpdate {
 	return ConnectionsUpdate{
-		Protocols:    map[string]bool{"vless": true, "reality": true, "hysteria2": true, "awg": false, "naive": false, "mieru": false, "anytls": false, "mtproto": false},
+		Protocols:    map[string]bool{"vless": true, "reality": true, "hysteria2": true, "awg": false, "naive": false, "mieru": false, "anytls": false, "trusttunnel": false, "mtproto": false},
 		Fingerprints: map[string]string{"vless": "firefox", "reality": "firefox"},
 		Names:        map[string]string{},
 		HysteriaPort: 443, HopStart: 443, HopEnd: 443, HopInterval: "5-10",

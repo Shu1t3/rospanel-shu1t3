@@ -212,7 +212,7 @@ func runServer(dataDir string) {
 		filepath.Join(dataDir, "opera"))
 	if front != nil {
 		mgr.SetFront(front)
-	} else if set.RealityShared() {
+	} else if set.RealityOn() && set.RealityShared() {
 		log.Printf("REALITY: порт %d общий с TLS-полосой, но фронт не поднят — REALITY будет недоступен (см. ROSPANEL_TLS_FRONT)", set.VLESSPort)
 	}
 	sup.SetOnAccess(mgr.RecordLocalAccess) // track online status + connection IPs
@@ -358,7 +358,8 @@ func runServer(dataDir string) {
 	protocols.SetHTTP1(true)
 	protocols.SetUnencryptedHTTP2(true)
 	httpSrv := &http.Server{
-		// NaiveProxy tunnels arrive through the same fallback as the decoy (internal/naive).
+		// NaiveProxy and TrustTunnel tunnels arrive through the same fallback as the decoy
+		// (internal/naive).
 		Handler:           mgr.NaiveHandler(handler),
 		Protocols:         protocols,
 		HTTP2:             naive.HTTP2Config(),

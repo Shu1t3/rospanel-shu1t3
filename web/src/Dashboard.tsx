@@ -1,10 +1,12 @@
 import { type ReactNode, useEffect, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { AdminsSettings } from "./AdminsSettings";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { getMe, logout, type Perm, type Role } from "./api";
 import { Credentials } from "./Credentials";
 import { ChangelogModal } from "./ChangelogModal";
 import { LangMenu, LangRow } from "./LangSwitch";
+import { ThemeMenu, ThemeRow } from "./ThemeSwitch";
 import { type MessageHooks, MessageHooksContext } from "./messageHooks";
 import { BrandLogo } from "./Logo";
 import { OverviewPanel } from "./OverviewPanel";
@@ -299,7 +301,8 @@ export function Dashboard({
           </h1>
           <Clock />
           {/* The phone picks its language in the account sheet (LangRow). */}
-          <span className="max-sm:hidden">
+          <span className="flex items-center gap-1 max-sm:hidden">
+            <ThemeMenu />
             <LangMenu />
           </span>
         </header>
@@ -312,21 +315,25 @@ export function Dashboard({
               owns its scroll (users, settings) keep its header band and its save bar
               in place while the middle scrolls. Screens taller than that overflow
               visibly and main scrolls them as before. */}
-          <div key={tab} className="flex h-full flex-col animate-fade-in">
-            {/* A role with nothing ticked has no section to land on. */}
-            {NAV.length === 0 && (
-              <EmptyState title={t("nav.noAccess")} body={t("nav.noAccessHint")} />
-            )}
-            {NAV.length > 0 && tab === "overview" && <OverviewPanel />}
-            {tab === "users" && (
-              <MessageHooksContext.Provider value={hooks}>
-                <UsersPage userBotEnabled={userBot} billingEnabled={billing} />
-              </MessageHooksContext.Provider>
-            )}
-            {tab === "nodes" && <NodesPanel />}
-            {tab === "settings" && <SettingsPanel />}
-            {tab === "admins" && <AdminsSettings />}
-          </div>
+          {/* Keyed on the tab: a section that throws leaves the shell (sidebar, header,
+              tab bar) working, and the next tab click remounts the boundary clean. */}
+          <ErrorBoundary key={tab}>
+            <div className="flex h-full flex-col animate-fade-in">
+              {/* A role with nothing ticked has no section to land on. */}
+              {NAV.length === 0 && (
+                <EmptyState title={t("nav.noAccess")} body={t("nav.noAccessHint")} />
+              )}
+              {NAV.length > 0 && tab === "overview" && <OverviewPanel />}
+              {tab === "users" && (
+                <MessageHooksContext.Provider value={hooks}>
+                  <UsersPage userBotEnabled={userBot} billingEnabled={billing} />
+                </MessageHooksContext.Provider>
+              )}
+              {tab === "nodes" && <NodesPanel />}
+              {tab === "settings" && <SettingsPanel />}
+              {tab === "admins" && <AdminsSettings />}
+            </div>
+          </ErrorBoundary>
         </main>
 
         {moreOpen && (
@@ -368,6 +375,7 @@ export function Dashboard({
                   <MoreRow key={it.label} item={it} onDone={() => setMoreOpen(false)} />
                 ))}
                 <LangRow />
+                <ThemeRow />
                 <MoreRow
                   item={{ label: t("nav.logout"), onClick: doLogout, danger: true }}
                   onDone={() => setMoreOpen(false)}

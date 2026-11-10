@@ -1,0 +1,94 @@
+site_name: RosPanel
+site_description: Self-hosted VPN panel on Xray-core — users, subscriptions, plans and payments, routing, multi-node.
+site_url: https://appsganin.github.io/rospanel/
+repo_url: https://github.com/AppsGanin/rospanel
+repo_name: AppsGanin/rospanel
+edit_uri: edit/main/
+
+docs_dir: .site_src
+site_dir: site
+
+theme:
+  name: material
+  language: en
+  logo: img/logo.svg
+  favicon: img/logo.svg
+  font: false
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - content.code.copy
+    - search.suggest
+    - search.highlight
+    - toc.follow
+
+extra:
+  alternate:
+    - name: English
+      link: /rospanel/
+      lang: en
+    - name: Русский
+      link: /rospanel/ru/
+      lang: ru
+    - name: 简体中文
+      link: /rospanel/zh/
+      lang: zh
+    - name: العربية
+      link: /rospanel/ar/
+      lang: ar
+    - name: فارسی
+      link: /rospanel/fa/
+      lang: fa
+
+extra_css:
+  - css/panel.css
+
+extra_javascript:
+  - js/lang-switch.js
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight
+
+plugins:
+  - search:
+      lang:
+        - en
+        - ru
+
+nav:
+  - Overview: index.md
+  - API: api/index.md
+  - API reference: api/reference.md
+  - Benchmarks: benchmarks/index.md
+  - Plugins: plugins/index.md
+  - Grafana: grafana/index.md
+  - What's new: changelog.md

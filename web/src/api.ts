@@ -1119,6 +1119,30 @@ export interface SubSettings {
   // The operator's own subscription page: browsers opening a subscription link are
   // redirected there, {token} replaced by the user's token. Empty = the panel's page.
   sub_page_url: string
+  // New subscription address advertised as moved-permanently-to; {token} is the
+  // user's token. Empty = the panel has not moved.
+  sub_moved_to: string
+  // The page's "open in app" buttons, in the order shown; off ones are hidden.
+  sub_apps: SubApp[]
+  // The client the page's connect wizard installs on each platform (ios, android,
+  // windows, macos, linux, tv), a sub_apps key.
+  sub_wizard_apps: Record<string, string>
+}
+
+export type AppLinks = Record<string, { label: string; url: string }[]>
+
+// A stock client, or one of the operator's own (custom), whose link template takes
+// the subscription as {url}, {url_enc} or {url_b64}. A new one is sent with key "".
+export interface SubApp {
+  key: string
+  label: string
+  on: boolean
+  custom?: boolean
+  platforms?: string
+  link?: string
+  // Download buttons per platform (ios, android, windows, macos, linux, tv); the
+  // connect wizard offers its client's.
+  links?: AppLinks
 }
 
 // HWIDSettings gates device binding: which installs may fetch the subscription and
@@ -1588,10 +1612,12 @@ export interface ThemeColors {
 
 export interface BrandingInfo {
   panel_name: string
-  theme: ThemeColors
+  theme: ThemeColors // the light theme
+  theme_dark: ThemeColors // the dark theme, for a dark system
   has_custom_logo: boolean
   default_name: string
   default_theme: ThemeColors
+  default_theme_dark: ThemeColors // accent "" — the dark default is the light accent
 }
 
 export const getBranding = () => api<BrandingInfo>('api/branding')
@@ -1616,10 +1642,18 @@ export const previewLegal = (markdown: string) =>
     body: JSON.stringify({ markdown }),
   })
 
-export const saveBranding = (panelName: string, theme: ThemeColors) =>
+export const saveBranding = (
+  panelName: string,
+  theme: ThemeColors,
+  themeDark: ThemeColors,
+) =>
   api<BrandingInfo>('api/settings/branding', {
     method: 'POST',
-    body: JSON.stringify({ panel_name: panelName, theme }),
+    body: JSON.stringify({
+      panel_name: panelName,
+      theme,
+      theme_dark: themeDark,
+    }),
   })
 export const uploadBrandingLogo = (file: File) => {
   const fd = new FormData()
@@ -2175,12 +2209,15 @@ export interface ImportCandidate {
   enabled: boolean
   note: string
   issues: string[]
+  // The source's subscription token, when it has one; it is what keeps an
+  // already-issued subscription link working after the move.
+  sub_token?: string
   exists: boolean
   existing_id?: number
   name_taken: boolean
 }
 export interface ImportPreview {
-  source: 'marzban' | '3x-ui'
+  source: 'marzban' | 'marzneshin' | 'rebecca' | 'remnawave' | '3x-ui' | 'rospanel'
   users: ImportCandidate[]
 }
 export interface ImportResult {
