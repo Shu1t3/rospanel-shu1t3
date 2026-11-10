@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.9.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.8.0...v5.9.0) (2026-11-10)
+
+
+### Features
+
+* **broadcast:** allow targeting user groups in broadcast audience ([ac18501](https://github.com/Shu1t3/rospanel-shu1t3/commit/ac1850126fc5f1aa1085c831acaedaebd448784b))
+
 ## [5.8.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.7.0...v5.8.0) (2026-11-06)
 
 
