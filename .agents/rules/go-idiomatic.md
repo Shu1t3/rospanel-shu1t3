@@ -1,16 +1,33 @@
-# Go Idiomatic Code & Refactoring Rules
+# Go Idiomatic Code & Project Patterns
 
-## General Principles
-- Enforce the rule: "Return concrete types, accept interfaces". Do not pollute the codebase with unnecessary interfaces if there is only one implementation.
-- Strictly follow the Clean Architecture layers defined in this project. Never import a transport layer (HTTP/gRPC) or repository layer into the core domain/usecase packages.
-- Keep functions small and focused on a single responsibility. If a function exceeds 50 lines, propose a refactoring to split it.
+## 1. Архитектурные паттерны RosPanel
 
-## Error Handling (Go 1.20+)
-- Never discard errors using `_`. Always handle them or return them up the stack.
-- When wrapping errors with additional context, use `fmt.Errorf("context message: %w", err)`.
-- Use `errors.Is(err, target)` and `errors.As(err, &target)` for error checking instead of direct equality checks or type assertions.
-- For aggregating multiple errors (e.g., in loops or parallel operations), strictly use `errors.Join()`.
+- **Паттерн центрального менеджера (`internal/core`)**:
+  - Бизнес-логика RosPanel сосредоточена в структуре `Manager` пакета `internal/core`.
+  - Методы менеджера сгруппированы по тематическим файлам (`manager_users.go`, `manager_inbounds.go`, `manager_multihop.go`, `manager_nodes.go` и т.д.).
+  - `Manager` напрямую взаимодействует с хранилищем `*store.Store` и подсистемами (`internal/xray`, `internal/sub`). Не создавайте искусственных промежуточных слоёв DTO или абстрактных репозиториев, если в этом нет реальной необходимости.
+- **Прагматичный размер функций**:
+  - Методы, собирающие сложные сетевые конфигурации Xray, многохоповые цепочки или выполняющие многошаговые транзакции БД, естественным образом могут превышать 50–100 строк. Не фрагментируйте монолитные алгоритмы генерации на десятки мелких функций-однострочников только ради соблюдения формального лимита строк. Разделяйте функции тогда, когда выделенный фрагмент имеет самостоятельный смысл или переиспользуется.
+- **Интерфейсы и типы**:
+  - Следуйте правилу: *«Возвращайте конкретные типы, принимайте интерфейсы»*. Не создавайте интерфейсы с единственной реализацией «на будущее».
 
-## Naming & Style
-- Avoid stuttering in package names and exported types (e.g., use `user.Service` instead of `user.UserService`).
-- Run `go fmt` and `goimports` immediately after any code modification.
+---
+
+## 2. Обработка ошибок (Go 1.20+)
+
+- **Никаких проигнорированных ошибок**: никогда не отбрасывайте ошибку через `_ = ...` без явного обоснования в комментарии. Всегда возвращайте ошибку выше по стеку или логируйте её.
+- **Контекстное оборачивание**: используйте `fmt.Errorf("action description: %w", err)` с глаголом `%w` для сохранения цепочки ошибок.
+- **Проверка типов ошибок**: строго используйте `errors.Is(err, target)` и `errors.As(err, &target)` вместо сравнения строк или прямых приведений типов.
+- **Агрегация ошибок**: для сбора нескольких ошибок (в цикле обработки нод, пользователей или пакетных операций) строго используйте `errors.Join(errs...)`.
+
+---
+
+## 3. Кодогенерация и форматирование
+
+- **Генерация каталога ошибок**: если правятся структуры ошибок или коды в `internal/i18n/`, запускайте генератор:
+  ```bash
+  go generate ./internal/i18n/...
+  ```
+- **Стиль и форматирование**:
+  - Имена типов и переменных должны быть лаконичными, без заикания (stuttering), например `xray.Config`, а не `xray.XrayConfig`.
+  - После любых изменений в Go-коде форматируйте файлы с помощью `go fmt` / `goimports`.

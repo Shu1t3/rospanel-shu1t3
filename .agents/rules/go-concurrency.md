@@ -1,11 +1,31 @@
 # Go Concurrency, Memory & Performance Rules
 
-## Concurrency & Goroutines
-- Every goroutine spawned MUST have a deterministic lifecycle. Always ensure it can be gracefully stopped using `context.Context` or explicit close channels.
-- Prevent goroutine leaks: when using `time.Ticker` or `time.Timer`, always ensure `defer ticker.Stop()` is called.
-- Avoid shared state where possible. Use channels for communication instead of heavy `sync.Mutex` locking, unless it's a simple thread-safe map/counter.
+## 1. Горутины и жизненный цикл фоновых процессов
 
-## Memory Optimization & Performance
-- In high-throughput paths (e.g., DB queries, loops), avoid unnecessary allocations. 
-- When initializing slices or maps with a known target size, always pre-allocate capacity: use `make([]T, 0, capacity)` instead of `make([]T, 0)`.
-- Pay attention to escape analysis: do not return pointers to short-lived local variables from hot paths if they can be allocated on the stack.
+- **Детерминированное завершение**:
+  - Каждая запускаемая горутина обязана иметь детерминированный жизненный цикл. Она должна контролироваться через `context.Context` (`ctx.Done()`) или явный канал остановки (`stopCh`).
+  - При остановке сервиса (`Manager.Close()`, `agent.Stop()`) фоновые воркеры (опрос нод, сборщик статистики `sysstat`, периодическая очистка brute-guard, сборщик метрик Xray) обязаны останавливаться без зависания.
+- **Предотвращение утечек ресурсов**:
+  - При использовании `time.NewTicker` или `time.NewTimer` всегда гарантируйте вызов `defer ticker.Stop()`.
+  - В HTTP/SSE хендлерах потоковой передачи (streaming logs, traffic events) обязательно подписывайтесь на `r.Context().Done()` и немедленно освобождайте каналы и буферы при разрыве клиентского соединения.
+
+---
+
+## 2. Конкурентность с SQLite и блокировки
+
+- **Ограничение единого писателя**:
+  - SQLite допускает только одну параллельную операцию записи. Запуск множества горутин, одновременно выполняющих независимые транзакции записи в `store.Store`, приводит к `database is locked` / lock starvation.
+  - Если необходимо выполнить массовую запись из фоновых процессов, сериализуйте её или используйте батчинг (объединение в одну компактную транзакцию).
+- **Синхронизация состояния памяти**:
+  - Для защиты внутренних кэшей менеджера (состояния нод, сессии, лимиты) используйте `sync.RWMutex` с минимальным временем удержания блокировки. Никогда не делайте сетевых вызовов под мьютексом.
+
+---
+
+## 3. Оптимизация памяти и аллокаций
+
+- **Предвыделение ёмкости**:
+  - При инициализации слайсов или мап с заранее известным или оцениваемым размером (списки пользователей, нод, портов, правил маршрутизации) всегда задавайте ёмкость: `make([]T, 0, count)` вместо `make([]T, 0)`.
+- **Строковые конкатенации в циклах**:
+  - В циклических операциях формирования ссылок подписки или конфигов используйте `strings.Builder` с вызовом `Grow()`, избегая многократных аллокаций через оператор `+`.
+- **Избегание утечек на кучу (Escape Analysis)**:
+  - Не возвращайте указатели на короткоживущие локальные переменные в горячих путях обработки трафика и логов, если они могут быть размещены на стеке.
