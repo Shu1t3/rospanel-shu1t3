@@ -61,3 +61,4 @@ Before pushing changes to a branch that triggers a RosPanel release, merging a r
 - **Ревью кода перед коммитом**: навык [rospanel-code-review](.agents/skills/rospanel-code-review/SKILL.md)
 - **Разработка UI**: навык [rospanel-frontend](.agents/skills/rospanel-frontend/SKILL.md)
 - **Отладка Xray**: навык [rospanel-xray-lab](.agents/skills/rospanel-xray-lab/SKILL.md)
+- **Оркестрация субагентов**: навык [rospanel-subagents](.agents/skills/rospanel-subagents/SKILL.md)
