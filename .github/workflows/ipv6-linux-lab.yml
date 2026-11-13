@@ -24,7 +24,7 @@ jobs:
     timeout-minutes: 35
     env:
       RP6_LAB: /tmp/rp6-lab
-      CANDIDATE_SHA: 0340dca0e28d6bd742d31b857bdaf420e6ca1fba
+      CANDIDATE_SHA: 37ad1f3c31304c6f16cb7a8d27c049fb16784a98
       ARCH: ${{ matrix.arch }}
       ASSET: ${{ matrix.asset }}
       XRAY_SHA: ${{ matrix.sha256 }}

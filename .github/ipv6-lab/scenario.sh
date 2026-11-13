@@ -11,12 +11,12 @@ cleanup() {
  docker network rm rospanel-ipv6-release-lab >/dev/null 2>&1 || true
  docker network rm rp6-dual >/dev/null 2>&1 || true
 }
-trap cleanup EXIT
+trap 'rc=$?; if (( rc != 0 )); then for node in master a r b c origin; do docker inspect "rp6-$node" --format "{{.Name}} {{.State.Status}}" 2>/dev/null || true; docker exec "rp6-$node" systemctl is-active rospanel rospanel-node xray 2>/dev/null || true; done; fi; cleanup' EXIT
 docker network create --ipv6 --ipv4=false --subnet fd42:629d:2026:11::/64 rospanel-ipv6-release-lab >/dev/null
 bash start-arm.sh "$mode"
 wait_panel() {
  for attempt in {1..50}; do
-  if docker exec rp6-master curl -gksSf --max-time 2 'https://[fd42:629d:2026:11::10]/rospanel/' >/dev/null; then return; fi
+  if docker exec rp6-master curl -gksS --max-time 2 'https://[fd42:629d:2026:11::10]/rospanel/' >/dev/null 2>&1; then return; fi
   sleep 1
  done
  return 1

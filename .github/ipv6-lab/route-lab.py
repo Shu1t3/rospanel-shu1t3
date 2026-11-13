@@ -8,7 +8,10 @@ def subscription(user, profile):
     view=api('GET',f"users/{user['id']}")
     suburl=view["sub_url"]
     assert suburl.startswith(f"https://[{prefix}10]/"), "unbracketed master subscription URL"
-    payload=docker('exec','rp6-master','curl','-gkfsS','-A','v2rayNG/1.9.0',suburl,capture_output=True).stdout
+    result=subprocess.run(['docker','exec','rp6-master','curl','-gkfsS','--max-time','5','-A','v2rayNG/1.9.0',suburl],text=True,capture_output=True)
+    if result.returncode:
+        return None
+    payload=result.stdout
     if 'vless://' not in payload:
         payload=base64.b64decode(payload).decode()
     links=[urlsplit(line) for line in payload.splitlines() if line.startswith('vless://')]
