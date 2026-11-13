@@ -1,0 +1,97 @@
+name: IPv6 Linux release lab
+on:
+  push:
+    branches: [codex/ipv6-linux-lab]
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+            asset: Xray-linux-64.zip
+            sha256: b651f7e1d9966ee2c1b1ee1bf8b52c72771824d3065dce96bbc8bcc19ed95f82
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            asset: Xray-linux-arm64-v8a.zip
+            sha256: 64ed6858982a7f5eb85d88b811089063bd4f17561f4c8f44e0f1dc8e6f6430be
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    env:
+      RP6_LAB: ${{ runner.temp }}/rp6-lab
+      CANDIDATE_SHA: 0340dca0e28d6bd742d31b857bdaf420e6ca1fba
+      ARCH: ${{ matrix.arch }}
+      ASSET: ${{ matrix.asset }}
+      XRAY_SHA: ${{ matrix.sha256 }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          path: candidate
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.22.1
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: candidate/go.mod
+          cache-dependency-path: candidate/go.sum
+      - name: Verify published binaries and pinned Xray
+        run: |
+          mkdir -m 700 "$RP6_LAB"
+          cp .github/ipv6-lab/* "$RP6_LAB/"
+          cd "$RP6_LAB"
+          gh release download v5.10.0 --repo "$GITHUB_REPOSITORY" --pattern 'SHA256SUMS' --pattern 'rospanel-linux-*'
+          sha256sum -c SHA256SUMS
+          chmod +x "rospanel-linux-$ARCH"
+          mv "rospanel-linux-$ARCH" previous
+          curl -fLSs --retry 4 -o xray.zip "https://github.com/XTLS/Xray-core/releases/download/v26.11.9/$ASSET"
+          printf '%s  xray.zip\n' "$XRAY_SHA" | sha256sum -c -
+          unzip -j xray.zip xray geosite.dat geoip.dat
+          mv xray xray-linux
+          chmod +x xray-linux
+          ./xray-linux version
+          ssh-keygen -q -t ed25519 -N '' -f lab-ssh-key
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Build exact release candidate
+        working-directory: candidate
+        run: |
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          npm --prefix web ci
+          npm --prefix web run build
+          CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o "$RP6_LAB/rospanel-linux" ./cmd/rospanel
+          go version -m "$RP6_LAB/rospanel-linux"
+          sha256sum "$RP6_LAB/rospanel-linux"
+      - name: Build the isolated systemd lab
+        run: docker build -t rp6-systemd --file "$RP6_LAB/Dockerfile" .github/ipv6-lab
+      - name: Clean install, command and SSH enrollment, ordinary and protected IPv6 routes
+        run: bash "$RP6_LAB/scenario.sh" fresh
+      - name: Upgrade v5.10.0 with old profiles and nodes
+        if: ${{ !cancelled() }}
+        run: bash "$RP6_LAB/scenario.sh" old
+      - name: Integration tests against release Xray
+        if: ${{ !cancelled() }}
+        working-directory: candidate
+        run: |
+          RP_XRAY_BIN="$RP6_LAB/xray-linux" go test -count=1 -v ./internal/xray ./internal/sub
+      - name: Build release image
+        if: ${{ !cancelled() }}
+        working-directory: candidate
+        run: docker build -t rp6-image .
+      - name: Smoke test release image over IPv6
+        if: ${{ !cancelled() }}
+        run: |
+          docker network create --ipv6 --ipv4=false --subnet fd42:629d:2026:11::/64 rp6-images
+          trap 'docker rm -f rp6-image rp6-probe >/dev/null 2>&1 || true; docker network rm rp6-images >/dev/null' EXIT
+          docker run -d --name rp6-image --network rp6-images --ip6 fd42:629d:2026:11::10 --cap-add NET_ADMIN -e ROSPANEL_HOST=fd42:629d:2026:11::10 rp6-image
+          docker run --rm --name rp6-probe --network rp6-images rp6-systemd curl -gksSf --max-time 4 --retry 15 --retry-connrefused 'https://[fd42:629d:2026:11::10]/rospanel/' >/dev/null
+          docker exec rp6-image xray version
