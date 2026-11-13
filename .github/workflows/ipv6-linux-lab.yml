@@ -23,7 +23,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 35
     env:
-      RP6_LAB: ${{ runner.temp }}/rp6-lab
+      RP6_LAB: /tmp/rp6-lab
       CANDIDATE_SHA: 0340dca0e28d6bd742d31b857bdaf420e6ca1fba
       ARCH: ${{ matrix.arch }}
       ASSET: ${{ matrix.asset }}
