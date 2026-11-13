@@ -3,7 +3,9 @@ package core
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"slices"
 	"strings"
@@ -281,5 +283,113 @@ func testMultiHopRollout(t *testing.T, returnToEntry bool) {
 	}
 	if cfg := state(nodes[0]).XrayConfig; bytes.Contains(cfg, []byte(old.Tag())) {
 		t.Fatal("old entry still contains the moved listener")
+	}
+}
+
+func TestMultiHopIPFamilyChangeStagesNewAddress(t *testing.T) {
+	t.Parallel()
+	m := nodeTestManager(t)
+	if err := m.store.SetRealityKeys("master-priv", "master-pub", "ab", "/rp"); err != nil {
+		t.Fatal(err)
+	}
+	m.hosts = newHostAddrs(func(_ context.Context, host string) ([]netip.Addr, error) {
+		switch host {
+		case "entry.test":
+			return []netip.Addr{netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("2001:db8::1")}, nil
+		case "transit.test":
+			return []netip.Addr{netip.MustParseAddr("192.0.2.3"), netip.MustParseAddr("2001:db8::3")}, nil
+		case "exit.test":
+			return []netip.Addr{netip.MustParseAddr("2001:db8::21"), netip.MustParseAddr("192.0.2.2"), netip.MustParseAddr("2001:db8::2")}, nil
+		}
+		return nil, nil
+	})
+	makeNode := func(host string) *model.Node {
+		t.Helper()
+		n, err := m.store.CreateNode(host, host, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		enabled := true
+		if err := m.store.UpdateNode(n.ID, store.NodeEdit{Name: host, Host: host, VLESS: &enabled}); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.store.UpdateNodeStatus(n.ID, model.NodeStatusUpdate{LastSeen: time.Now().Unix(), XrayRunning: true, XrayVersion: xray.PinnedVersion, CertSHA256: strings.Repeat("ab", 32)}); err != nil {
+			t.Fatal(err)
+		}
+		n, err = m.store.GetNode(n.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	entry, transit, exit := makeNode("entry.test"), makeNode("transit.test"), makeNode("exit.test")
+	chain := []int64{entry.ID, transit.ID, exit.ID}
+	hops := multiHopFromChain(chain)
+	in, err := m.store.CreateInbound(model.Inbound{
+		ServerID: entry.ID, Port: 28443, Enabled: true, Name: "Test", Protocol: model.InbVLESS,
+		Opts: model.InboundOpts{Transport: model.TrTCP, Security: model.SecTLS, MultiHop: &hops},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := func(n *model.Node) *nodeapi.NodeState {
+		t.Helper()
+		st, err := m.NodeDesiredState(n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+	families := []model.HopIPFamily{model.HopIPv6, model.HopIPv6}
+	profile, err := m.UpdateMultiHopRoute(t.Context(), in.ID, in.Name, chain, true, nil, families)
+	if err != nil || !profile.Applying || !slices.Equal(profile.IPFamilies, families) {
+		t.Fatalf("family-only update did not stage: %+v (%v)", profile, err)
+	}
+	if cfg := state(entry).XrayConfig; !bytes.Contains(cfg, []byte(`"address":"192.0.2.3"`)) {
+		t.Fatal("active entry switched before the exit acknowledged")
+	}
+	m.noteMultiHopApplied(exit.ID, state(exit).Meta.MultiHopAcks)
+	if err := m.advanceMultiHop(); err != nil {
+		t.Fatal(err)
+	}
+	m.noteMultiHopApplied(transit.ID, state(transit).Meta.MultiHopAcks)
+	if err := m.advanceMultiHop(); err != nil {
+		t.Fatal(err)
+	}
+	staged := state(entry)
+	if !bytes.Contains(staged.XrayConfig, []byte(`"address":"2001:db8::3"`)) ||
+		!bytes.Contains(staged.XrayConfig, []byte(`"serverName":"transit.test"`)) {
+		t.Fatal("staged IPv6 address or TLS identity is wrong")
+	}
+	// DNS may lose its AAAA after the exit confirms. Keep the old entry
+	// usable while the staged endpoint is unavailable.
+	m.hosts.mu.Lock()
+	m.hosts.cache["exit.test"] = hostEntry{at: time.Now(), addrs: []netip.Addr{netip.MustParseAddr("192.0.2.2")}}
+	m.hosts.mu.Unlock()
+	if cfg := state(entry).XrayConfig; !bytes.Contains(cfg, []byte(`"address":"192.0.2.3"`)) {
+		t.Fatal("missing staged IPv6 destination replaced the active IPv4 route")
+	}
+	m.hosts.mu.Lock()
+	delete(m.hosts.cache, "exit.test")
+	m.hosts.mu.Unlock()
+	m.noteMultiHopApplied(entry.ID, staged.Meta.MultiHopAcks)
+	if err := m.advanceMultiHop(); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := m.store.GetInbound(in.ID)
+	if err != nil || saved.Opts.MultiHop.Pending != nil || !slices.Equal(saved.Opts.MultiHop.IPFamilies, families) ||
+		saved.Port != in.Port || saved.VLESSUUID("user") != in.VLESSUUID("user") {
+		t.Fatalf("promoted IPv6 route lost its settings or identity: %+v (%v)", saved, err)
+	}
+	profile, err = m.UpdateMultiHopRoute(t.Context(), in.ID, "Renamed", chain, true, nil, nil)
+	if err != nil || profile.Applying || !slices.Equal(profile.IPFamilies, families) {
+		t.Fatalf("edit without family field lost the current choice: %+v (%v)", profile, err)
+	}
+
+	onlyV4 := makeNode("192.0.2.10")
+	_, err = m.UpdateMultiHopRoute(t.Context(), in.ID, in.Name, []int64{entry.ID, transit.ID, onlyV4.ID}, true, nil, families)
+	var validation *ValidationError
+	if !errors.As(err, &validation) || validation.Code != "err.multiHopIPDestination" || validation.Args["hop"] != 1 {
+		t.Fatalf("expected IPv6 address validation at second hop, got %v", err)
 	}
 }

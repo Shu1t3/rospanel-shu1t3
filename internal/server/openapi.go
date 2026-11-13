@@ -569,9 +569,10 @@ type oaNodeCountResp struct {
 
 // oaNodeCreateResp / oaOKResp type the node responses for the spec.
 type oaNodeCreateResp struct {
-	ID             int64  `json:"id"`
-	JoinToken      string `json:"join_token"`
-	InstallCommand string `json:"install_command"`
+	ID                    int64  `json:"id"`
+	JoinToken             string `json:"join_token"`
+	InstallCommand        string `json:"install_command"`
+	OfflineInstallCommand string `json:"offline_install_command"`
 }
 type oaOKResp struct {
 	OK bool `json:"ok"`

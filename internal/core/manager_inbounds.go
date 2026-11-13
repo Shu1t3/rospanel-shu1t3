@@ -268,6 +268,7 @@ func (m *Manager) createInbound(ctx context.Context, in model.Inbound) (*Inbound
 	if hops := in.Opts.MultiHop; hops != nil && in.Enabled {
 		if hops.Pending == nil {
 			hops.Pending = newMultiHopDeployment(hops.Chain(in.ServerID), in.Name, true, hops.Via == nil, hops.Reverse)
+			hops.Pending.IPFamilies = slices.Clone(hops.IPFamilies)
 		}
 		hops.Pending.Name = in.Name
 	}
@@ -381,9 +382,9 @@ func (m *Manager) UpdateInbound(ctx context.Context, in model.Inbound) (*Inbound
 			return nil, invalidCode("err.inboundNotFound", "подключение не найдено")
 		}
 	}
-	if cur.Opts.MultiHop != nil && (cur.Opts.MultiHop.Via != nil || cur.Opts.MultiHop.Reverse != nil) ||
+	if cur.Opts.MultiHop != nil && (cur.Opts.MultiHop.Via != nil || cur.Opts.MultiHop.Reverse != nil || len(cur.Opts.MultiHop.IPFamilies) > 0) ||
 		in.Opts.MultiHop != nil && (in.Opts.MultiHop.Via != nil || in.Opts.MultiHop.Pending != nil ||
-			in.Opts.MultiHop.Revision != "" || in.Opts.MultiHop.Reverse != nil) {
+			in.Opts.MultiHop.Revision != "" || in.Opts.MultiHop.Reverse != nil || len(in.Opts.MultiHop.IPFamilies) > 0) {
 		return nil, invalidCode("err.multiHopManaged", "управляйте маршрутом в разделе «Мульти-хоп»")
 	}
 	in.ServerID = cur.ServerID

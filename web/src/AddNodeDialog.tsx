@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { createNode, provisionNode, regenNodeJoin, type NodeView } from "./api";
+import { createNode, provisionNode, regenNodeJoin, type NodeInstallCommands, type NodeView } from "./api";
 import { errMessage, notifyError, notifySuccess } from "./notify";
 import { Button, cn, Code, Modal, PasswordInput, Textarea, TextInput } from "./ui";
 
@@ -15,10 +15,10 @@ const ERR_PREFIX = "ERROR";
 // InstallCommandModal shows the one-line install command exactly once after a node
 // is created or its token is regenerated.
 export function InstallCommandModal({
-  command,
+  commands,
   onClose,
 }: {
-  command: string;
+  commands: NodeInstallCommands;
   onClose: () => void;
 }) {
   const { t } = useTranslation();
@@ -29,9 +29,16 @@ export function InstallCommandModal({
       </p>
       <div className="mt-3">
         <Code block copy>
-          {command}
+          {commands.install_command}
         </Code>
       </div>
+      {commands.offline_install_command && (
+        <details className="mt-3 text-sm">
+          <summary className="cursor-pointer">{t("nodes.installOffline")}</summary>
+          <p className="my-2 text-ink-muted">{t("nodes.installOfflineHint")}</p>
+          <Code block copy>{commands.offline_install_command}</Code>
+        </details>
+      )}
       <div className="mt-4 flex justify-end">
         <Button onClick={onClose}>{t("common.done")}</Button>
       </div>
@@ -47,7 +54,7 @@ export function AddNodeDialog({
   onDone,
 }: {
   onClose: () => void;
-  onCreated: (command: string) => void;
+  onCreated: (commands: NodeInstallCommands) => void;
   onDone: () => void;
 }) {
   const { t } = useTranslation();
@@ -74,15 +81,16 @@ export function AddNodeDialog({
     setBusy(true);
     try {
       const res = await createNode(name.trim(), host.trim());
-      onCreated(res.install_command);
+      onCreated(res);
     } catch (e) {
       notifyError(errMessage(e));
       setBusy(false);
     }
   };
 
+  const sshAddress = sshHost.trim() || host.trim();
   const submitSSH = async () => {
-    if (!name.trim() || !host.trim() || !sshHost.trim()) return;
+    if (!name.trim() || !host.trim() || !sshAddress) return;
     if (sshAuth === "password" && !sshPassword) return;
     if (sshAuth === "key" && !sshKey.trim()) return;
     setInstalling(true);
@@ -101,7 +109,7 @@ export function AddNodeDialog({
       const outcome = await provisionNode(
         nodeId,
         {
-          ssh_host: sshHost.trim(),
+          ssh_host: sshAddress,
           ssh_port: Number(sshPort) || 22,
           ssh_user: sshUser.trim(),
           ssh_password: sshAuth === "password" ? sshPassword : undefined,
@@ -154,7 +162,7 @@ export function AddNodeDialog({
           label={t("nodes.hostLabel")}
           value={host}
           onChange={setHost}
-          placeholder="nl1.example.com"
+          placeholder="nl1.example.com / 2001:db8::10"
         />
 
         {mode === "ssh" && (
@@ -164,7 +172,7 @@ export function AddNodeDialog({
             </p>
             <div className="grid grid-cols-3 gap-2">
               <div className="col-span-2">
-                <TextInput label={t("nodes.sshHost")} value={sshHost} onChange={setSshHost} placeholder="203.0.113.10" />
+                <TextInput label={t("nodes.sshHost")} value={sshHost} onChange={setSshHost} placeholder={host.trim() || "2001:db8::10"} />
               </div>
               <TextInput label={t("conn.port")} value={sshPort} onChange={setSshPort} placeholder="22" />
             </div>
@@ -222,7 +230,7 @@ export function AddNodeDialog({
           <Button
             onClick={submitSSH}
             loading={installing}
-            disabled={!name.trim() || !host.trim() || !sshHost.trim()}
+            disabled={!name.trim() || !host.trim() || !sshAddress}
           >
             {t("nodes.install")}
           </Button>
@@ -244,7 +252,7 @@ export function ReconnectDialog({
   node: NodeView;
   onClose: () => void;
   onDone: () => void;
-  onRegen: (command: string) => void;
+  onRegen: (commands: NodeInstallCommands) => void;
 }) {
   // Both tabs reinstall the node; they differ only in who runs the installer. The
   // command tab revokes the node's current token (the old install stops connecting
@@ -267,7 +275,7 @@ export function ReconnectDialog({
     setBusy(true);
     try {
       const res = await regenNodeJoin(node.id);
-      onRegen(res.install_command);
+      onRegen(res);
       onClose();
     } catch (e) {
       notifyError(errMessage(e));
@@ -343,7 +351,7 @@ export function ReconnectDialog({
           </p>
           <div className="grid grid-cols-3 gap-2">
             <div className="col-span-2">
-              <TextInput label={t("nodes.sshHost")} value={sshHost} onChange={setSshHost} placeholder="203.0.113.10" />
+              <TextInput label={t("nodes.sshHost")} value={sshHost} onChange={setSshHost} placeholder="2001:db8::10" />
             </div>
             <TextInput label={t("conn.port")} value={sshPort} onChange={setSshPort} placeholder="22" />
           </div>

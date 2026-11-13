@@ -31,6 +31,7 @@ func (m *Manager) GetNode(id int64) (*model.Node, error) { return m.store.GetNod
 // ensuring the node-API surface exists. The returned node carries RawJoinToken.
 // The name must be unique (it becomes a subscription proxy name/tag).
 func (m *Manager) CreateNode(name, host string) (*model.Node, error) {
+	host = model.UnbracketIPv6(host)
 	if !model.ValidServerHost(host) {
 		return nil, invalidCode("err.nodeHostInvalid", "адрес ноды — домен или IP, без пробелов и спецсимволов")
 	}
@@ -67,6 +68,7 @@ func (m *Manager) CreateNode(name, host string) (*model.Node, error) {
 
 // UpdateNode edits a node and wakes it so config/link changes apply promptly.
 func (m *Manager) UpdateNode(id int64, e store.NodeEdit) error {
+	e.Host = model.UnbracketIPv6(e.Host)
 	if !model.ValidServerHost(e.Host) {
 		return invalidCode("err.nodeHostInvalid", "адрес ноды — домен или IP, без пробелов и спецсимволов")
 	}

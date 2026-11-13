@@ -35,6 +35,24 @@ func TestMultiHopSeparateProfileRequiresGrant(t *testing.T) {
 	}
 }
 
+func TestIPv6MultiHopSubscriptionAddresses(t *testing.T) {
+	set := testSet("2001:db8::42")
+	if got, want := URL(set, "token"), "https://[2001:db8::42]/"+set.SubPathOr()+"/token"; got != want {
+		t.Fatalf("subscription URL = %q, want %q", got, want)
+	}
+	in := model.Inbound{ID: 4, Enabled: true, Name: "IPv6", Port: 28443, Protocol: model.InbVLESS,
+		Opts: model.InboundOpts{Transport: model.TrTCP, Security: model.SecTLS, MultiHop: &model.MultiHop{Transit: 1, Exit: 2}}}
+	in.Normalize()
+	user := model.User{ID: 1, UUID: "11111111-1111-4111-8111-111111111111"}
+	server := Server{Set: set, Custom: []model.Inbound{in}, Access: model.Access{Tokens: map[string]bool{model.InboundToken(in.ID): true}}}
+	for _, link := range ShareLinks(user, server) {
+		if strings.Contains(link, "@[2001:db8::42]:28443?") {
+			return
+		}
+	}
+	t.Fatal("subscription did not contain the bracketed IPv6 Multi-Hop entry")
+}
+
 func TestProtectedMultiHopKeepsServerTopologyOutOfClientProfiles(t *testing.T) {
 	u := model.User{ID: 1, UUID: "11111111-1111-4111-8111-111111111111"}
 	in := model.Inbound{

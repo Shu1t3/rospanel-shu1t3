@@ -47,8 +47,25 @@ func stagedMultiHopInbound(in model.Inbound, pending *model.MultiHopPending) mod
 		hops.Via = nil
 	}
 	hops.Revision = pending.Revision
+	hops.IPFamilies = slices.Clone(pending.IPFamilies)
 	in.ServerID, in.Name, in.Opts.MultiHop = nodes[0], pending.Name, &hops
 	return in
+}
+
+// The last confirmed config can go stale while a rollout is in progress, for
+// example if DNS drops the AAAA for a staged downstream leg.
+func (m *Manager) multiHopCanSwitchEntry(in model.Inbound, master *model.Settings, servers map[int64]cascadeServer, chain []int64) bool {
+	if m.multiHopEntryLink(in, master, servers, chain) == "" {
+		return false
+	}
+	for i := 2; i < len(chain); i++ {
+		if hopIPFamily(in.Opts.MultiHop.IPFamilies, i-1) != model.HopIPAuto {
+			if _, link := m.multiHopLeg(in, master, servers, chain, i); link == "" {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (m *Manager) multiHopLoop() {
@@ -121,6 +138,10 @@ func (m *Manager) advanceMultiHopInbound(in model.Inbound, master *model.Setting
 		m.wakeMultiHopNode(chain[len(chain)-1-pending.Ready])
 		return nil
 	}
+	link := m.multiHopEntryLink(staged, master, servers, chain)
+	if link == "" {
+		return nil
+	}
 	if !pending.ApplyEntry {
 		pending.ApplyEntry = true
 		if err := m.store.UpdateInbound(in); err != nil {
@@ -129,7 +150,6 @@ func (m *Manager) advanceMultiHopInbound(in model.Inbound, master *model.Setting
 		m.wakeMultiHopNode(staged.ServerID)
 		return nil
 	}
-	link := m.multiHopEntryLink(staged, master, servers, chain)
 	if !m.hasMultiHopApplied(staged.ServerID, multiHopEntryAck(staged, link)) {
 		return nil
 	}

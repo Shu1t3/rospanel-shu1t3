@@ -72,9 +72,12 @@ func (m *Manager) protectedHop(in model.Inbound, server int64, master *model.Set
 		return xray.ReverseChainPeer{Address: address, Port: port, SNI: set.Host, Pin: set.TLSPinSHA256, UUID: uuid}
 	}
 	if server == a && entry {
-		hop.Entry = &xray.ReverseChainEntry{Inbound: in.Tag(), BlockIP: blocked,
-			Relay:   peer(relay, servers[relay].set.Host, r.RelayPort, creds("a-to-r")),
-			Transit: peer(transit, r.TransitIP, r.TransitPort, creds("a-to-b"))}
+		target := m.hopDestination(servers[relay].set, hopIPFamily(hops.IPFamilies, 0))
+		if target != nil {
+			hop.Entry = &xray.ReverseChainEntry{Inbound: in.Tag(), BlockIP: blocked,
+				Relay:   peer(relay, target.Host, r.RelayPort, creds("a-to-r")),
+				Transit: peer(transit, r.TransitIP, r.TransitPort, creds("a-to-b"))}
+		}
 	}
 	if server == relay {
 		hop.Relay = &xray.ReverseChainRelay{Port: r.RelayPort, TransitIP: r.TransitIP, TransitPort: r.TransitPort,
@@ -85,8 +88,12 @@ func (m *Manager) protectedHop(in model.Inbound, server int64, master *model.Set
 			TrafficUUID: creds("a-to-b"), TunnelUUID: creds("c-to-b")}
 	}
 	if server == c && exit {
+		target := m.hopDestination(servers[relay].set, hopIPFamily(hops.IPFamilies, 1))
+		if target == nil {
+			return hop
+		}
 		hop.Exit = &xray.ReverseChainExit{BlockIP: blocked,
-			Relay:  peer(relay, servers[relay].set.Host, r.RelayPort, creds("c-to-r")),
+			Relay:  peer(relay, target.Host, r.RelayPort, creds("c-to-r")),
 			Tunnel: peer(transit, r.TransitIP, r.TransitPort, creds("c-to-b"))}
 	}
 	return hop
@@ -146,6 +153,10 @@ func (m *Manager) advanceProtectedHop(in model.Inbound, staged model.Inbound, ma
 	if exit.Exit == nil || !m.hasMultiHopApplied(c, protectedHopAck(exit.Tag, "c", exit.Exit)) {
 		return nil
 	}
+	entry := m.protectedHop(staged, a, master, servers, true, false)
+	if entry.Entry == nil {
+		return nil
+	}
 	if !pending.ApplyEntry {
 		pending.ApplyEntry = true
 		if err := m.store.UpdateInbound(in); err != nil {
@@ -154,8 +165,7 @@ func (m *Manager) advanceProtectedHop(in model.Inbound, staged model.Inbound, ma
 		m.wakeMultiHopNode(a)
 		return nil
 	}
-	entry := m.protectedHop(staged, a, master, servers, true, false)
-	if entry.Entry == nil || !m.hasMultiHopApplied(a, protectedHopAck(entry.Tag, "a", entry.Entry)) {
+	if !m.hasMultiHopApplied(a, protectedHopAck(entry.Tag, "a", entry.Entry)) {
 		return nil
 	}
 	return m.promoteMultiHop(in, staged)
@@ -200,7 +210,7 @@ func (m *Manager) validateProtectedPorts(ctx context.Context, in model.Inbound) 
 		for _, other := range routes {
 			o := other.Opts.MultiHop
 			if other.ID == in.ID && o.Pending == nil && reflect.DeepEqual(o.Reverse, hops.Reverse) &&
-				slices.Equal(nodes, o.Chain(other.ServerID)) {
+				slices.Equal(nodes, o.Chain(other.ServerID)) && slices.Equal(hops.IPFamilies, o.IPFamilies) {
 				reuse = true
 				continue
 			}

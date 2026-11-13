@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/core"
@@ -19,13 +20,25 @@ import (
 // command gets --insecure automatically — otherwise the join fails with an x509
 // error and the node never connects. A panel on a real domain omits it.
 func (rt *Router) nodeInstallCommand(r *http.Request, nodePath, joinToken string) string {
-	joinURL := panelPublicURL(r) + "/" + nodePath + "/" + nodeapi.PathPrefix + "/join#" + joinToken
-	cmd := "curl -Ls https://raw.githubusercontent.com/" + updateRepo() +
-		"/main/install.sh | sudo bash -s -- --join '" + joinURL + "'"
+	return "curl -Ls https://raw.githubusercontent.com/" + updateRepo() +
+		"/main/install.sh | sudo bash -s --" + rt.nodeJoinCommandArgs(r, nodePath, joinToken)
+}
+
+func (rt *Router) nodeOfflineInstallCommand(r *http.Request, nodePath, joinToken string) string {
+	return "sudo ./rospanel node install" + rt.nodeJoinCommandArgs(r, nodePath, joinToken)
+}
+
+func (rt *Router) nodeJoinCommandArgs(r *http.Request, nodePath, joinToken string) string {
+	raw := nodeJoinURL(r, nodePath, joinToken)
+	args := " --join '" + strings.ReplaceAll(raw, "'", "'\"'\"'") + "'"
 	if !rt.mgr.HasValidCert() {
-		cmd += " --insecure"
+		args += " --insecure"
 	}
-	return cmd
+	return args
+}
+
+func nodeJoinURL(r *http.Request, nodePath, joinToken string) string {
+	return panelPublicURL(r) + "/" + nodePath + "/" + nodeapi.PathPrefix + "/join#" + url.PathEscape(joinToken)
 }
 
 // listNodes returns the local server (node 0) plus every remote node, with status
@@ -76,8 +89,9 @@ func (rt *Router) createNode(w http.ResponseWriter, r *http.Request) {
 		nodePath = set.NodeAPIPath
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"id":              node.ID,
-		"install_command": rt.nodeInstallCommand(r, nodePath, node.RawJoinToken),
+		"id":                      node.ID,
+		"install_command":         rt.nodeInstallCommand(r, nodePath, node.RawJoinToken),
+		"offline_install_command": rt.nodeOfflineInstallCommand(r, nodePath, node.RawJoinToken),
 	})
 }
 
@@ -547,6 +561,7 @@ func (rt *Router) regenNodeJoin(w http.ResponseWriter, r *http.Request, id int64
 		nodePath = set.NodeAPIPath
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"install_command": rt.nodeInstallCommand(r, nodePath, token),
+		"install_command":         rt.nodeInstallCommand(r, nodePath, token),
+		"offline_install_command": rt.nodeOfflineInstallCommand(r, nodePath, token),
 	})
 }

@@ -9,6 +9,7 @@ import {
   restartNodeXray,
   restartXray,
   type GeoCategories,
+  type NodeInstallCommands,
   type NodeView,
 } from "./api";
 import { fmtBytes, fmtStamp } from "./format";
@@ -98,7 +99,7 @@ export function NodeCard({
   // Every server as listed, to copy another one's routing from.
   peers?: NodeView[];
   onChanged: () => void;
-  onRegen: (command: string) => void;
+  onRegen: (commands: NodeInstallCommands) => void;
   // Asks this node to update; the list confirms it and follows the progress. Absent
   // while the node already runs the newest release.
   onUpdate?: () => void;

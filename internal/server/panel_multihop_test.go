@@ -70,9 +70,9 @@ func TestMultiHopPanelOwnsExistingRoutes(t *testing.T) {
 		t.Fatalf("the entry changed on route edit: %+v", updated)
 	}
 	editPath := fmt.Sprintf("/api/multi-hop/%d", saved.ID)
-	body = request(http.MethodPost, editPath, `{"name":"Return","nodes":[0,1,0],"enabled":false}`, http.StatusOK)
+	body = request(http.MethodPost, editPath, `{"name":"Return","nodes":[0,1,0],"ip_families":["ipv6","ipv4"],"enabled":false}`, http.StatusOK)
 	var route core.MultiHopProfile
-	if err := json.Unmarshal(body, &route); err != nil || !slices.Equal(route.Nodes, []int64{0, 1, 0}) {
+	if err := json.Unmarshal(body, &route); err != nil || !slices.Equal(route.Nodes, []int64{0, 1, 0}) || !slices.Equal(route.IPFamilies, []model.HopIPFamily{model.HopIPv6, model.HopIPv4}) {
 		t.Fatalf("return route missing: %s (%v)", body, err)
 	}
 	for _, chain := range []string{`[0,0]`, `[0,1,0,2]`, `[0,1,1,0]`} {

@@ -238,9 +238,10 @@ func (rt *Router) apiCreateNode(w http.ResponseWriter, r *http.Request) {
 		nodePath = set.NodeAPIPath
 	}
 	writeAPIData(w, http.StatusCreated, map[string]any{
-		"id":              node.ID,
-		"join_token":      node.RawJoinToken,
-		"install_command": rt.nodeInstallCommand(r, nodePath, node.RawJoinToken),
+		"id":                      node.ID,
+		"join_token":              node.RawJoinToken,
+		"install_command":         rt.nodeInstallCommand(r, nodePath, node.RawJoinToken),
+		"offline_install_command": rt.nodeOfflineInstallCommand(r, nodePath, node.RawJoinToken),
 	})
 }
 
@@ -391,8 +392,9 @@ func (rt *Router) apiRegenNodeJoin(w http.ResponseWriter, r *http.Request, id in
 		nodePath = set.NodeAPIPath
 	}
 	writeAPIData(w, http.StatusOK, map[string]any{
-		"join_token":      token,
-		"install_command": rt.nodeInstallCommand(r, nodePath, token),
+		"join_token":              token,
+		"install_command":         rt.nodeInstallCommand(r, nodePath, token),
+		"offline_install_command": rt.nodeOfflineInstallCommand(r, nodePath, token),
 	})
 }
 
