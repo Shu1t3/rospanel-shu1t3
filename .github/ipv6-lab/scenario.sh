@@ -45,6 +45,8 @@ fd42:629d:2026:11::14 rp6-c.test
 HOSTS'
  done
  docker exec -d rp6-c sh -c 'tcpdump -nn -l -i any ip and tcp port 443 >/tmp/rp6-mixed-capture.log 2>&1'
+ docker exec rp6-r ip -4 route del default || true
+ docker exec rp6-c ip -4 route del default || true
  python3 mixed-lab.py
 else
  python3 upgrade_lab.py baseline
