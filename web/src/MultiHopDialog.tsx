@@ -47,8 +47,10 @@ export function MultiHopDialog({ nodes, canManage, onClose }: {
   const nextSlot = useRef(0);
   const edit = (profile: MultiHopProfile) => {
     const ip_families = routeEdges(profile.nodes, !!profile.reverse).map((_, i) => profile.ip_families?.[i] ?? "auto");
-    setDraft({ ...profile, ip_families, defaultFamily: "auto", slotKeys: profile.nodes.map(() => nextSlot.current++) });
-    setShowHops(new Set(ip_families).size > 1);
+    const mixed = new Set(ip_families).size > 1;
+    const defaultFamily = mixed ? "auto" : ip_families[0] ?? "auto";
+    setDraft({ ...profile, ip_families, defaultFamily, slotKeys: profile.nodes.map(() => nextSlot.current++) });
+    setShowHops(mixed);
     setHopError(null);
   };
   const { busy, run } = useAction();
