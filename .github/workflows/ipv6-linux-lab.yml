@@ -100,5 +100,11 @@ jobs:
           docker network create --ipv6 --ipv4=false --subnet fd42:629d:2026:11::/64 rp6-images
           trap 'docker rm -f rp6-image rp6-probe >/dev/null 2>&1 || true; docker network rm rp6-images >/dev/null' EXIT
           docker run -d --name rp6-image --network rp6-images --ip6 fd42:629d:2026:11::10 --cap-add NET_ADMIN -e ROSPANEL_HOST=fd42:629d:2026:11::10 rp6-image
-          docker run --rm --name rp6-probe --network rp6-images rp6-systemd curl -gksSf --max-time 4 --retry 15 --retry-connrefused 'https://[fd42:629d:2026:11::10]/rospanel/' >/dev/null
+          docker run --rm --name rp6-probe --network rp6-images rp6-systemd sh -ec '
+            for attempt in $(seq 1 60); do
+              if curl -gkfsS --max-time 3 "https://[fd42:629d:2026:11::10]/rospanel/" >/dev/null 2>&1; then exit 0; fi
+              sleep 1
+            done
+            exit 1
+          ' || { docker logs --tail 28 rp6-image; exit 1; }
           docker exec rp6-image xray version
