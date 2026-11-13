@@ -82,7 +82,14 @@ jobs:
         if: ${{ !cancelled() }}
         working-directory: candidate
         run: |
-          RP_XRAY_BIN="$RP6_LAB/xray-linux" go test -count=1 -v ./internal/xray ./internal/sub
+          go test -c -o "$RP6_LAB/xray.test" ./internal/xray
+          go test -c -o "$RP6_LAB/sub.test" ./internal/sub
+          docker run --rm --cap-add NET_ADMIN -v "$RP6_LAB:/lab:ro" rp6-systemd sh -ec '
+            ip -6 addr add 2600:1000::50/128 dev lo
+            export RP_MULTI_HOP_TEST_IP=2600:1000::50 RP_XRAY_BIN=/lab/xray-linux
+            /lab/xray.test -test.v
+            /lab/sub.test -test.v
+          '
       - name: Build release image
         if: ${{ !cancelled() }}
         working-directory: candidate

@@ -33,8 +33,10 @@ def finish_baseline(route,p):
         import base64
         if 'vless://' not in payload: payload=base64.b64decode(payload).decode()
         for line in payload.splitlines():
-            if line.startswith('vless://') and urlsplit(line).port==p['port']:
-                return urlsplit(line.replace('@'+prefix+'11:',f'@[{prefix}11]:'))
+            if line.startswith('vless://'):
+                normalized = urlsplit(line.replace('@'+prefix+'11:',f'@[{prefix}11]:'))
+                if normalized.port==p['port']:
+                    return normalized
     link=until('Pre-upgrade profile imported',read_link,bool)
     route['start_client'](link,p)
     until('v5.10.0 TCP via existing route',route['tcp'],lambda got:got==prefix+'14')

@@ -9,6 +9,7 @@ cleanup() {
   fi
  done
  docker network rm rospanel-ipv6-release-lab >/dev/null 2>&1 || true
+ docker network rm rp6-dual >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 docker network create --ipv6 --ipv4=false --subnet fd42:629d:2026:11::/64 rospanel-ipv6-release-lab >/dev/null
