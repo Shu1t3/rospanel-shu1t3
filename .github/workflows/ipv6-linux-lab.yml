@@ -102,9 +102,10 @@ jobs:
           docker run -d --name rp6-image --network rp6-images --ip6 fd42:629d:2026:11::10 --cap-add NET_ADMIN -e ROSPANEL_HOST=fd42:629d:2026:11::10 rp6-image
           docker run --rm --name rp6-probe --network rp6-images rp6-systemd sh -ec '
             for attempt in $(seq 1 60); do
-              if curl -gkfsS --max-time 3 "https://[fd42:629d:2026:11::10]/rospanel/" >/dev/null 2>&1; then exit 0; fi
+              if curl -gkfsS --max-time 3 "http://[fd42:629d:2026:11::10]/" >/dev/null 2>&1; then exit 0; fi
               sleep 1
             done
             exit 1
           ' || { docker logs --tail 28 rp6-image; exit 1; }
           docker exec rp6-image xray version
+          docker exec rp6-image sh -ec "test -s /data/rospanel.db"
