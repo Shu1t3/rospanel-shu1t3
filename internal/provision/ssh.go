@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 )
 
 // remoteInstaller is where the panel binary is uploaded on the target before it
@@ -98,7 +100,7 @@ func dial(ctx context.Context, c Credentials, onLine func(string)) (*ssh.Client,
 	if port == 0 {
 		port = 22
 	}
-	addr := net.JoinHostPort(strings.TrimSpace(c.Host), fmt.Sprint(port))
+	addr := net.JoinHostPort(model.UnbracketIPv6(strings.TrimSpace(c.Host)), fmt.Sprint(port))
 	d := net.Dialer{Timeout: cfg.Timeout}
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {

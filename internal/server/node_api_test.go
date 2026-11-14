@@ -231,3 +231,34 @@ func TestNodeJoinBadTokenIsDecoy(t *testing.T) {
 		t.Fatal("bogus bearer token got a real sync response")
 	}
 }
+
+func TestIPv6NodeInstallCommandAndJoin(t *testing.T) {
+	h, mgr, st := nodeAPITestServer(t)
+	node, err := mgr.CreateNode("IPv6 node", "[2001:db8::42]")
+	if err != nil || node.Host != "2001:db8::42" {
+		t.Fatalf("bracketed address did not register: %+v (%v)", node, err)
+	}
+	set, err := st.GetSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/" + set.NodeAPIPath + "/" + nodeapi.PathPrefix + "/join"
+	const origin = "https://[2001:db8::1]:8443"
+	req := httptest.NewRequest(http.MethodPost, origin+path, strings.NewReader(`{"join_token":"`+node.RawJoinToken+`"}`))
+	rt := &Router{mgr: mgr}
+	joinURL := origin + path + "#" + node.RawJoinToken
+	for _, cmd := range []string{
+		rt.nodeInstallCommand(req, set.NodeAPIPath, node.RawJoinToken),
+		rt.nodeOfflineInstallCommand(req, set.NodeAPIPath, node.RawJoinToken),
+	} {
+		if !strings.Contains(cmd, " --join '"+joinURL+"'") {
+			t.Fatal("install command did not quote the bracketed IPv6 join URL")
+		}
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var joined nodeapi.JoinResponse
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &joined) != nil || joined.PanelURL != origin || joined.NodeID != node.ID {
+		t.Fatalf("IPv6 join did not preserve the origin: HTTP %d", rec.Code)
+	}
+}

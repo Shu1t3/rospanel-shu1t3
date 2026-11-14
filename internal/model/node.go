@@ -2,6 +2,7 @@ package model
 
 import (
 	"net"
+	"net/netip"
 	"strings"
 )
 
@@ -243,6 +244,19 @@ type NodeStatusUpdate struct {
 	ServesAnyTLS      bool
 	ServesMTProto     bool
 	ServesTrustTunnel bool
+}
+
+// UnbracketIPv6 accepts the bracketed spelling used in URLs without treating a
+// port, a bracketed DNS name or other malformed input as a host.
+func UnbracketIPv6(host string) string {
+	if inner, ok := strings.CutPrefix(host, "["); ok {
+		if inner, ok := strings.CutSuffix(inner, "]"); ok {
+			if addr, err := netip.ParseAddr(inner); err == nil && addr.Is6() {
+				return inner
+			}
+		}
+	}
+	return host
 }
 
 // ValidServerHost reports whether h can be a server's address: an IP literal, or a

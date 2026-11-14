@@ -17,13 +17,14 @@ import (
 // certPath/keyPath. force=true always (re)issues; force=false issues only when
 // the cert is missing or near expiry. If ACME fails and no usable cert is on
 // disk, it writes a self-signed fallback (and returns the ACME error so the
-// caller logs it and keeps retrying). An existing usable cert is left untouched.
+// caller logs it and keeps retrying). An existing usable cert for the configured
+// host is left untouched.
 func Ensure(set *model.Settings, certPath, keyPath, acmeDir string, force bool) error {
 	err := ensureACME(set, certPath, keyPath, acmeDir, force)
 	if err == nil {
 		return nil
 	}
-	// ACME failed. Keep any usable cert already on disk; otherwise self-sign so
+	// ACME failed. Keep a usable cert for this host; otherwise self-sign so
 	// Xray/the panel can still serve TLS until ACME succeeds.
 	// "Usable", not "parseable". An EXPIRED cert reads back fine, and treating that as
 	// something worth keeping is how the fallback declined the one situation it exists
@@ -31,7 +32,7 @@ func Ensure(set *model.Settings, certPath, keyPath, acmeDir string, force bool) 
 	// client rejects, and the panel behind :443 goes with it — recoverable only over SSH.
 	// A self-signed cert keeps clients working, because the subscription pins its
 	// fingerprint (see applyTLSHints).
-	if !tlsutil.Usable(certPath) {
+	if !tlsutil.Usable(certPath) || (set.Host != "" && !tlsutil.CertCovers(certPath, set.Host)) {
 		cert, key, gerr := tlsutil.GenerateSelfSigned(set.Host)
 		if gerr != nil {
 			return fmt.Errorf("acme failed (%w); self-signed fallback failed: %w", err, gerr)

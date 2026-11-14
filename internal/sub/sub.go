@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"html/template"
 	"net"
+	"net/netip"
 	"net/url"
 	"reflect"
 	"strconv"
@@ -170,7 +171,11 @@ func Base64Payload(links []string) string {
 
 // URL is the public subscription URL for a token (always https on the host).
 func URL(set *model.Settings, token string) string {
-	return "https://" + set.Host + "/" + set.SubPathOr() + "/" + token
+	host := set.Host
+	if ip, err := netip.ParseAddr(host); err == nil && ip.Is6() {
+		host = "[" + host + "]"
+	}
+	return "https://" + host + "/" + set.SubPathOr() + "/" + token
 }
 
 // DeepLink is one "open in client" button. Href is template.URL so html/template

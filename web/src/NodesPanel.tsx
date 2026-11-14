@@ -12,6 +12,7 @@ import {
   updateAllNodes,
   updateNodeVersion,
   type GeoCategories,
+  type NodeInstallCommands,
   type NodeView,
 } from "./api";
 import { errMessage, notifyError } from "./notify";
@@ -43,7 +44,7 @@ export function NodesPanel() {
   const [alertsOpen, setAlertsOpen] = useState(false);
   // The check from other countries is off while its settings list no countries.
   const [reachOn, setReachOn] = useState(false);
-  const [installCmd, setInstallCmd] = useState<string | null>(null);
+  const [installCmd, setInstallCmd] = useState<NodeInstallCommands | null>(null);
   const [panelVersion, setPanelVersion] = useState("");
   // The newest release, and the one the master could update to when it is behind.
   const [latest, setLatest] = useState("");
@@ -310,7 +311,7 @@ export function NodesPanel() {
       )}
       {alertsOpen && <AlertsDialog nodes={nodes} onClose={() => setAlertsOpen(false)} />}
       {installCmd && (
-        <InstallCommandModal command={installCmd} onClose={() => setInstallCmd(null)} />
+        <InstallCommandModal commands={installCmd} onClose={() => setInstallCmd(null)} />
       )}
     </div>
   );

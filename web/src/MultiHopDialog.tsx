@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  ApiError,
   createMultiHopProfile,
   deleteMultiHopProfile,
   listMultiHopProfiles,
+  type HopIPFamily,
   type MultiHopProfile,
   type MultiHopReverse,
   type NodeView,
@@ -15,7 +17,14 @@ import { errMessage, notifySuccess } from "./notify";
 import { nodeState, serverName } from "./NodeStatus";
 import { Badge, Button, CenterLoader, Modal, Select, Switch, TextInput, useConfirm } from "./ui";
 
-type Draft = MultiHopProfile & { slotKeys: number[] };
+type Draft = MultiHopProfile & { slotKeys: number[]; ip_families: HopIPFamily[]; defaultFamily: HopIPFamily };
+
+function routeEdges(nodes: number[], protectedRoute: boolean) {
+  const pairs = protectedRoute
+    ? [[nodes[0], nodes[1]], [nodes[3], nodes[1]]]
+    : nodes.slice(1).map((to, index) => [nodes[index], to]);
+  return pairs.map(([from, to], index) => ({ from, to, key: `${protectedRoute ? index : "hop"}:${from}:${to}` }));
+}
 
 const newProfile = (hasPeer: boolean): MultiHopProfile => ({
   id: 0, name: "", nodes: hasPeer ? [-1, -1] : [-1], port: 0, enabled: true,
@@ -33,9 +42,16 @@ export function MultiHopDialog({ nodes, canManage, onClose }: {
   const [profiles, setProfiles] = useState<MultiHopProfile[] | null>(null);
   const [loadError, setLoadError] = useState("");
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [showHops, setShowHops] = useState(false);
+  const [hopError, setHopError] = useState<{ index: number; message: string } | null>(null);
   const nextSlot = useRef(0);
   const edit = (profile: MultiHopProfile) => {
-    setDraft({ ...profile, slotKeys: profile.nodes.map(() => nextSlot.current++) });
+    const ip_families = routeEdges(profile.nodes, !!profile.reverse).map((_, i) => profile.ip_families?.[i] ?? "auto");
+    const mixed = new Set(ip_families).size > 1;
+    const defaultFamily = mixed ? "auto" : ip_families[0] ?? "auto";
+    setDraft({ ...profile, ip_families, defaultFamily, slotKeys: profile.nodes.map(() => nextSlot.current++) });
+    setShowHops(mixed);
+    setHopError(null);
   };
   const { busy, run } = useAction();
   const { confirm, confirmNode } = useConfirm();
@@ -59,6 +75,27 @@ export function MultiHopDialog({ nodes, canManage, onClose }: {
     return node ? serverName(node) : `#${id}`;
   };
 
+  const edges = draft ? routeEdges(draft.nodes, !!draft.reverse) : [];
+  const familyOptions: { value: HopIPFamily; label: string }[] = [
+    { value: "auto", label: t("inb.multiHopIPAuto") },
+    { value: "ipv4", label: "IPv4" },
+    { value: "ipv6", label: "IPv6" },
+  ];
+  const changeNodes = (nodes: number[], slotKeys = draft?.slotKeys) => {
+    if (!draft || !slotKeys) return;
+    const families = new Map(edges.map((edge, i) => [edge.key, draft.ip_families[i]]));
+    const nextEdges = routeEdges(nodes, !!draft.reverse);
+    const ip_families = nextEdges.map(({ key }) => families.get(key) ?? draft.defaultFamily);
+    setDraft({ ...draft, nodes, slotKeys, ip_families });
+    if (new Set(ip_families).size > 1) setShowHops(true);
+    setHopError(null);
+  };
+  const setFamilies = (ip_families: HopIPFamily[], defaultFamily = draft?.defaultFamily ?? "auto") => {
+    if (!draft) return;
+    setDraft({ ...draft, ip_families, defaultFamily });
+    setHopError(null);
+  };
+
   const save = async () => {
     if (!draft) return;
     const old = profiles?.find((p) => p.id === draft.id);
@@ -74,9 +111,25 @@ export function MultiHopDialog({ nodes, canManage, onClose }: {
         transit_ips: ipList(draft.reverse.transit_ips ?? []),
         relay_sources: ipList(draft.reverse.relay_sources),
       };
-      const profile = draft.id ? await updateMultiHopProfile({ ...draft, reverse }) : await createMultiHopProfile({
-        name: draft.name, nodes: draft.nodes, reverse,
-      });
+      setHopError(null);
+      let profile: MultiHopProfile;
+      try {
+        profile = draft.id ? await updateMultiHopProfile({ ...draft, reverse }) : await createMultiHopProfile({
+          name: draft.name, nodes: draft.nodes, reverse, ip_families: draft.ip_families,
+        });
+      } catch (error) {
+        if (error instanceof ApiError && (error.code === "err.multiHopIPSource" || error.code === "err.multiHopIPDestination")
+          && typeof error.args?.hop === "number" && edges[error.args.hop]) {
+          const edge = edges[error.args.hop];
+          const localized = new ApiError(error.message, error.code, {
+            ...error.args, from: nameOf(edge.from), to: nameOf(edge.to),
+          });
+          setHopError({ index: error.args.hop, message: errMessage(localized) });
+          setShowHops(true);
+          return;
+        }
+        throw error;
+      }
       setProfiles((current) => draft.id
         ? current?.map((p) => p.id === profile.id ? profile : p) ?? [profile]
         : [...(current ?? []), profile]);
@@ -128,7 +181,7 @@ export function MultiHopDialog({ nodes, canManage, onClose }: {
     const keys = [...draft.slotKeys];
     const [key] = keys.splice(from, 1);
     keys.splice(to, 0, key);
-    setDraft({ ...draft, nodes: order, slotKeys: keys });
+    changeNodes(order, keys);
   };
 
   const setReverse = (enabled: boolean) => {
@@ -136,9 +189,9 @@ export function MultiHopDialog({ nodes, canManage, onClose }: {
     const entry = draft.nodes[0];
     if (enabled) {
       const order = draft.nodes.length === 4 ? draft.nodes : [entry, -1, -1, draft.nodes[draft.nodes.length - 1] ?? -1];
-      edit({ ...draft, nodes: order, reverse: { relay_port: 29443, transit_port: 29444, transit_ip: "", transit_ips: [], relay_sources: [] } });
+      edit({ ...draft, nodes: order, ip_families: undefined, reverse: { relay_port: 29443, transit_port: 29444, transit_ip: "", transit_ips: [], relay_sources: [] } });
     } else {
-      edit({ ...draft, nodes: [entry, -1], reverse: undefined });
+      edit({ ...draft, nodes: [entry, -1], ip_families: undefined, reverse: undefined });
     }
   };
 
@@ -160,7 +213,7 @@ export function MultiHopDialog({ nodes, canManage, onClose }: {
     order.splice(index, 0, -1);
     const keys = [...draft.slotKeys];
     keys.splice(index, 0, nextSlot.current++);
-    setDraft({ ...draft, nodes: order, slotKeys: keys });
+    changeNodes(order, keys);
   };
 
   return (
@@ -179,6 +232,24 @@ export function MultiHopDialog({ nodes, canManage, onClose }: {
                 <span className="text-sm font-medium">{t("inb.multiHopReverseMode")}</span>
                 <Switch label={t("inb.multiHopReverseMode")} checked={!!draft.reverse} onChange={setReverse} />
               </div>
+              {edges.length > 0 && (
+                <div className="flex flex-wrap items-end gap-2">
+                  <div className="min-w-40 flex-1">
+                    <Select
+                      label={t(draft.reverse ? "inb.multiHopRelayIPFamily" : "inb.multiHopIPFamily")}
+                      value={new Set(draft.ip_families).size > 1 ? "" : draft.ip_families[0]}
+                      placeholder={t("inb.multiHopIPMixed")}
+                      data={familyOptions}
+                      onChange={(value) => setFamilies(edges.map(() => value as HopIPFamily), value as HopIPFamily)}
+                    />
+                  </div>
+                  {edges.length > 1 && (
+                    <Button size="sm" variant="light" color="gray" onClick={() => setShowHops(!showHops)}>
+                      {t(showHops ? "inb.multiHopHideIPFamilies" : "inb.multiHopIPFamilies")}
+                    </Button>
+                  )}
+                </div>
+              )}
               <ol className="space-y-2 border-s border-gray-200 ps-3">
                 {draft.nodes.map((node, index) => (
                   <li key={draft.slotKeys[index]} className="flex flex-wrap items-end gap-2 rounded-lg border border-gray-200 p-2">
@@ -190,7 +261,7 @@ export function MultiHopDialog({ nodes, canManage, onClose }: {
                         label={t(draft.reverse ? reverseRoles[index] : draft.nodes.length === 1 ? "inb.multiHopSingle" : index === 0
                           ? "inb.multiHopEntry" : index === draft.nodes.length - 1 ? "inb.multiHopExit" : "inb.multiHopTransit")}
                         value={node < 0 ? "" : String(node)}
-                        onChange={(v) => setDraft({ ...draft, nodes: draft.nodes.map((id, i) => i === index ? (v === "" ? -1 : Number(v)) : id) })}
+                        onChange={(v) => changeNodes(draft.nodes.map((id, i) => i === index ? (v === "" ? -1 : Number(v)) : id))}
                         data={options(index, draft)}
                         searchable
                       />
@@ -207,11 +278,10 @@ export function MultiHopDialog({ nodes, canManage, onClose }: {
                         <span className="sr-only">{t("inb.multiHopDown", { position: index + 1 })}</span>
                       </Button>
                       <Button size="sm" variant="light" color="red" disabled={draft.nodes.length === 1}
-                        onClick={() => setDraft({
-                          ...draft,
-                          nodes: draft.nodes.filter((_, i) => i !== index),
-                          slotKeys: draft.slotKeys.filter((_, i) => i !== index),
-                        })}>
+                        onClick={() => changeNodes(
+                          draft.nodes.filter((_, i) => i !== index),
+                          draft.slotKeys.filter((_, i) => i !== index),
+                        )}>
                         <span aria-hidden="true">×</span>
                         <span className="sr-only">{t("inb.multiHopRemove", { position: index + 1 })}</span>
                       </Button>
@@ -219,6 +289,23 @@ export function MultiHopDialog({ nodes, canManage, onClose }: {
                   </li>
                 ))}
               </ol>
+              {(showHops || hopError) && (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {edges.map(({ from, to }, i) => (
+                    <div key={draft.slotKeys[draft.reverse ? (i === 0 ? 0 : 3) : i + 1]} className="min-w-0">
+                      <Select
+                        size="sm"
+                        label={`${from < 0 ? "…" : nameOf(from)} → ${to < 0 ? "…" : nameOf(to)}${draft.reverse ? ` (${t(reverseRoles[i === 0 ? 0 : 3])})` : ""}`}
+                        value={draft.ip_families[i]}
+                        data={familyOptions}
+                        disabled={from < 0 || to < 0}
+                        onChange={(value) => setFamilies(draft.ip_families.map((family, j) => j === i ? value as HopIPFamily : family))}
+                      />
+                      {hopError?.index === i && <p className="mt-1 text-xs text-danger" role="alert">{hopError.message}</p>}
+                    </div>
+                  ))}
+                </div>
+              )}
               {draft.reverse ? (
                 <>
                   <p className="text-xs text-ink-muted">{t("inb.multiHopReverseHint")}</p>

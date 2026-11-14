@@ -15,16 +15,17 @@ import (
 // MultiHopProfile is the operator-facing route. Its listener remains a private
 // implementation detail, with the same identity and grants as pre-existing routes.
 type MultiHopProfile struct {
-	ID       int64                  `json:"id"`
-	Name     string                 `json:"name"`
-	Entry    int64                  `json:"entry"`
-	Transit  int64                  `json:"transit"`
-	Exit     int64                  `json:"exit"`
-	Enabled  bool                   `json:"enabled"`
-	Port     int                    `json:"port"`
-	Nodes    []int64                `json:"nodes"`
-	Applying bool                   `json:"applying,omitempty"`
-	Reverse  *model.MultiHopReverse `json:"reverse,omitempty"`
+	ID         int64                  `json:"id"`
+	Name       string                 `json:"name"`
+	Entry      int64                  `json:"entry"`
+	Transit    int64                  `json:"transit"`
+	Exit       int64                  `json:"exit"`
+	Enabled    bool                   `json:"enabled"`
+	Port       int                    `json:"port"`
+	Nodes      []int64                `json:"nodes"`
+	Applying   bool                   `json:"applying,omitempty"`
+	Reverse    *model.MultiHopReverse `json:"reverse,omitempty"`
+	IPFamilies []model.HopIPFamily    `json:"ip_families,omitempty"`
 }
 
 func multiHopProfile(in model.Inbound) MultiHopProfile {
@@ -32,10 +33,11 @@ func multiHopProfile(in model.Inbound) MultiHopProfile {
 	p := MultiHopProfile{
 		ID: in.ID, Name: in.Name, Entry: in.ServerID, Port: in.Port, Enabled: in.Enabled,
 		Transit: hops.Transit, Exit: hops.Exit, Nodes: hops.Chain(in.ServerID),
-		Applying: hops.Pending != nil, Reverse: hops.Reverse,
+		Applying: hops.Pending != nil, Reverse: hops.Reverse, IPFamilies: hops.IPFamilies,
 	}
 	if hops.Pending != nil {
 		p.Nodes, p.Name, p.Reverse = hops.Pending.Chain(), hops.Pending.Name, hops.Pending.Reverse
+		p.IPFamilies = hops.Pending.IPFamilies
 	}
 	return p
 }
@@ -91,10 +93,10 @@ func newMultiHopDeployment(nodes []int64, name string, initial, legacy bool, rev
 }
 
 func (m *Manager) CreateMultiHopChain(ctx context.Context, name string, nodes []int64) (*MultiHopProfile, error) {
-	return m.CreateMultiHopRoute(ctx, name, nodes, nil)
+	return m.CreateMultiHopRoute(ctx, name, nodes, nil, nil)
 }
 
-func (m *Manager) CreateMultiHopRoute(ctx context.Context, name string, nodes []int64, reverse *model.MultiHopReverse) (*MultiHopProfile, error) {
+func (m *Manager) CreateMultiHopRoute(ctx context.Context, name string, nodes []int64, reverse *model.MultiHopReverse, families []model.HopIPFamily) (*MultiHopProfile, error) {
 	reverse, err := m.protectedAddresses(nodes, reverse)
 	if err != nil {
 		return nil, err
@@ -109,6 +111,10 @@ func (m *Manager) CreateMultiHopRoute(ctx context.Context, name string, nodes []
 	if reverse != nil {
 		m.multiHopWrites.Lock()
 		defer m.multiHopWrites.Unlock()
+	}
+	hops.IPFamilies, err = normalizedHopFamilies(families, len(model.MultiHopEdges(nodes, reverse != nil)))
+	if err != nil {
+		return nil, err
 	}
 	return m.CreateMultiHopProfile(ctx, nodes[0], name, hops)
 }
@@ -202,10 +208,10 @@ func (m *Manager) CreateMultiHopProfile(ctx context.Context, entry int64, name s
 }
 
 func (m *Manager) UpdateMultiHopChain(ctx context.Context, id int64, name string, nodes []int64, enabled bool) (*MultiHopProfile, error) {
-	return m.UpdateMultiHopRoute(ctx, id, name, nodes, enabled, nil)
+	return m.UpdateMultiHopRoute(ctx, id, name, nodes, enabled, nil, nil)
 }
 
-func (m *Manager) UpdateMultiHopRoute(ctx context.Context, id int64, name string, nodes []int64, enabled bool, reverse *model.MultiHopReverse) (*MultiHopProfile, error) {
+func (m *Manager) UpdateMultiHopRoute(ctx context.Context, id int64, name string, nodes []int64, enabled bool, reverse *model.MultiHopReverse, families []model.HopIPFamily) (*MultiHopProfile, error) {
 	reverse, err := m.protectedAddresses(nodes, reverse)
 	if err != nil {
 		return nil, err
@@ -229,6 +235,30 @@ func (m *Manager) UpdateMultiHopRoute(ctx context.Context, id int64, name string
 	if reverse != nil {
 		newRoute = protectedMultiHop(nodes, reverse)
 	}
+	edges := model.MultiHopEdges(nodes, reverse != nil)
+	if families == nil {
+		previous := multiHopProfile(*in)
+		if (previous.Reverse == nil) == (reverse == nil) && len(previous.IPFamilies) > 0 {
+			oldEdges := model.MultiHopEdges(previous.Nodes, reverse != nil)
+			families = make([]model.HopIPFamily, len(edges))
+			for i, edge := range edges {
+				oldIndex := slices.Index(oldEdges, edge)
+				if reverse != nil && edge == oldEdges[i] {
+					oldIndex = i
+				} else if reverse != nil {
+					// A and C may be the same node, but retain separate settings.
+					continue
+				}
+				if oldIndex >= 0 {
+					families[i] = hopIPFamily(previous.IPFamilies, oldIndex)
+				}
+			}
+		}
+	}
+	newRoute.IPFamilies, err = normalizedHopFamilies(families, len(edges))
+	if err != nil {
+		return nil, err
+	}
 	if enabled && in.Enabled && (hops.Reverse != nil && reverse == nil ||
 		reverse != nil && hops.Reverse == nil && !hops.Provisioning() && slices.Contains(hops.Chain(in.ServerID), nodes[2])) {
 		return nil, invalidCode("err.multiHopReverseDisable", "выключите действующий маршрут перед сменой режима")
@@ -242,7 +272,8 @@ func (m *Manager) UpdateMultiHopRoute(ctx context.Context, id int64, name string
 	switch {
 	case !enabled:
 		*in = candidate
-	case in.Enabled && !hops.Provisioning() && slices.Equal(nodes, hops.Chain(in.ServerID)) && reflect.DeepEqual(newRoute.Reverse, hops.Reverse):
+	case in.Enabled && !hops.Provisioning() && slices.Equal(nodes, hops.Chain(in.ServerID)) && reflect.DeepEqual(newRoute.Reverse, hops.Reverse) &&
+		slices.Equal(newRoute.IPFamilies, hops.IPFamilies):
 		in.Name = candidate.Name
 		hops.Pending = nil
 	default:
@@ -252,6 +283,7 @@ func (m *Manager) UpdateMultiHopRoute(ctx context.Context, id int64, name string
 			in.Opts.MultiHop = &newRoute
 		}
 		in.Opts.MultiHop.Pending = newMultiHopDeployment(nodes, candidate.Name, !old.Enabled || hops.Provisioning(), false, reverse)
+		in.Opts.MultiHop.Pending.IPFamilies = slices.Clone(newRoute.IPFamilies)
 	}
 	if err := m.store.UpdateMultiHopInbound(*in); err != nil {
 		return nil, inboundConflict(err)

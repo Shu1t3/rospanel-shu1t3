@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -467,7 +468,7 @@ func TestMCPInboundWritesReachTheStore(t *testing.T) {
 			"multi_hop": map[string]int64{"transit": 42, "exit": 43},
 		},
 		assert: func(t *testing.T, in model.Inbound) {
-			if in.Opts.MultiHop == nil || *in.Opts.MultiHop != (model.MultiHop{Transit: 42, Exit: 43}) {
+			if !reflect.DeepEqual(in.Opts.MultiHop, &model.MultiHop{Transit: 42, Exit: 43}) {
 				t.Fatalf("multi_hop was not stored: %+v", in.Opts.MultiHop)
 			}
 		},

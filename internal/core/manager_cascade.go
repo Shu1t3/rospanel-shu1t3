@@ -273,7 +273,7 @@ func (m *Manager) cascadeOpts(opts *xray.Options, server int64, master *model.Se
 		if pending := hops.Pending; pending != nil && usableMultiHop(pending.Nodes, master, servers) {
 			staged := stagedMultiHopInbound(in, pending)
 			first := max(1, len(pending.Nodes)-1-pending.Ready)
-			if pending.ApplyEntry && server == staged.ServerID {
+			if pending.ApplyEntry && server == staged.ServerID && m.multiHopCanSwitchEntry(staged, master, servers, pending.Nodes) {
 				if !slices.ContainsFunc(opts.Custom, func(in model.Inbound) bool { return in.ID == staged.ID }) {
 					opts.Custom = append(opts.Custom, staged)
 				}

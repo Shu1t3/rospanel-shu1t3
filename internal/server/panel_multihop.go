@@ -7,11 +7,12 @@ import (
 )
 
 type multiHopProfileReq struct {
-	Reverse *model.MultiHopReverse `json:"reverse"`
-	Name    string                 `json:"name"`
-	Nodes   *[]int64               `json:"nodes"`
-	Transit *int64                 `json:"transit"`
-	Exit    *int64                 `json:"exit"`
+	Reverse    *model.MultiHopReverse `json:"reverse"`
+	IPFamilies []model.HopIPFamily    `json:"ip_families"`
+	Name       string                 `json:"name"`
+	Nodes      *[]int64               `json:"nodes"`
+	Transit    *int64                 `json:"transit"`
+	Exit       *int64                 `json:"exit"`
 }
 
 func (rt *Router) listMultiHopProfiles(w http.ResponseWriter, _ *http.Request) {
@@ -32,7 +33,7 @@ func (rt *Router) createMultiHopProfile(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if req.Nodes != nil {
-		profile, err := rt.mgr.CreateMultiHopRoute(r.Context(), req.Name, *req.Nodes, req.Reverse)
+		profile, err := rt.mgr.CreateMultiHopRoute(r.Context(), req.Name, *req.Nodes, req.Reverse, req.IPFamilies)
 		if err != nil {
 			writeManagerErr(w, err)
 			return
@@ -40,7 +41,7 @@ func (rt *Router) createMultiHopProfile(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusCreated, profile)
 		return
 	}
-	if req.Entry == nil || req.Transit == nil || req.Exit == nil {
+	if len(req.IPFamilies) != 0 || req.Entry == nil || req.Transit == nil || req.Exit == nil {
 		writeErrCode(w, http.StatusBadRequest, "err.multiHopDistinct", "укажите все серверы маршрута")
 		return
 	}
@@ -61,7 +62,7 @@ func (rt *Router) updateMultiHopProfile(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if req.Nodes != nil {
-		profile, err := rt.mgr.UpdateMultiHopRoute(r.Context(), id, req.Name, *req.Nodes, req.Enabled, req.Reverse)
+		profile, err := rt.mgr.UpdateMultiHopRoute(r.Context(), id, req.Name, *req.Nodes, req.Enabled, req.Reverse, req.IPFamilies)
 		if err != nil {
 			writeManagerErr(w, err)
 			return
@@ -69,7 +70,7 @@ func (rt *Router) updateMultiHopProfile(w http.ResponseWriter, r *http.Request, 
 		writeJSON(w, http.StatusOK, profile)
 		return
 	}
-	if req.Transit == nil || req.Exit == nil {
+	if len(req.IPFamilies) != 0 || req.Transit == nil || req.Exit == nil {
 		writeErrCode(w, http.StatusBadRequest, "err.multiHopDistinct", "укажите все серверы маршрута")
 		return
 	}

@@ -123,15 +123,38 @@ type Inbound struct {
 	CreatedAt int64 `json:"created_at"`
 }
 
+type HopIPFamily string
+
+const (
+	HopIPAuto HopIPFamily = "auto"
+	HopIPv4   HopIPFamily = "ipv4"
+	HopIPv6   HopIPFamily = "ipv6"
+)
+
+// MultiHopEdges lists the independently dialed legs. The protected R → B leg
+// already has an explicit IP in the reverse settings. Protected topology must
+// be validated before calling this function.
+func MultiHopEdges(nodes []int64, protected bool) [][2]int64 {
+	if protected {
+		return [][2]int64{{nodes[0], nodes[1]}, {nodes[3], nodes[1]}}
+	}
+	var edges [][2]int64
+	for i := 1; i < len(nodes); i++ {
+		edges = append(edges, [2]int64{nodes[i-1], nodes[i]})
+	}
+	return edges
+}
+
 // MultiHop lists the servers after the inbound's own server in connection order.
 // A nil Via reads the original transit/exit format. An empty Via means local exit.
 type MultiHop struct {
-	Transit  int64            `json:"transit"`
-	Exit     int64            `json:"exit"`
-	Via      *[]int64         `json:"via,omitempty"`
-	Revision string           `json:"revision,omitempty"`
-	Pending  *MultiHopPending `json:"pending,omitempty"`
-	Reverse  *MultiHopReverse `json:"reverse,omitempty"`
+	Transit    int64            `json:"transit"`
+	Exit       int64            `json:"exit"`
+	Via        *[]int64         `json:"via,omitempty"`
+	Revision   string           `json:"revision,omitempty"`
+	Pending    *MultiHopPending `json:"pending,omitempty"`
+	Reverse    *MultiHopReverse `json:"reverse,omitempty"`
+	IPFamilies []HopIPFamily    `json:"ip_families,omitempty"`
 }
 
 // MultiHopPending describes a deployment while the backing inbound still serves
@@ -145,6 +168,7 @@ type MultiHopPending struct {
 	ApplyEntry bool             `json:"apply_entry,omitempty"`
 	Legacy     bool             `json:"legacy,omitempty"`
 	Reverse    *MultiHopReverse `json:"reverse,omitempty"`
+	IPFamilies []HopIPFamily    `json:"ip_families,omitempty"`
 }
 
 func (p *MultiHopPending) Chain() []int64 {

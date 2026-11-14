@@ -1568,6 +1568,12 @@
             "format": "int64",
             "type": "integer"
           },
+          "ip_families": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "pending": {
             "$ref": "#/components/schemas/MultiHopPending"
           },
@@ -1602,6 +1608,12 @@
           },
           "initial": {
             "type": "boolean"
+          },
+          "ip_families": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "legacy": {
             "type": "boolean"
@@ -5619,12 +5631,16 @@
           },
           "join_token": {
             "type": "string"
+          },
+          "offline_install_command": {
+            "type": "string"
           }
         },
         "required": [
           "id",
           "join_token",
-          "install_command"
+          "install_command",
+          "offline_install_command"
         ],
         "type": "object"
       },
@@ -6344,7 +6360,7 @@
   "info": {
     "description": "External REST API for managing RosPanel users, billing and stats.",
     "title": "RosPanel API",
-    "version": "5.9.0"
+    "version": "5.10.0"
   },
   "openapi": "3.0.3",
   "paths": {

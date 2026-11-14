@@ -23,6 +23,7 @@ func (in Inbound) Clone() Inbound {
 
 func cloneMultiHop(hops MultiHop) MultiHop {
 	hops.Reverse = hops.Reverse.Clone()
+	hops.IPFamilies = slices.Clone(hops.IPFamilies)
 	if hops.Via != nil {
 		via := append([]int64{}, (*hops.Via)...)
 		hops.Via = &via
@@ -30,6 +31,7 @@ func cloneMultiHop(hops MultiHop) MultiHop {
 	if hops.Pending != nil {
 		pending := *hops.Pending
 		pending.Reverse = pending.Reverse.Clone()
+		pending.IPFamilies = slices.Clone(pending.IPFamilies)
 		pending.Nodes = append([]int64{}, pending.Nodes...)
 		hops.Pending = &pending
 	}

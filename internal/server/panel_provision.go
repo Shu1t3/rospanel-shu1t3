@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Shu1t3/rospanel-shu1t3/internal/nodeapi"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/provision"
 )
 
@@ -74,7 +73,7 @@ func (rt *Router) provisionNode(w http.ResponseWriter, r *http.Request, id int64
 	if set != nil {
 		nodePath = set.NodeAPIPath
 	}
-	joinURL := panelPublicURL(r) + "/" + nodePath + "/" + nodeapi.PathPrefix + "/join#" + token
+	joinURL := nodeJoinURL(r, nodePath, token)
 	installArgs := []string{"install", "--join", joinURL}
 	if !rt.mgr.HasValidCert() {
 		installArgs = append(installArgs, "--insecure") // panel cert isn't CA-valid

@@ -3095,7 +3095,7 @@ export const setNodeACME = (
   })
 
 export const createNode = (name: string, host: string) =>
-  api<{ id: number; install_command: string }>('api/nodes', {
+  api<{ id: number } & NodeInstallCommands>('api/nodes', {
     method: 'POST',
     body: JSON.stringify({ name, host }),
   })
@@ -3157,8 +3157,13 @@ export const deleteNode = (id: number, currentPassword: string, code: string) =>
     body: JSON.stringify({ current_password: currentPassword, code }),
   })
 
+export interface NodeInstallCommands {
+  install_command: string
+  offline_install_command?: string
+}
+
 export const regenNodeJoin = (id: number) =>
-  api<{ install_command: string }>(`api/nodes/${id}/regen-join`, {
+  api<NodeInstallCommands>(`api/nodes/${id}/regen-join`, {
     method: 'POST',
   })
 
@@ -3593,6 +3598,8 @@ export interface MultiHopReverse {
   relay_sources: string[]
 }
 
+export type HopIPFamily = "auto" | "ipv4" | "ipv6"
+
 export interface MultiHopProfile {
   id: number
   name: string
@@ -3601,17 +3608,18 @@ export interface MultiHopProfile {
   port: number
   applying?: boolean
   reverse?: MultiHopReverse
+  ip_families?: HopIPFamily[]
 }
 
 export const listMultiHopProfiles = () => api<MultiHopProfile[]>('api/multi-hop')
 
-export const createMultiHopProfile = (route: Pick<MultiHopProfile, 'name' | 'nodes' | 'reverse'>) =>
+export const createMultiHopProfile = (route: Pick<MultiHopProfile, 'name' | 'nodes' | 'reverse' | 'ip_families'>) =>
   api<MultiHopProfile>('api/multi-hop', { method: 'POST', body: JSON.stringify(route) })
 
-export const updateMultiHopProfile = ({ id, name, nodes, enabled, reverse }: MultiHopProfile) =>
+export const updateMultiHopProfile = ({ id, name, nodes, enabled, reverse, ip_families }: MultiHopProfile) =>
   api<MultiHopProfile>(`api/multi-hop/${id}`, {
     method: 'POST',
-    body: JSON.stringify({ name, nodes, enabled, reverse }),
+    body: JSON.stringify({ name, nodes, enabled, reverse, ip_families }),
   })
 
 export const deleteMultiHopProfile = (id: number) =>

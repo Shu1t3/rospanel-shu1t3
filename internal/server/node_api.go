@@ -9,6 +9,8 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -412,11 +414,19 @@ func isBroadcastableHost(host string) bool {
 // request, so a joining node learns where to reach the panel. The panel sits
 // behind Xray's TLS, so requests arrive as https to the public host.
 func panelPublicURL(r *http.Request) string {
-	host := r.Host
+	authority := r.Host
+	host := authority
+	if name, _, err := net.SplitHostPort(authority); err == nil {
+		host = name
+	} else if ip, err := netip.ParseAddr(authority); err == nil && ip.Is6() {
+		authority = "[" + ip.String() + "]"
+	} else if strings.HasPrefix(authority, "[") && strings.HasSuffix(authority, "]") {
+		host = authority[1 : len(authority)-1]
+	}
 	scheme := "https"
-	// A dev panel reached directly on loopback has no TLS in front of it.
-	if strings.HasPrefix(host, "127.0.0.1") || strings.HasPrefix(host, "localhost") {
+	// The local dev server can be reached directly without a TLS front.
+	if r.TLS == nil && (strings.EqualFold(host, "localhost") || net.ParseIP(host).IsLoopback()) {
 		scheme = "http"
 	}
-	return scheme + "://" + host
+	return (&url.URL{Scheme: scheme, Host: authority}).String()
 }
