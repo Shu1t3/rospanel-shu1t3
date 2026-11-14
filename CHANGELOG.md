@@ -1,5 +1,20 @@
 # Changelog
 
+## [5.11.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.10.0...v5.11.0) (2026-11-14)
+
+
+### Features
+
+* **multihop:** support IPv6 links and node enrollment ([8f041d7](https://github.com/Shu1t3/rospanel-shu1t3/commit/8f041d75dec9838814bf39129aa6320402ab92b7))
+* **multihop:** support IPv6 links and node enrollment ([996bc48](https://github.com/Shu1t3/rospanel-shu1t3/commit/996bc48e1fc3977c23f95832879216c87a9097b2))
+
+
+### Bug Fixes
+
+* **build:** use Go 1.27.4 for release binaries ([0340dca](https://github.com/Shu1t3/rospanel-shu1t3/commit/0340dca0e28d6bd742d31b857bdaf420e6ca1fba))
+* **multihop:** inherit the family of a reopened uniform route ([37ad1f3](https://github.com/Shu1t3/rospanel-shu1t3/commit/37ad1f3c31304c6f16cb7a8d27c049fb16784a98))
+* **tls:** replace the fallback certificate after a host change ([35782c0](https://github.com/Shu1t3/rospanel-shu1t3/commit/35782c0eba8c58688d0bf36b7beb3ad38796deea))
+
 ## [5.10.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.9.0...v5.10.0) (2026-11-10)
 
 
