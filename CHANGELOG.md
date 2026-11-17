@@ -1,5 +1,16 @@
 # Changelog
 
+## [5.11.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.11.0...v5.11.1) (2026-11-17)
+
+
+### Bug Fixes
+
+* **hostfw:** prevent unconditional table flush in reverse guard keep ([b5c220d](https://github.com/Shu1t3/rospanel-shu1t3/commit/b5c220d95c54d96fe1c8dec6c4e07132935155c7))
+* **multihop:** guard against nil peer and isolate auto family address check ([19c53a4](https://github.com/Shu1t3/rospanel-shu1t3/commit/19c53a4f263571e09809f943e17b8bfbc8fb7f9b))
+* **reality:** sanitize built-in reality short ids and verify donor hostname ([5edfaa1](https://github.com/Shu1t3/rospanel-shu1t3/commit/5edfaa102214151fa283b32be63c61d9f4be6d43))
+* **security:** support http proxy failed auth in brute guard ([2cec9c7](https://github.com/Shu1t3/rospanel-shu1t3/commit/2cec9c7da0d71f2f39b40a89bc7d3cf9ec8cca34))
+* **store:** chunk user ids in device limit stamping and expand migration idempotency ([89951c7](https://github.com/Shu1t3/rospanel-shu1t3/commit/89951c70d7d7fa114ad1bc710a6a7523622b9c8f))
+
 ## [5.11.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.10.0...v5.11.0) (2026-11-14)
 
 
