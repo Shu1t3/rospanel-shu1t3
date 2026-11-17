@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -248,3 +249,72 @@ func TestUnlimitedDeviceRosterStillHasACeiling(t *testing.T) {
 		t.Errorf("roster grew to %d devices with no per-user limit, want at most %d", n, maxDevicesPerUser)
 	}
 }
+
+func TestStampDeviceOverLimitChunking(t *testing.T) {
+	st, _ := deviceStore(t)
+	now := time.Now().Unix()
+
+	// Insert 1050 users with device_limit = 1
+	err := st.withTx(func(tx *sql.Tx) error {
+		stmt, err := tx.Prepare(`INSERT INTO users (name, uuid, password, sub_token, enabled, device_limit)
+			VALUES (?, ?, ?, ?, 1, 1)`)
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+		for i := 0; i < 1050; i++ {
+			if _, err := stmt.Exec(fmt.Sprintf("user-%d", i), fmt.Sprintf("bulk-uuid-%d", i), "pw", fmt.Sprintf("bulk-tok-%d", i)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("bulk insert: %v", err)
+	}
+
+	var hits []ConnectionHit
+	rows, err := st.db.Query(`SELECT id FROM users WHERE name LIKE 'user-%'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		hits = append(hits,
+			ConnectionHit{UserID: id, IP: "198.51.100.1", SeenAt: now, Hits: 1},
+			ConnectionHit{UserID: id, IP: "198.51.100.2", SeenAt: now, Hits: 1},
+		)
+	}
+	if err := st.AddConnections(hits); err != nil {
+		t.Fatalf("add connections: %v", err)
+	}
+
+	// StampDeviceOverLimit: should arm 1050 users across multiple chunks (>999 SQLite variable limit)
+	if err := st.StampDeviceOverLimit(now); err != nil {
+		t.Fatalf("StampDeviceOverLimit arming: %v", err)
+	}
+
+	var armedCount int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM users WHERE device_over_since = ?`, now).Scan(&armedCount); err != nil {
+		t.Fatal(err)
+	}
+	if armedCount != 1050 {
+		t.Fatalf("expected 1050 users armed, got %d", armedCount)
+	}
+
+	// Disarm: advance time so sightings age out of the online window
+	if err := st.StampDeviceOverLimit(now + model.DeviceOnlineWindow + 10); err != nil {
+		t.Fatalf("StampDeviceOverLimit disarming: %v", err)
+	}
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM users WHERE device_over_since <> 0`).Scan(&armedCount); err != nil {
+		t.Fatal(err)
+	}
+	if armedCount != 0 {
+		t.Fatalf("expected 0 users armed after disarm, got %d", armedCount)
+	}
+}
+

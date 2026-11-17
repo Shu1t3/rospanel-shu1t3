@@ -123,3 +123,74 @@ func TestDuplicateColumnFallbackAnyMigration(t *testing.T) {
 		t.Fatalf("serves_anytls missing: count=%d, err=%v", count, err)
 	}
 }
+
+// TestTableAlreadyExistsFallbackAnyMigration verifies that if a table in a migration
+// was already created (e.g. from an earlier snapshot or partial execution), s.migrate()
+// skips the already existing table and applies the rest of the statements.
+func TestTableAlreadyExistsFallbackAnyMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rospanel_table_exists.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+		version TEXT PRIMARY KEY, applied_at INTEGER NOT NULL DEFAULT (unixepoch()))`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Apply migrations up to 0033
+	entries, err := migrationsFS.ReadDir("migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var files []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") && e.Name() < "0034" {
+			files = append(files, e.Name())
+		}
+	}
+	sort.Strings(files)
+	for _, name := range files {
+		body, err := migrationsFS.ReadFile("migrations/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(string(body)); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
+		if _, err := db.Exec(`INSERT INTO schema_migrations (version) VALUES (?)`, name); err != nil {
+			t.Fatalf("record %s: %v", name, err)
+		}
+	}
+
+	// Pre-create 'inbounds' table from 0034 without 0034 recorded in schema_migrations
+	if _, err := db.Exec(`CREATE TABLE inbounds (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		server_id  INTEGER NOT NULL DEFAULT 0,
+		enabled    INTEGER NOT NULL DEFAULT 1,
+		sort       INTEGER NOT NULL DEFAULT 0,
+		name       TEXT    NOT NULL,
+		protocol   TEXT    NOT NULL,
+		port       INTEGER NOT NULL,
+		opts       TEXT    NOT NULL DEFAULT '{}',
+		created_at INTEGER NOT NULL DEFAULT (unixepoch())
+	)`); err != nil {
+		t.Fatalf("pre-create inbounds table: %v", err)
+	}
+	db.Close()
+
+	// Open store via store.Open — migration 0034 contains CREATE TABLE inbounds (bare)
+	// along with groups, group_members, group_grants. It must not fail on "table inbounds already exists".
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open failed on table already exists fallback: %v", err)
+	}
+	defer st.Close()
+
+	// Verify groups table (a subsequent statement in 0034) was created successfully
+	var count int
+	if err := st.db.QueryRow(`SELECT count(1) FROM sqlite_master WHERE type = 'table' AND name = 'groups'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("groups table missing: count=%d, err=%v", count, err)
+	}
+}
