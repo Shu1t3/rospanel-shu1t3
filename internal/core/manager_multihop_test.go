@@ -393,3 +393,47 @@ func TestMultiHopIPFamilyChangeStagesNewAddress(t *testing.T) {
 		t.Fatalf("expected IPv6 address validation at second hop, got %v", err)
 	}
 }
+
+func TestMultiHopLegAutoFamilyValidation(t *testing.T) {
+	t.Parallel()
+	m := nodeTestManager(t)
+	master := &model.Settings{RealityPrivateKey: "privkey"}
+	hopsAuto := model.MultiHop{
+		IPFamilies: []model.HopIPFamily{model.HopIPAuto},
+	}
+	inAuto := model.Inbound{
+		ID: 10, ServerID: 1, Name: "TestAuto", Protocol: model.InbVLESS,
+		Opts: model.InboundOpts{MultiHop: &hopsAuto},
+	}
+
+	// Case 1: servers[to].set is nil under HopIPAuto -> must return bridge with empty link without panicking
+	serversNilDest := map[int64]cascadeServer{
+		1: {set: &model.Settings{Host: "192.0.2.1"}},
+		2: {set: nil},
+	}
+	_, link := m.multiHopLeg(inAuto, master, serversNilDest, []int64{1, 2}, 1)
+	if link != "" {
+		t.Fatalf("expected empty link when destination settings is nil, got %q", link)
+	}
+
+	// Case 2: servers[from] has no sources under explicit family -> must return empty link
+	hopsV4 := model.MultiHop{
+		IPFamilies: []model.HopIPFamily{model.HopIPv4},
+	}
+	inV4 := model.Inbound{
+		ID: 11, ServerID: 1, Name: "TestV4", Protocol: model.InbVLESS,
+		Opts: model.InboundOpts{MultiHop: &hopsV4},
+	}
+	serversNoSources := map[int64]cascadeServer{
+		1: {set: &model.Settings{Host: ""}, node: &model.Node{SeenIP: ""}},
+		2: {set: &model.Settings{Host: "192.0.2.2", VLESSEnabled: true}},
+	}
+	bridge, link := m.multiHopLeg(inV4, master, serversNoSources, []int64{1, 2}, 1)
+	if link != "" {
+		t.Fatalf("expected empty link when source has no entryAddrs under explicit HopIPv4, got %q", link)
+	}
+	if len(bridge.Sources) != 0 {
+		t.Fatalf("expected 0 sources, got %v", bridge.Sources)
+	}
+}
+

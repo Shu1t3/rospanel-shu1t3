@@ -184,9 +184,10 @@ func (m *Manager) multiHopLeg(in model.Inbound, master *model.Settings, servers 
 		Entry: from, Email: email, UUID: uuid, Lane: model.BridgeVision, Sources: m.hopSources(servers[from], family),
 	}
 	peer := m.hopDestination(servers[to].set, family)
-	if family == model.HopIPAuto {
+	if peer != nil && family == model.HopIPAuto {
 		peer = m.overIPv4(peer)
-	} else if peer == nil || len(bridge.Sources) == 0 {
+	}
+	if peer == nil || (family != model.HopIPAuto && len(bridge.Sources) == 0) {
 		return bridge, ""
 	}
 	return bridge, bridgeLink(model.BridgeVision, model.User{UUID: uuid}, peer)
