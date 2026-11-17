@@ -76,6 +76,9 @@ func (g *ReverseGuard) refresh(ctx context.Context) error {
 	if g.current.empty() {
 		return nil
 	}
+	if reverseTableExists() {
+		return nil
+	}
 	return installReversePolicy(ctx, g.current)
 }
 
