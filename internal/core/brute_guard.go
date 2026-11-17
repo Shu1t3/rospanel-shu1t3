@@ -180,13 +180,15 @@ func (m *Manager) noteProxyAuthReject(ip string) bool {
 	return m.guard.record(ip)
 }
 
-// parseRejectIP extracts the source IP from an Xray "rejected proxy/socks:"
-// log line. Returns "" for any other line or when the address is loopback.
+// parseRejectIP extracts the source IP from an Xray "rejected proxy/socks:" or
+// "rejected proxy/http:" log line. Returns "" for any other line or when the
+// address is loopback.
 //
 //	... from tcp:1.2.3.4:5678 rejected  proxy/socks: invalid username or password
 //	... from tcp:1.2.3.4:5678 rejected  proxy/socks: socks 4 is not allowed ...
+//	... from tcp:1.2.3.4:5678 rejected  proxy/http: failed to read ...
 func parseRejectIP(line string) string {
-	if !strings.Contains(line, " rejected ") || !strings.Contains(line, "proxy/socks:") {
+	if !strings.Contains(line, " rejected ") || (!strings.Contains(line, "proxy/socks:") && !strings.Contains(line, "proxy/http:")) {
 		return ""
 	}
 	f := strings.Index(line, "from tcp:")
