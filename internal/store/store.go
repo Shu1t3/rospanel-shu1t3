@@ -432,7 +432,7 @@ func (s *Store) migrate() error {
 			return err
 		}
 		if _, err := tx.Exec(string(body)); err != nil {
-			if strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+			if isIdempotentMigrationErr(err) {
 				_ = tx.Rollback()
 				tx, err = s.db.Begin()
 				if err != nil {
@@ -440,7 +440,7 @@ func (s *Store) migrate() error {
 				}
 				for _, stmt := range splitSQLStatements(string(body)) {
 					if _, stmtErr := tx.Exec(stmt); stmtErr != nil {
-						if !strings.Contains(strings.ToLower(stmtErr.Error()), "duplicate column name") {
+						if !isIdempotentMigrationErr(stmtErr) {
 							_ = tx.Rollback()
 							return fmt.Errorf("apply %s (%s): %w", name, stmt, stmtErr)
 						}
@@ -540,6 +540,15 @@ func splitSQLStatements(sql string) []string {
 		stmts = append(stmts, stmt)
 	}
 	return stmts
+}
+
+func isIdempotentMigrationErr(err error) bool {
+	if err == nil {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "duplicate column name") ||
+		strings.Contains(msg, "already exists")
 }
 
 // migrationNumber pulls the leading 4-digit ordinal out of a migration filename

@@ -1852,24 +1852,27 @@ func (s *Store) StampDeviceOverLimit(now int64) error {
 		return nil
 	}
 	return s.withTx(func(tx *sql.Tx) error {
-		if len(arm) > 0 {
-			args := make([]any, 0, len(arm)+1)
+		const chunk = 900
+		for start := 0; start < len(arm); start += chunk {
+			part := arm[start:min(start+chunk, len(arm))]
+			args := make([]any, 0, len(part)+1)
 			args = append(args, now)
-			for _, id := range arm {
+			for _, id := range part {
 				args = append(args, id)
 			}
 			if _, err := tx.Exec(`UPDATE users SET device_over_since = ?
-				WHERE id IN (`+placeholders(len(arm))+`)`, args...); err != nil {
+				WHERE id IN (`+placeholders(len(part))+`)`, args...); err != nil {
 				return err
 			}
 		}
-		if len(disarm) > 0 {
-			args := make([]any, len(disarm))
-			for i, id := range disarm {
+		for start := 0; start < len(disarm); start += chunk {
+			part := disarm[start:min(start+chunk, len(disarm))]
+			args := make([]any, len(part))
+			for i, id := range part {
 				args[i] = id
 			}
 			if _, err := tx.Exec(`UPDATE users SET device_over_since = 0
-				WHERE id IN (`+placeholders(len(disarm))+`)`, args...); err != nil {
+				WHERE id IN (`+placeholders(len(part))+`)`, args...); err != nil {
 				return err
 			}
 		}
