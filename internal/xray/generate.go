@@ -795,7 +795,7 @@ func realityInbound(set *model.Settings, clients []VLESSClient, sniff *Sniffing)
 				Dest:         set.RealityTarget(),      // dialed for probes
 				ServerNames:  set.RealityServerNames(), // all accepted SNIs
 				PrivateKey:   set.RealityPrivateKey,
-				ShortIds:     strings.Split(set.RealityShortID, ","),
+				ShortIds:     set.RealityShortIDs(),
 				MaxTimeDiff:  set.RealityMaxTimeDiff, // anti-replay window (ms); 0 = off
 				MinClientVer: MinClientVerAny,
 			},

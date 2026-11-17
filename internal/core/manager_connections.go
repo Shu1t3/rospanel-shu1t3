@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -409,9 +410,16 @@ func validateRealityDestLive(host string) error {
 
 func validateRealityDest(ctx context.Context, host string) error {
 	d := tls.Dialer{Config: &tls.Config{
-		ServerName: host,
-		MinVersion: tls.VersionTLS13, // handshake fails if the donor lacks TLS 1.3
-		NextProtos: []string{"h2", "http/1.1"},
+		ServerName:         host,
+		InsecureSkipVerify: true,
+		MinVersion:         tls.VersionTLS13, // handshake fails if the donor lacks TLS 1.3
+		NextProtos:         []string{"h2", "http/1.1"},
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) == 0 {
+				return errors.New("no certificates presented")
+			}
+			return cs.PeerCertificates[0].VerifyHostname(host)
+		},
 	}}
 	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(host, "443"))
 	if err != nil {

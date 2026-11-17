@@ -92,3 +92,34 @@ func TestRealityDonorsAreDistinctNames(t *testing.T) {
 		seen[h] = true
 	}
 }
+
+func TestRealityShortIDsSanitization(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		raw     string
+		wantIDs []string
+		wantSID string
+	}{
+		{"", nil, ""},
+		{"   ", nil, ""},
+		{"abcd", []string{"abcd"}, "abcd"},
+		{"  abcd , ef01 , , 1234  ", []string{"abcd", "ef01", "1234"}, "abcd"},
+		{",,", nil, ""},
+	}
+	for _, c := range cases {
+		s := Settings{RealityShortID: c.raw}
+		gotIDs := s.RealityShortIDs()
+		if len(gotIDs) != len(c.wantIDs) {
+			t.Errorf("RealityShortIDs(%q) len = %d, want %d", c.raw, len(gotIDs), len(c.wantIDs))
+		} else {
+			for i := range gotIDs {
+				if gotIDs[i] != c.wantIDs[i] {
+					t.Errorf("RealityShortIDs(%q)[%d] = %q, want %q", c.raw, i, gotIDs[i], c.wantIDs[i])
+				}
+			}
+		}
+		if gotSID := s.RealitySID(); gotSID != c.wantSID {
+			t.Errorf("RealitySID(%q) = %q, want %q", c.raw, gotSID, c.wantSID)
+		}
+	}
+}

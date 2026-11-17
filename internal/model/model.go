@@ -1925,10 +1925,21 @@ func SubPageLoops(raw, host, subPath string) bool {
 // share links and client configs (RealityShortID stores a comma-separated set
 // the server accepts).
 func (s *Settings) RealitySID() string {
-	if i := strings.IndexByte(s.RealityShortID, ','); i >= 0 {
-		return s.RealityShortID[:i]
+	if ids := s.RealityShortIDs(); len(ids) > 0 {
+		return ids[0]
 	}
-	return s.RealityShortID
+	return ""
+}
+
+// RealityShortIDs returns all REALITY shortIds the inbound accepts, trimmed of whitespace.
+func (s *Settings) RealityShortIDs() []string {
+	var out []string
+	for _, id := range strings.Split(s.RealityShortID, ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // RealityServerNames returns the donor SNIs the REALITY inbound accepts
