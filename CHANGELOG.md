@@ -1,5 +1,17 @@
 # Changelog
 
+## [5.12.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.12.0...v5.12.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* **ci:** balance test matrix into 3 shards and drain response body in xhttpfront test ([7e5e7ec](https://github.com/Shu1t3/rospanel-shu1t3/commit/7e5e7ec041ed54a7c08fb844343f127f464913e2))
+
+
+### Performance Improvements
+
+* **release:** optimize release cycle, matrix-shard CI tests, and automate Linux lab ([4a839c7](https://github.com/Shu1t3/rospanel-shu1t3/commit/4a839c76d98f6a693ec96c0b1e9ee547ac892cf5))
+
 ## [5.12.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.11.1...v5.12.0) (2026-11-23)
 
 
