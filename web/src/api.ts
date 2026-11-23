@@ -17,7 +17,10 @@ export interface User {
   created_at: string
   reset_period: string
   last_seen: number
-  device_limit: number
+  device_limit: number // -1 none, 0 the panel default, N
+  ip_limit: number // the address cap in force (0 = none)
+  // Installs that may fetch the subscription: -1 none, 0 the panel default, N.
+  hwid_limit: number
   active_devices: number
   speed_limit: number // kbit/s, 0 = unlimited
   // The measure the panel holds against the user for blocklist traffic, and
@@ -120,9 +123,34 @@ export interface DeviceList {
   devices: Device[]
   limit: number // 0 = unlimited
   enabled: boolean // device binding switched on panel-wide
+  default_limit: number // what the panel default amounts to
+  ip_default_limit: number // the panel's address default (0 = none)
 }
 
 export const getUserDevices = (id: number) => api<DeviceList>(`api/users/${id}/devices`)
+
+// A user's extra AmneziaWG keys, one per device; the main key is not listed.
+// limit counts the main key too.
+export interface AWGKey {
+  id: number
+  name: string
+  hwid?: string
+  addr: string
+  created_at: number
+  active: boolean // false: past the user's device cap, so a peer nowhere
+}
+export interface AWGKeyList {
+  keys: AWGKey[]
+  limit: number
+  enabled: boolean // some server has AmneziaWG on
+}
+export const getUserAWGKeys = (id: number) => api<AWGKeyList>(`api/users/${id}/awg-keys`)
+export const addUserAWGKey = (id: number, name: string) =>
+  api<AWGKey>(`api/users/${id}/awg-keys`, { method: 'POST', body: JSON.stringify({ name }) })
+export const renameUserAWGKey = (id: number, keyId: number, name: string) =>
+  api<void>(`api/users/${id}/awg-keys/rename`, { method: 'POST', body: JSON.stringify({ key_id: keyId, name }) })
+export const deleteUserAWGKey = (id: number, keyId: number) =>
+  api<void>(`api/users/${id}/awg-keys/delete`, { method: 'POST', body: JSON.stringify({ key_id: keyId }) })
 
 // Releases one device slot, or every one of them with all=true.
 export const unbindUserDevice = (id: number, body: { hwid?: string; all?: boolean }) =>
@@ -553,6 +581,7 @@ export interface UserLimitsSave {
   data_limit: number
   device_limit: number
   speed_limit?: number
+  hwid_limit?: number
   term?: {
     expire_at: number
     hold_seconds: number
@@ -567,6 +596,7 @@ export const setUserLimits = (id: number, s: UserLimitsSave) =>
       data_limit: s.data_limit,
       device_limit: s.device_limit,
       speed_limit: s.speed_limit,
+      hwid_limit: s.hwid_limit,
       ...(s.term ?? {}),
     }),
   })
@@ -650,6 +680,20 @@ export const getLaneTraffic = (p: { from?: string; to?: string }) => {
   if (p.from) q.set('from', p.from)
   if (p.to) q.set('to', p.to)
   return api<LaneTraffic[]>('api/stats/lanes?' + q.toString())
+}
+export type CascadeTraffic = {
+  exit_id: number
+  exit_name: string
+  entry_id: number
+  entry_name: string
+  up: number
+  down: number
+}
+export const getCascadeTraffic = (p: { from?: string; to?: string }) => {
+  const q = new URLSearchParams()
+  if (p.from) q.set('from', p.from)
+  if (p.to) q.set('to', p.to)
+  return api<CascadeTraffic[]>('api/stats/cascade?' + q.toString())
 }
 export const getStatsByUser = (from?: string, to?: string) => {
   const q = new URLSearchParams()
@@ -1150,7 +1194,8 @@ export interface SubApp {
 export interface HWIDSettings {
   enabled: boolean
   require: boolean // refuse clients that send no x-hwid at all
-  fallback_limit: number // cap for users whose own device limit is 0
+  fallback_limit: number // cap for users whose own HWID limit is 0
+  ip_fallback_limit: number // address cap for users whose device limit is 0 (0 = none)
   ttl_days: number // forget a device after N days of silence (0 = never)
   // Which counter enforces the device limit: "auto" (addresses only while HWID is not
   // authoritative), "hwid" or "both".
@@ -1327,6 +1372,8 @@ export interface EgressLane {
   // A cascade: our own servers as the upstreams (0 = the master), each reached over
   // one of its built-in lanes (reality / vision / hysteria2).
   via?: { server: number; bridge?: string }[]
+  // Access groups the lane applies to; absent = everyone.
+  groups?: number[]
 }
 
 export interface RoutingConfig {
@@ -1470,11 +1517,13 @@ export const saveSubSettings = (s: SubSettings) =>
 // SubProto is a protocol a response rule can give or hide (model.SubProtoKeys).
 export const SUB_PROTOS = [
   'vless',
+  'xhttp',
   'reality',
   'hysteria2',
   'naive',
   'anytls',
   'mieru',
+  'trusttunnel',
   'awg',
   'custom',
   'vless_enc',
@@ -1837,6 +1886,9 @@ export interface Broadcast {
   media_name: string
   buttons: BroadcastButton[] | null
   audience: BroadcastAudience
+  // Narrowed to one access group's members (0: none); its name now, "" once deleted.
+  group_id: number
+  group_name: string
   status: BroadcastStatus
   created_at: number
   started_at: number
@@ -1858,15 +1910,19 @@ export interface Broadcast {
 export const listBroadcasts = () => api<Broadcast[]>('api/broadcasts')
 
 // broadcastAudience previews how many recipients a filter resolves to right now.
-export const broadcastAudience = (audience: BroadcastAudience) =>
+export const broadcastAudience = (audience: BroadcastAudience, groupId = 0) =>
   api<{ count: number; hook_users: number }>(
-    `api/broadcasts/audience?audience=${encodeURIComponent(audience)}`,
+    `api/broadcasts/audience?audience=${encodeURIComponent(audience)}&group_id=${groupId}`,
   )
+
+// The access groups a broadcast can be narrowed to (the broadcasts permission is enough).
+export const listBroadcastGroups = () =>
+  api<{ id: number; name: string; members: number }[]>('api/broadcasts/groups')
 
 // broadcastForm packs the composed message the way both create and test expect: a
 // JSON "payload" part plus an optional file, since an attachment can't ride in JSON.
 const broadcastForm = (
-  b: { text: string; audience: BroadcastAudience; buttons: BroadcastButton[]; scheduled_at?: number },
+  b: { text: string; audience: BroadcastAudience; group_id?: number; buttons: BroadcastButton[]; scheduled_at?: number },
   media: File | null,
 ) => {
   const fd = new FormData()
@@ -1876,14 +1932,14 @@ const broadcastForm = (
 }
 
 export const createBroadcast = (
-  b: { text: string; audience: BroadcastAudience; buttons: BroadcastButton[]; scheduled_at?: number },
+  b: { text: string; audience: BroadcastAudience; group_id?: number; buttons: BroadcastButton[]; scheduled_at?: number },
   media: File | null,
 ) => apiForm<Broadcast>('api/broadcasts', broadcastForm(b, media))
 
 // testBroadcast delivers the composed message to the linked admin chats first.
 // Broken markup seen by the whole audience can only be fixed by another broadcast.
 export const testBroadcast = (
-  b: { text: string; audience: BroadcastAudience; buttons: BroadcastButton[] },
+  b: { text: string; audience: BroadcastAudience; group_id?: number; buttons: BroadcastButton[] },
   media: File | null,
 ) => apiForm<{ ok: boolean }>('api/broadcasts/test', broadcastForm(b, media))
 
@@ -2182,6 +2238,43 @@ export interface HealthReport {
 // it per server.)
 export const getNodeHealth = (id: number) => api<HealthReport>(`api/nodes/${id}/health`)
 
+// A server's load charts (node 0 is the panel's own). One point per step across
+// the window; null where nothing was sampled or nothing reported.
+export type LoadRange = '24h' | '7d' | '30d'
+export type LoadPoint = {
+  t: number
+  cpu: number | null
+  cpu_max: number | null
+  mem: number | null
+  mem_max: number | null
+  up: number | null
+  // disk in percent, rx/tx in bytes per second, online in users
+  disk: number | null
+  disk_max: number | null
+  rx: number | null
+  rx_max: number | null
+  tx: number | null
+  tx_max: number | null
+  online: number | null
+  online_max: number | null
+}
+export type LoadReport = {
+  range: LoadRange
+  from: number
+  to: number
+  step: number
+  points: LoadPoint[]
+  outages: { start: number; end: number }[]
+  uptime: number
+  samples: number
+  down_seconds: number
+  rx_bytes: number
+  tx_bytes: number
+  online_max: number
+}
+export const getNodeLoad = (id: number, range: LoadRange) =>
+  api<LoadReport>(`api/nodes/${id}/load?range=${range}`)
+
 export type BulkAction = 'enable' | 'disable' | 'reset' | 'extend' | 'delete'
 
 // bulkUsers applies one action to many users in a single server pass (one Xray
@@ -2276,6 +2369,7 @@ export interface TariffPlan {
   period_days: number
   data_limit: number
   device_limit: number
+  hwid_limit: number // -1 none, 0 the panel default, N
   speed_limit: number // kbit/s, 0 = unlimited
   // The plan's own quota-refill cycle: daily | weekly | monthly | yearly, or "" for
   // the derived default (free: every plan duration; paid: none inside the period).
@@ -2289,6 +2383,9 @@ export interface TariffPlan {
   // device_max of them (0 = none sold).
   device_price?: number
   device_max?: number
+  // The plan's own renewal limits in days; 0 takes the billing settings' value.
+  renew_window_days?: number
+  max_prepaid_days?: number
 }
 
 // Traffic on sale on top of a plan's quota.
@@ -2349,6 +2446,9 @@ export interface BillingInfo {
   churn_survey: boolean // ask a user whose paid term lapsed why it was not renewed
   traffic_packs: TrafficPack[]
   plan_change: boolean // users may switch plans while one is active
+  return_url: string // where a payer from the bot lands after paying ("" = Mini App / sub page)
+  renew_window_days: number // renewal opens this many days before the end (0 = always)
+  max_prepaid_days: number // paid time a purchase may leave, in days (0 = no limit)
   plans: TariffPlan[]
   plan_users?: Record<string, number> // plan id → number of users on it
 }
@@ -2442,6 +2542,9 @@ export const saveBilling = (b: {
   churn_survey: boolean
   traffic_packs: TrafficPack[]
   plan_change: boolean
+  return_url: string
+  renew_window_days: number
+  max_prepaid_days: number
 }) =>
   api<{ ok: boolean }>('api/billing', {
     method: 'POST',
@@ -2902,6 +3005,7 @@ export interface NodeView {
   reality_short_id: string
   reality_path: string
   master_label?: string // config-label name of the master (local node only)
+  note: string // the operator's own text on the card
   // The connections a cascade can reach this server over, its names for them, and
   // whether each is on there.
   bridges?: { bridge: string; name: string; enabled: boolean }[]
@@ -3035,10 +3139,11 @@ export const setServerProxy = (id: number, proxy: SystemProxy) =>
 export const listNodes = () => api<{ nodes: NodeView[] }>('api/nodes')
 
 // setMasterName sets the panel server's display name shown in config labels.
-export const setMasterName = (name: string) =>
+// note, when given, replaces the master card's note in the same call.
+export const setMasterName = (name: string, note?: string) =>
   api<{ ok: boolean }>('api/nodes/master-name', {
     method: 'POST',
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, note }),
   })
 
 // setMasterProtocols toggles the panel's own protocols on/off (the master card).
@@ -3094,10 +3199,10 @@ export const setNodeACME = (
     body: JSON.stringify({ target, email, provider }),
   })
 
-export const createNode = (name: string, host: string) =>
+export const createNode = (name: string, host: string, note = '') =>
   api<{ id: number } & NodeInstallCommands>('api/nodes', {
     method: 'POST',
-    body: JSON.stringify({ name, host }),
+    body: JSON.stringify({ name, host, note }),
   })
 
 // NodePatch carries a node edit (name/host/decoy). Protocols are edited on the
@@ -3130,6 +3235,7 @@ export interface NodePatch {
   reality_enabled?: boolean
   traffic_coefficient?: number
   placement?: Placement
+  note?: string // omitted = keep the current note
 }
 
 export const setMasterPlacement = (p: Placement) =>
@@ -4041,7 +4147,7 @@ export interface PluginManifest {
     bot?: { menu?: boolean; commands?: string[] }
     price?: boolean
     subscription?: boolean
-    theme?: boolean
+    theme?: boolean | { panel_styles?: boolean }
   }
   db_quota_mb?: number
   memory_mb?: number

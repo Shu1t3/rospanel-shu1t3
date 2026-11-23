@@ -14,6 +14,7 @@ import {
 } from "./api";
 import { fmtBytes, fmtStamp } from "./format";
 import { HealthPanel } from "./HealthPanel";
+import { ServerLoadDialog } from "./ServerLoad";
 import { errMessage, notifyError, notifySuccess } from "./notify";
 import { EMPTY_STEP_UP, type StepUp, StepUpFields, stepUpReady, useTotpEnabled } from "./stepup";
 import { XrayConfigView } from "./XrayConfig";
@@ -27,6 +28,7 @@ import {
   DropdownItem,
   IconBraces,
   IconButton,
+  IconChart,
   IconDots,
   IconGear,
   IconGlobe,
@@ -115,6 +117,7 @@ export function NodeCard({
   const [showingLogs, setShowingLogs] = useState(false);
   const [showingConfig, setShowingConfig] = useState(false);
   const [showingHealth, setShowingHealth] = useState(false);
+  const [showingLoad, setShowingLoad] = useState(false);
   const [showingReach, setShowingReach] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [removeOpen, setRemoveOpen] = useState(false);
@@ -275,6 +278,11 @@ export function NodeCard({
               <IconPulse size={16} />
             </IconButton>
           )}
+          {canServers && (
+            <IconButton title={t("serverLoad.action")} onClick={() => setShowingLoad(true)}>
+              <IconChart size={16} />
+            </IconButton>
+          )}
           {canServers && reachOn && (
             <IconButton title={t("reach.cardAction")} onClick={() => setShowingReach(true)}>
               <IconGlobe size={16} />
@@ -355,6 +363,17 @@ export function NodeCard({
           )}
         </span>
       </header>
+
+      {/* The operator's own words about this server, as written: line breaks kept,
+          a long note cut at three lines with the whole of it on hover. */}
+      {!!node.note?.trim() && (
+        <p
+          title={node.note}
+          className="line-clamp-3 whitespace-pre-line break-words px-3.5 pt-3 text-xs text-ink-muted"
+        >
+          {node.note}
+        </p>
+      )}
 
       {/* On a phone this is three stacked lines — who and what it carried, how it is,
           then the load bars full width. On a wider screen the same three parts sit in
@@ -465,7 +484,10 @@ export function NodeCard({
         ))}
       {showingLogs &&
         (node.is_local ? (
-          <XrayLogs onClose={() => setShowingLogs(false)} />
+          <XrayLogs
+            title={t("nodes.logsOf", { name: serverName(node) })}
+            onClose={() => setShowingLogs(false)}
+          />
         ) : (
           <NodeLogsDialog node={node} onClose={() => setShowingLogs(false)} />
         ))}
@@ -478,6 +500,13 @@ export function NodeCard({
       >
         <HealthPanel nodeId={node.id} />
       </Modal>
+      {showingLoad && (
+        <ServerLoadDialog
+          nodeId={node.id}
+          title={t("serverLoad.titleOf", { name: serverName(node) })}
+          onClose={() => setShowingLoad(false)}
+        />
+      )}
       {showingReach && (
         <ReachDialog node={node} onClose={() => setShowingReach(false)} onChecked={onChanged} />
       )}

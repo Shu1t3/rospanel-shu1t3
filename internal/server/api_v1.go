@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"mime"
 	"net/http"
 	"net/url"
@@ -46,10 +47,13 @@ type (
 		// of those is a separate reconcile, and a caller that failed halfway left a user
 		// live on terms nobody chose. PlanID overrides DataLimit/ExpireAt with the
 		// plan's own — a plan IS the limits.
-		DeviceLimit int     `json:"device_limit,omitempty"` // 0 = unlimited
-		SpeedLimit  int     `json:"speed_limit,omitempty"`  // kbit/s, 0 = unlimited
-		PlanID      int64   `json:"plan_id,omitempty"`      // 0 = no plan (manual limits)
-		GroupIDs    []int64 `json:"group_ids,omitempty"`    // access groups, by hand
+		DeviceLimit int `json:"device_limit,omitempty"` // -1 none, 0 the panel default, N
+		// HWIDLimit caps the installs that may fetch the subscription: -1 none, 0 the
+		// panel default, N. Missing, it follows device_limit, as the one number did.
+		HWIDLimit  *int    `json:"hwid_limit,omitempty"`
+		SpeedLimit int     `json:"speed_limit,omitempty"` // kbit/s, 0 = unlimited
+		PlanID     int64   `json:"plan_id,omitempty"`     // 0 = no plan (manual limits)
+		GroupIDs   []int64 `json:"group_ids,omitempty"`   // access groups, by hand
 		// Note and Tags are the operator's own annotations; see model.User.
 		Note string   `json:"note,omitempty"` // up to model.MaxUserNoteLen characters
 		Tags []string `json:"tags,omitempty"` // normalised: lower-cased, sorted, no commas
@@ -62,7 +66,10 @@ type (
 		DataLimit   *int64  `json:"data_limit,omitempty"`
 		ExpireAt    *int64  `json:"expire_at,omitempty"`
 		DeviceLimit *int    `json:"device_limit,omitempty"`
-		SpeedLimit  *int    `json:"speed_limit,omitempty"` // kbit/s, 0 = unlimited
+		// HWIDLimit: -1 none, 0 the panel default, N. Missing while device_limit is
+		// given, it moves with device_limit if the two were equal.
+		HWIDLimit  *int `json:"hwid_limit,omitempty"`
+		SpeedLimit *int `json:"speed_limit,omitempty"` // kbit/s, 0 = unlimited
 		// ExpireAt 0 is "never", which also takes away a term waiting for the first
 		// connection. HoldSeconds puts the term on hold until that connection instead
 		// (see apiCreateUserReq); 0 takes a pending term away. Not with a non-zero
@@ -343,6 +350,7 @@ func (rt *Router) apiMux() http.Handler {
 	nodeAudit("POST /v1/alerts/{id}", "apiAlertChanged", idFn(rt.apiUpdateAlert))
 	nodeAudit("DELETE /v1/alerts/{id}", "apiAlertDeleted", idFn(rt.apiDeleteAlert))
 	id("GET /v1/nodes/{id}/logs", rt.apiNodeLogs)
+	hf("GET /v1/logs", rt.apiPanelLogs)
 
 	// Custom inbounds. Every mutation opens, changes or closes a public listener on a
 	// server, so all three are audited the same way node mutations are.
@@ -917,8 +925,8 @@ func (rt *Router) apiCreateUser(w http.ResponseWriter, r *http.Request) {
 	// account is created, where the answer is still a plain 400.
 	if !apiNonNegative(w, map[string]int64{
 		"data_limit": req.DataLimit, "expire_at": req.ExpireAt,
-		"device_limit": int64(req.DeviceLimit), "speed_limit": int64(req.SpeedLimit),
-		"plan_id": req.PlanID, "hold_seconds": req.HoldSeconds,
+		"speed_limit": int64(req.SpeedLimit),
+		"plan_id":     req.PlanID, "hold_seconds": req.HoldSeconds,
 	}) {
 		return
 	}
@@ -931,6 +939,9 @@ func (rt *Router) apiCreateUser(w http.ResponseWriter, r *http.Request) {
 			writeAPIErr(w, http.StatusBadRequest, "bad_request", "hold_seconds and a non-zero expire_at contradict each other")
 			return
 		}
+	}
+	if !apiDeviceLimitsValid(w, &req.DeviceLimit, req.HWIDLimit) {
+		return
 	}
 	if req.PlanID > 0 && !rt.apiPlanExists(w, req.PlanID) {
 		return
@@ -979,13 +990,24 @@ func (rt *Router) apiCreateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if req.DeviceLimit > 0 {
+	if req.DeviceLimit != 0 {
 		cur, err := rt.mgr.Store().GetUser(u.ID)
 		if err != nil {
 			writeAPIManagerErr(w, err)
 			return
 		}
 		if err := rt.mgr.SetUserLimits(r.Context(), u.ID, cur.DataLimit, cur.ExpireAt, req.DeviceLimit); err != nil {
+			writeAPIManagerErr(w, err)
+			return
+		}
+	}
+	// After the plan and the device limit: both write it.
+	hwid := req.HWIDLimit
+	if hwid == nil && req.DeviceLimit != 0 {
+		hwid = &req.DeviceLimit
+	}
+	if hwid != nil {
+		if err := rt.mgr.SetUserHWIDLimit(r.Context(), u.ID, *hwid); err != nil {
 			writeAPIManagerErr(w, err)
 			return
 		}
@@ -1086,9 +1108,6 @@ func (rt *Router) apiPatchUser(w http.ResponseWriter, r *http.Request, id int64)
 	if req.ExpireAt != nil {
 		check["expire_at"] = *req.ExpireAt
 	}
-	if req.DeviceLimit != nil {
-		check["device_limit"] = int64(*req.DeviceLimit)
-	}
 	if req.SpeedLimit != nil {
 		check["speed_limit"] = int64(*req.SpeedLimit)
 	}
@@ -1096,6 +1115,9 @@ func (rt *Router) apiPatchUser(w http.ResponseWriter, r *http.Request, id int64)
 		check["hold_seconds"] = *req.HoldSeconds
 	}
 	if !apiNonNegative(w, check) {
+		return
+	}
+	if !apiDeviceLimitsValid(w, req.DeviceLimit, req.HWIDLimit) {
 		return
 	}
 	if req.HoldSeconds != nil {
@@ -1166,6 +1188,18 @@ func (rt *Router) apiPatchUser(w http.ResponseWriter, r *http.Request, id int64)
 	}
 	if req.SpeedLimit != nil {
 		if err := rt.mgr.SetUserSpeedLimit(r.Context(), id, *req.SpeedLimit); err != nil {
+			writeAPIManagerErr(w, err)
+			return
+		}
+	}
+	// An integration written when one number capped both keeps moving both; one the
+	// operator split on purpose is left alone.
+	hwid := req.HWIDLimit
+	if hwid == nil && req.DeviceLimit != nil && cur.HWIDLimit == cur.DeviceLimit {
+		hwid = req.DeviceLimit
+	}
+	if hwid != nil {
+		if err := rt.mgr.SetUserHWIDLimit(r.Context(), id, *hwid); err != nil {
 			writeAPIManagerErr(w, err)
 			return
 		}
@@ -1289,11 +1323,12 @@ func (rt *Router) apiListOrders(w http.ResponseWriter, r *http.Request) {
 // apiSavePlan creates a plan (no id) or updates an existing one (id set). The
 // body is a full TariffPlan object.
 func (rt *Router) apiSavePlan(w http.ResponseWriter, r *http.Request) {
-	var req tariffPlanDTO
+	req := tariffPlanDTO{HWIDLimit: hwidUnsent}
 	if !apiDecode(w, r, &req) {
 		return
 	}
 	p := fromTariffPlanDTO(req)
+	planHWIDDefault(&p)
 	if err := rt.mgr.SaveTariffPlan(&p); err != nil {
 		writeAPIManagerErr(w, err)
 		return
@@ -1435,8 +1470,8 @@ func (rt *Router) apiManualImageURL(userID int64) string {
 	return rt.manualPayImageURL(*u, set)
 }
 
-// apiReturnURL is where a hosted payment sends the payer back: the caller's own, or
-// the user's subscription link — a browser opening it lands on the operator's own
+// apiReturnURL is where a hosted payment sends the payer back: the caller's own, the
+// operator's billing return address, or the user's subscription link — a browser opening it lands on the operator's own
 // page when one is set (Telegram is blocked for many payers).
 func (rt *Router) apiReturnURL(given string, userID int64) string {
 	if given != "" {
@@ -1445,6 +1480,9 @@ func (rt *Router) apiReturnURL(given string, userID int64) string {
 	set, err := rt.mgr.Settings()
 	if err != nil {
 		return ""
+	}
+	if set.BillingReturnURL != "" {
+		return set.BillingReturnURL
 	}
 	// No page behind the link (the panel's switched off, none of the operator's):
 	// "" sends the payer where the bot's own payments go.
@@ -1663,6 +1701,34 @@ func (rt *Router) apiPlanExists(w http.ResponseWriter, planID int64) bool {
 	p, err := rt.mgr.Store().GetTariffPlan(planID)
 	if err != nil || p == nil {
 		writeAPIErr(w, http.StatusBadRequest, "bad_request", "plan not found")
+		return false
+	}
+	return true
+}
+
+// hwidUnsent marks a plan body that did not mention hwid_limit.
+const hwidUnsent = math.MinInt32
+
+// planHWIDDefault gives a plan saved without hwid_limit the device limit, as the one
+// number used to cap both: a caller that predates the field keeps what it got.
+func planHWIDDefault(p *model.TariffPlan) {
+	if p.HWIDLimit == hwidUnsent {
+		p.HWIDLimit = p.DeviceLimit
+	}
+}
+
+// apiDeviceLimitsValid refuses a device or HWID limit outside -1 (none), 0 (the panel
+// default) and 1..MaxDeviceLimit; nil is "not sent". Judged before the first write.
+func apiDeviceLimitsValid(w http.ResponseWriter, device, hwid *int) bool {
+	inRange := func(n int) bool { return n >= -1 && n <= model.MaxDeviceLimit }
+	switch {
+	case device != nil && !inRange(*device):
+		writeAPIErr(w, http.StatusBadRequest, "bad_request",
+			"device_limit is -1 (none), 0 (panel default) or 1.."+strconv.Itoa(model.MaxDeviceLimit))
+		return false
+	case hwid != nil && !inRange(*hwid):
+		writeAPIErr(w, http.StatusBadRequest, "bad_request",
+			"hwid_limit is -1 (none), 0 (panel default) or 1.."+strconv.Itoa(model.MaxDeviceLimit))
 		return false
 	}
 	return true

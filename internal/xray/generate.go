@@ -100,6 +100,11 @@ type Options struct {
 	MultiHopLinks map[int64]string // custom inbound ID to the next service link
 	MultiHopAcks  []string         // deployment receipts for the generated config
 	ReverseChains []ReverseChain
+
+	// GroupMembers are the members of each access group by group ID, ascending: the
+	// users a lane scoped to groups (model.EgressLane.Groups) matches. A group missing
+	// from it has nobody in it.
+	GroupMembers map[int64][]int64
 }
 
 // acceptProxy is the socket option that has Xray read the front's PROXY header.
@@ -323,6 +328,7 @@ func Generate(set *model.Settings, users []model.User, opts Options, proxies map
 	// What a relayed subscription's routing sends traffic to is built like anything
 	// the server's own routing names.
 	relayAims := relayTargets(opts.Relays)
+	scopes := laneScopes(rc.Lanes, opts.GroupMembers)
 	operaActive := set.OperaEnabled && (len(rc.OperaDomains) > 0 || len(rc.OperaIPs) > 0 || catchAll == "opera" || relayAims["opera"])
 
 	// Egress lanes: one outbound per upstream proxy (tag "proxy-<lane>-<n>"), one
@@ -340,8 +346,14 @@ func Generate(set *model.Settings, users []model.User, opts Options, proxies map
 		if !lane.Enabled {
 			continue
 		}
-		routed := len(lane.Domains) > 0 || len(lane.IPs) > 0 || catchAll == lane.ID || relayAims[lane.ID]
-		if !routed {
+		routed := len(lane.Domains) > 0 || len(lane.IPs) > 0 || catchAll == lane.ID
+		if sc, ok := scopes[lane.ID]; ok {
+			// Scoped to groups: built whether or not anyone is in them yet, so a member
+			// joining or leaving changes the rules' user lists alone, which the running
+			// process takes without a restart.
+			routed = routed || sc.all
+		}
+		if !routed && !relayAims[lane.ID] {
 			continue
 		}
 		pool := proxies[lane.ID]
@@ -421,6 +433,12 @@ func Generate(set *model.Settings, users []model.User, opts Options, proxies map
 		listen, port := innerLaneListen(AnyTLSInnerAddr, inbounds)
 		inbounds = append(inbounds, innerInbound(TagAnyTLS, listen, port, laneClients(set.AnyTLSEnabled, model.LaneAnyTLS, users, opts.allowsBuiltin), sniff))
 	}
+	// VLESS-XHTTP-TLS: requests on its path reach the decoy through the TCP-TLS lane's
+	// fallback, and the panel's route there (internal/xhttpfront) relays them here.
+	if set.XHTTPOn() {
+		listen, port := innerLaneListen(XHTTPInnerAddr, inbounds)
+		inbounds = append(inbounds, xhttpInbound(listen, port, set.XHTTPPath, laneClients(true, model.LaneXHTTP, users, opts.allowsBuiltin), sniff))
+	}
 	// MTProto (its own port, see internal/mtproto): each Telegram connection enters
 	// here on its user's UUID, bound for a Telegram data centre.
 	if set.MTProtoEnabled {
@@ -429,7 +447,7 @@ func Generate(set *model.Settings, users []model.User, opts Options, proxies map
 	}
 
 	routing := compileRouting(expandGroups(rc, opts.Groups), order, warpActive, operaActive, active, unusable,
-		relayPlans, groupExpander(opts.Groups), opts.Bridges, append(reverseRules, hopRules...))
+		relayPlans, groupExpander(opts.Groups), opts.Bridges, scopes, append(reverseRules, hopRules...))
 	// Keep API dispatch first and scope the relay exception to its own listener.
 	routing.Rules = slices.Insert(routing.Rules, 1, relayRules...)
 	return &Config{
@@ -451,10 +469,10 @@ func Generate(set *model.Settings, users []model.User, opts Options, proxies map
 				StatsOutboundUplink: true, StatsOutboundDownlink: true,
 			},
 		},
-		DNS:         dns,
-		Inbounds:    inbounds,
-		Outbounds:   outbounds,
-		Routing:     routing,
+		DNS:       dns,
+		Inbounds:  inbounds,
+		Outbounds: outbounds,
+		Routing:   routing,
 		Observatory: observatory,
 	}, nil
 }
@@ -631,6 +649,7 @@ const (
 	TagMieru       = "mieru-in"
 	TagAnyTLS      = "anytls-in"
 	TagMTProto     = "mtproto-in"
+	TagXHTTP       = "xhttp-in"
 )
 
 // ProtoWireGuard is Xray's name for the protocol of a WireGuard inbound, TURN-VK's and
@@ -677,6 +696,61 @@ func innerInbound(tag, listen string, port int, clients []VLESSClient, sniff *Sn
 		},
 		Sniffing: sniff,
 	}
+}
+
+// xhttpInbound is the VLESS-XHTTP-TLS lane's inbound: XHTTP on path, no TLS of its own —
+// the TCP-TLS lane's ended at the public port — and the client named by the PROXY line
+// the route in front writes (internal/xhttpfront).
+func xhttpInbound(listen string, port int, path string, clients []VLESSClient, sniff *Sniffing) Inbound {
+	return Inbound{
+		Tag:      TagXHTTP,
+		Listen:   listen,
+		Port:     port,
+		Protocol: "vless",
+		Settings: VLESSInboundSettings{Clients: clients, Decryption: "none"},
+		StreamSettings: &StreamSettings{
+			Network:       "xhttp",
+			XHTTPSettings: &XHTTPSettings{Path: path},
+			Sockopt:       acceptProxy,
+		},
+		Sniffing: sniff,
+	}
+}
+
+// XHTTPRoute is the path and inner address of the VLESS-XHTTP-TLS lane in cfg; ok is
+// false when the lane is off.
+func XHTTPRoute(cfg *Config) (path, addr string, ok bool) {
+	for _, in := range cfg.Inbounds {
+		if in.Tag == TagXHTTP && in.StreamSettings != nil && in.StreamSettings.XHTTPSettings != nil {
+			return in.StreamSettings.XHTTPSettings.Path, innerAddr(in.Listen, in.Port), true
+		}
+	}
+	return "", "", false
+}
+
+// XHTTPRouteRaw is XHTTPRoute for a config as JSON, the form a node receives.
+func XHTTPRouteRaw(data []byte) (path, addr string, ok bool) {
+	var doc struct {
+		Inbounds []struct {
+			Tag            string `json:"tag"`
+			Listen         string `json:"listen"`
+			Port           int    `json:"port"`
+			StreamSettings struct {
+				XHTTPSettings struct {
+					Path string `json:"path"`
+				} `json:"xhttpSettings"`
+			} `json:"streamSettings"`
+		} `json:"inbounds"`
+	}
+	if json.Unmarshal(data, &doc) != nil {
+		return "", "", false
+	}
+	for _, in := range doc.Inbounds {
+		if in.Tag == TagXHTTP && in.StreamSettings.XHTTPSettings.Path != "" {
+			return in.StreamSettings.XHTTPSettings.Path, innerAddr(in.Listen, in.Port), true
+		}
+	}
+	return "", "", false
 }
 
 // laneClients are the users an inner lane lets in: their UUID, no flow.
@@ -1078,9 +1152,9 @@ func customShadowsocksClients(in model.Inbound, users []model.User) []Shadowsock
 // 1280: its DTLS and the TURN channel framing ride inside the path MTU as well.
 const WireGuardTURNMTU = 1280
 
-// WireGuardMTU is the tunnel MTU of a plain WireGuard inbound, on both ends: WireGuard's
-// own default, which fits a 1500-byte path over IPv6 with nothing wrapped around it.
-const WireGuardMTU = 1420
+// WireGuardMTU is the tunnel MTU of a plain WireGuard inbound, on both ends.
+// It leaves additional headroom for paths with a reduced MTU.
+const WireGuardMTU = 1280
 
 // customWireGuardPeers builds a WireGuard inbound's peers from the users' tunnel
 // identities — the same key and address they have on AmneziaWG. A user without one is
@@ -1089,9 +1163,24 @@ const WireGuardMTU = 1420
 // whose stored key cannot be read, and neither can complete a handshake anyway.
 func customWireGuardPeers(users []model.User) []WireGuardInboundPeer {
 	out := make([]WireGuardInboundPeer, 0, len(users))
-	for _, u := range users {
-		if peer, ok := wireGuardPeer(u.ID, u.WGPrivateKey, u.AWGSlot); ok {
-			out = append(out, peer)
+	for i := range users {
+		out = append(out, wireGuardPeersOf(&users[i])...)
+	}
+	return out
+}
+
+// wireGuardPeersOf is every peer a user has on a WireGuard inbound: their main key
+// first, then each device's key (model.User.AWGDevices), all under their email. None
+// when the main key is missing: devices are keys of a user who has one.
+func wireGuardPeersOf(u *model.User) []WireGuardInboundPeer {
+	main, ok := wireGuardPeer(u.ID, u.WGPrivateKey, u.AWGSlot)
+	if !ok {
+		return nil
+	}
+	out := []WireGuardInboundPeer{main}
+	for _, d := range u.AWGDevices {
+		if p, ok := wireGuardPeer(u.ID, d.Key, d.Slot); ok {
+			out = append(out, p)
 		}
 	}
 	return out
@@ -1197,6 +1286,10 @@ func UserInbounds(set *model.Settings, custom []model.Inbound, users []model.Use
 		listen, port := InnerListen(MieruInnerAddr)
 		in = append(in, Inbound{Tag: TagMieru, Listen: listen, Port: port, Protocol: "vless", Settings: VLESSInboundSettings{Clients: mc, Decryption: "none"}})
 	}
+	if xc := laneClients(set.XHTTPOn(), model.LaneXHTTP, users, allowBuiltin); len(xc) > 0 {
+		listen, port := InnerListen(XHTTPInnerAddr)
+		in = append(in, Inbound{Tag: TagXHTTP, Listen: listen, Port: port, Protocol: "vless", Settings: VLESSInboundSettings{Clients: xc, Decryption: "none"}})
+	}
 	if ac := laneClients(set.AnyTLSEnabled, model.LaneAnyTLS, users, allowBuiltin); len(ac) > 0 {
 		listen, port := InnerListen(AnyTLSInnerAddr)
 		in = append(in, Inbound{Tag: TagAnyTLS, Listen: listen, Port: port, Protocol: "vless", Settings: VLESSInboundSettings{Clients: ac, Decryption: "none"}})
@@ -1299,6 +1392,9 @@ func EnabledInboundTags(set *model.Settings, custom []model.Inbound) []string {
 	}
 	if set.MieruEnabled {
 		tags = append(tags, TagMieru)
+	}
+	if set.XHTTPOn() {
+		tags = append(tags, TagXHTTP)
 	}
 	if set.AnyTLSEnabled {
 		tags = append(tags, TagAnyTLS)
@@ -1487,7 +1583,7 @@ var privateEgressDomains = []string{
 	"full:instance-data.ec2.internal",
 }
 
-func compileRouting(rc model.RoutingConfig, order []string, warpActive, operaActive bool, active, unusable map[string]bool, relay []relayPlan, expand func([]string, bool) []string, bridges []Bridge, hopRules []RouteRule) *Routing {
+func compileRouting(rc model.RoutingConfig, order []string, warpActive, operaActive bool, active, unusable map[string]bool, relay []relayPlan, expand func([]string, bool) []string, bridges []Bridge, scopes map[string]laneScope, hopRules []RouteRule) *Routing {
 	out := &Routing{DomainStrategy: "IPIfNonMatch"}
 	strict := rc.StrictEgress
 	byID := make(map[string]model.EgressLane, len(rc.Lanes))
@@ -1628,8 +1724,17 @@ func compileRouting(rc model.RoutingConfig, order []string, warpActive, operaAct
 			}
 		default: // a proxy lane; an inactive one emits nothing and falls through
 			l, ok := byID[lane]
+			sc, scoped := scopes[lane]
 			switch {
 			case !ok:
+			case scoped:
+				// Only its members' connections.
+				switch {
+				case active[lane]:
+					addScopedRules(out, "", laneBalancerTag(lane), l, sc)
+				case strictLane(lane) && unusable[lane]:
+					addScopedRules(out, "block", "", l, sc)
+				}
 			case active[lane]:
 				addBalancerRule(out, laneBalancerTag(lane), l.Domains, l.IPs)
 			case strictLane(lane) && unusable[lane]:
@@ -1664,11 +1769,20 @@ func compileRouting(rc model.RoutingConfig, order []string, warpActive, operaAct
 	case "direct":
 		// The natural fallthrough to the first outbound (direct) — no rule needed.
 	default:
+		// A catch-all scoped to groups is everything else of its members only; the
+		// rest of the traffic leaves directly, as after any other last rule.
+		sc, scoped := scopes[last]
+		rule := RouteRule{Type: "field", Network: "tcp,udp"}
+		if scoped {
+			rule.User, rule.RuleTag = sc.users, scopeRuleTag(last, 0)
+		}
 		switch {
 		case active[last]:
-			out.Rules = append(out.Rules, RouteRule{Type: "field", Network: "tcp,udp", BalancerTag: laneBalancerTag(last)})
+			rule.BalancerTag = laneBalancerTag(last)
+			out.Rules = append(out.Rules, rule)
 		case strictLane(last) && unusable[last]:
-			out.Rules = append(out.Rules, blockAll)
+			rule.OutboundTag = "block"
+			out.Rules = append(out.Rules, rule)
 		}
 		// Otherwise an inactive catch-all lane (disabled / no live proxies) falls
 		// through to direct, so its traffic keeps flowing instead of black-holing.
@@ -1692,6 +1806,96 @@ func groupExpander(groups geo.GroupSet) func([]string, bool) []string {
 		return expandRefs(entries, groups, func(g geo.GroupRules) []string { return g.IPs })
 	}
 }
+
+// laneScope is who a lane scoped to groups applies to.
+type laneScope struct {
+	users []string // their emails, ascending; relayNobody alone when there is nobody
+	all   bool     // the lane names no destinations: all of their traffic
+}
+
+// laneScopes resolves the lanes scoped to groups, by lane ID; an unscoped lane is
+// absent. Whether a lane takes all traffic is read from the lane as configured, before
+// any iplist expansion: a lane whose lists did not load is not one that names nothing.
+func laneScopes(lanes []model.EgressLane, members map[int64][]int64) map[string]laneScope {
+	var out map[string]laneScope
+	for _, l := range lanes {
+		if !l.Scoped() {
+			continue
+		}
+		if out == nil {
+			out = map[string]laneScope{}
+		}
+		out[l.ID] = laneScope{users: scopeEmails(l.Groups, members), all: l.TakesAll()}
+	}
+	return out
+}
+
+// scopeEmails are the emails of every member of the groups, ascending by user ID and
+// without repeats. With nobody in them it is relayNobody alone: a rule with no user
+// list would match everyone.
+func scopeEmails(groups []int64, members map[int64][]int64) []string {
+	var ids []int64
+	for _, g := range groups {
+		ids = append(ids, members[g]...)
+	}
+	if len(ids) == 0 {
+		return []string{relayNobody}
+	}
+	slices.Sort(ids)
+	ids = slices.Compact(ids)
+	emails := make([]string, len(ids))
+	for i, id := range ids {
+		emails[i] = model.UserEmail(id)
+	}
+	return emails
+}
+
+// ScopedMembers is the part of members the lanes are scoped to: what a config built
+// from these lanes reads of the groups.
+func ScopedMembers(lanes []model.EgressLane, members map[int64][]int64) map[int64][]int64 {
+	var out map[int64][]int64
+	for _, l := range lanes {
+		for _, g := range l.Groups {
+			if out == nil {
+				out = map[int64][]int64{}
+			}
+			out[g] = members[g]
+		}
+	}
+	return out
+}
+
+// addScopedRules appends the rules of a lane scoped to groups, to an outbound or a
+// balancer: its destinations for its members, or all of their traffic when it names
+// none.
+//
+// Each rule is tagged scopeRulePrefix, so a change of members alone is applied to the
+// running process without a restart (hasLiveUsers).
+func addScopedRules(out *Routing, outbound, balancer string, l model.EgressLane, sc laneScope) {
+	rule := func(n int) RouteRule {
+		return RouteRule{Type: "field", User: sc.users, OutboundTag: outbound, BalancerTag: balancer, RuleTag: scopeRuleTag(l.ID, n)}
+	}
+	if sc.all {
+		r := rule(0)
+		r.Network = "tcp,udp"
+		out.Rules = append(out.Rules, r)
+		return
+	}
+	if d := normDomains(l.Domains); len(d) > 0 {
+		r := rule(1)
+		r.Domain = d
+		out.Rules = append(out.Rules, r)
+	}
+	if i := trimList(l.IPs); len(i) > 0 {
+		r := rule(2)
+		r.IP = i
+		out.Rules = append(out.Rules, r)
+	}
+}
+
+// scopeRuleTag tags rule n of a lane scoped to groups. Lane IDs hold no dash, so the
+// tags of two lanes never meet.
+func scopeRuleTag(lane string, n int) string { return fmt.Sprintf("%s%s-%d", scopeRulePrefix, lane, n) }
 
 // addBalancerRule appends domain + IP rules routing matched traffic to a
 // balancer tag (the health-probed proxy/Opera/Hola pools).

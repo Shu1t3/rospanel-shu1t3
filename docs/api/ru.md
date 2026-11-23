@@ -638,7 +638,8 @@ HWID, кнопка Happ — это зашифрованная ссылка, ко
 | `POST` | `/v1/alerts` | Добавить правило: `name`, `metric`, `op` (`gt` / `lt`), `threshold`, `for_secs` (сколько условие держится до срабатывания), `node_id` (-1 — каждый сервер, 0 — мастер), `enabled`. |
 | `POST` | `/v1/alerts/{id}` | Заменить настройки правила. |
 | `DELETE` | `/v1/alerts/{id}` | Удалить правило; его история остаётся. |
-| `GET` | `/v1/nodes/{id}/logs` | Последние строки лога ноды. |
+| `GET` | `/v1/nodes/{id}/logs` | Последние строки лога сервера (0 — мастер). |
+| `GET` | `/v1/logs` | Последние строки лога самой панели. |
 
 **Регистрация ноды** — тело `{ "name": "NL #1", "host": "nl1.example.com" }`. Ответ
 несёт id ноды, одноразовый join-токен и готовую команду установки для свежего
@@ -802,7 +803,7 @@ Swagger. `shadowsocks` — это Shadowsocks-2022 (`method` выбирает AE
 
 **Грант-токен** называет одно подключение:
 
-- `builtin:<server_id>:<lane>` — встроенный лейн, где `<lane>` — это `vless`,
+- `builtin:<server_id>:<lane>` — встроенный лейн, где `<lane>` — это `vless`, `xhttp`,
   `reality`, `hysteria2`, `naive`, `trusttunnel`, `anytls`, `mieru`, `awg` или `mtproto`, а
   `<server_id>` — `0` для мастера или id ноды из `GET /v1/nodes`.
 - `inbound:<id>` — свой инбаунд, по id из `GET /v1/servers/{id}/inbounds`.
@@ -1201,6 +1202,7 @@ GET $BASE/v1/nodes/{id}/health → диагностика одного серв�
 POST $BASE/v1/nodes/{id}/reach → {"host": …, "port": 443, "countries": [{"code": "RU", "ok": 9, "blocked": 1, "failed": 0, "probes": […]}]}
 POST $BASE/v1/reach {"countries": ["RU", "CN", "IR"], "probes": 10, "every": 60, "threshold": 50}  (every 0 = только по запросу)
 GET $BASE/v1/nodes/{id}/logs   → последние строки лога ноды
+GET $BASE/v1/logs              → строки лога самой панели
 GET $BASE/v1/backup/info       → что содержал бы бэкап, сделанный сейчас
 GET $BASE/v1/backup            → скачать этот бэкап (тело .tar.gz, не JSON)
 GET $BASE/v1/metrics           → выдача для Prometheus (текст, не JSON)
@@ -1459,7 +1461,7 @@ curl -sS -X DELETE "$BASE/v1/users/5" -H "Authorization: Bearer $KEY"
 | `incident.updated` | его отредактировали, опубликовали шаг его хода (`data.update`: `stage`, `body`, `created_at`) или отозвали один (без `data.update`; `data.updates` — ход в текущем виде) |
 | `incident.resolved` | его разрешили или работы отметили завершёнными; окно, которое просто закрывается по `ends_at`, ничего не шлёт |
 | `incident.deleted` | его удалили; `data` — инцидент в том виде, каким он был |
-| `broadcast.sent` | рассылка ушла — одна доставка на рассылку: `data.id`, `data.text`, `data.buttons`, `data.audience`, `data.media_kind`/`data.media_name`, `data.telegram_recipients` (чаты, в которые её шлёт бот), `data.users` (`id`, `external_id`) — аккаунты из аудитории, до которых бот не достаёт, кроме тех, кто выключил рассылки в боте. С подпиской на это событие рассылки работают при выключенном боте (только текст) |
+| `broadcast.sent` | рассылка ушла — одна доставка на рассылку: `data.id`, `data.text`, `data.buttons`, `data.audience`, `data.group_id` (только когда рассылка сужена до группы доступа), `data.media_kind`/`data.media_name`, `data.telegram_recipients` (чаты, в которые её шлёт бот), `data.users` (`id`, `external_id`) — аккаунты из аудитории, до которых бот не достаёт, кроме тех, кто выключил рассылки в боте. С подпиской на это событие рассылки работают при выключенном боте (только текст) |
 
 ## Формат доставки
 

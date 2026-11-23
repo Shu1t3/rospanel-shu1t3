@@ -40,7 +40,7 @@ func (m *Manager) CreateBroadcast(ctx context.Context, b *model.Broadcast) (*mod
 	if b.Audience == "" {
 		b.Audience = model.AudienceAll
 	}
-	if err := m.validateBroadcast(b); err != nil {
+	if err := validateBroadcast(b); err != nil {
 		return nil, err
 	}
 	now := time.Now().Unix()
@@ -62,6 +62,10 @@ func (m *Manager) CreateBroadcast(ctx context.Context, b *model.Broadcast) (*mod
 	b.CreatedBy = actor.From(ctx).Name
 	if b.ScheduledAt > 0 {
 		if _, err := m.broadcastChannels(b, set); err != nil {
+			return nil, err
+		}
+		// Its audience is read when it goes out; the group must exist now.
+		if _, err := m.resolveAudience(b.Audience, b.GroupID); err != nil {
 			return nil, err
 		}
 		b.HookUsers = 0
@@ -122,15 +126,19 @@ func (m *Manager) broadcastAudience(b *model.Broadcast, set *model.Settings) ([]
 	if err != nil {
 		return nil, nil, err
 	}
+	aud, err := m.resolveAudience(b.Audience, b.GroupID)
+	if err != nil {
+		return nil, nil, err
+	}
 	var chats []int64
 	if bot {
-		if chats, err = m.audienceChats(b.Audience); err != nil {
+		if chats, err = m.audienceChats(aud); err != nil {
 			return nil, nil, err
 		}
 	}
 	var hookUsers []model.User
 	if m.webhookWanted(model.WebhookBroadcastSent) {
-		if hookUsers, err = m.audienceHookUsers(b.Audience, bot); err != nil {
+		if hookUsers, err = m.audienceHookUsers(aud, bot); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -268,21 +276,30 @@ func (m *Manager) emitBroadcast(b *model.Broadcast, users []model.User) {
 	if b.MediaKind != "" {
 		d["media_kind"], d["media_name"] = b.MediaKind, b.MediaName
 	}
+	if b.GroupID != 0 {
+		d["group_id"] = b.GroupID
+	}
 	m.EmitWebhook(model.WebhookBroadcastSent, d)
 }
 
-func (m *Manager) validateBroadcast(b *model.Broadcast) error {
-	if !model.ValidAudience(b.Audience) {
+// validateBroadcastAudience refuses an audience the panel can't resolve, and a group
+// on the one audience that has no accounts to be members.
+func validateBroadcastAudience(kind string, groupID int64) error {
+	if !model.ValidAudience(kind) {
 		return invalidCode("err.unknownAudience", "неизвестная аудитория")
 	}
-	if gid, ok := model.AudienceGroupID(b.Audience); ok {
-		g, err := m.store.GetGroup(gid)
-		if err != nil {
-			return err
-		}
-		if g == nil {
-			return invalidCode("err.groupNotFound", "группа не найдена")
-		}
+	if groupID < 0 {
+		return invalidCode("err.groupNotFound", "группа не найдена")
+	}
+	if groupID != 0 && kind == model.AudienceUnlinked {
+		return invalidCode("err.groupNeedsAccount", "у получателей без аккаунта нет групп — выберите другую аудиторию")
+	}
+	return nil
+}
+
+func validateBroadcast(b *model.Broadcast) error {
+	if err := validateBroadcastAudience(b.Audience, b.GroupID); err != nil {
+		return err
 	}
 	switch b.MediaKind {
 	case "", "photo", "document":
@@ -316,10 +333,51 @@ func (m *Manager) validateBroadcast(b *model.Broadcast) error {
 	return nil
 }
 
+// bcAudience is who a broadcast is for: an audience, narrowed to the members of one
+// access group when members is set.
+type bcAudience struct {
+	kind    string
+	members map[int64]bool // nil: no group
+}
+
+// keeps reports whether an account belongs to the audience.
+func (a bcAudience) keeps(u model.User, now int64) bool {
+	if a.members != nil && !a.members[u.ID] {
+		return false
+	}
+	return audienceKeeps(a.kind, u, now)
+}
+
+// resolveAudience validates an audience and its group, and reads the group's
+// members. A deleted group is refused, so a scheduled broadcast to it is cancelled
+// rather than sent to nobody.
+func (m *Manager) resolveAudience(kind string, groupID int64) (bcAudience, error) {
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		kind = model.AudienceAll
+	}
+	if err := validateBroadcastAudience(kind, groupID); err != nil {
+		return bcAudience{}, err
+	}
+	a := bcAudience{kind: kind}
+	if groupID == 0 {
+		return a, nil
+	}
+	members, ok, err := m.store.GroupMemberSet(groupID)
+	if err != nil {
+		return bcAudience{}, err
+	}
+	if !ok {
+		return bcAudience{}, invalidCode("err.groupNotFound", "группа не найдена")
+	}
+	a.members = members
+	return a, nil
+}
+
 // audienceChats resolves an audience to chat ids. The user-status filters are
 // applied here rather than in SQL because status is derived on read (see
 // store.deriveStatus) and does not exist as a queryable column.
-func (m *Manager) audienceChats(audience string) ([]int64, error) {
+func (m *Manager) audienceChats(aud bcAudience) ([]int64, error) {
 	subs, err := m.store.ListReachableSubscribers()
 	if err != nil {
 		return nil, err
@@ -331,18 +389,6 @@ func (m *Manager) audienceChats(audience string) ([]int64, error) {
 		return nil, err
 	}
 	byID, byChat := rosterMaps(users)
-
-	var groupMembers map[int64]bool
-	if gid, ok := model.AudienceGroupID(audience); ok {
-		memberIDs, err := m.store.GroupMemberIDs(gid)
-		if err != nil {
-			return nil, err
-		}
-		groupMembers = make(map[int64]bool, len(memberIDs))
-		for _, uid := range memberIDs {
-			groupMembers[uid] = true
-		}
-	}
 
 	now := time.Now().Unix()
 	out := make([]int64, 0, len(subs))
@@ -358,14 +404,12 @@ func (m *Manager) audienceChats(audience string) ([]int64, error) {
 		}
 		keep := false
 		switch {
-		case audience == model.AudienceAll:
-			keep = true
-		case audience == model.AudienceUnlinked:
+		case aud.kind == model.AudienceUnlinked:
 			keep = !linked
-		case groupMembers != nil:
-			keep = linked && groupMembers[u.ID]
+		case aud.kind == model.AudienceAll && aud.members == nil:
+			keep = true
 		default:
-			keep = linked && audienceKeeps(audience, u, now)
+			keep = linked && aud.keeps(u, now)
 		}
 		if keep {
 			out = append(out, s.ChatID)
@@ -434,7 +478,7 @@ func audienceKeeps(audience string, u model.User, now int64) bool {
 // to: every one in it the bot does not reach (no Telegram, a Telegram that blocked
 // the bot or never started it, or the bot off), except who turned mailings off in
 // the bot.
-func (m *Manager) audienceHookUsers(audience string, bot bool) ([]model.User, error) {
+func (m *Manager) audienceHookUsers(aud bcAudience, bot bool) ([]model.User, error) {
 	users, err := m.store.ListUsers()
 	if err != nil {
 		return nil, err
@@ -458,26 +502,9 @@ func (m *Manager) audienceHookUsers(audience string, bot bool) ([]model.User, er
 		}
 	}
 	now := time.Now().Unix()
-	var groupMembers map[int64]bool
-	if gid, ok := model.AudienceGroupID(audience); ok {
-		memberIDs, err := m.store.GroupMemberIDs(gid)
-		if err != nil {
-			return nil, err
-		}
-		groupMembers = make(map[int64]bool, len(memberIDs))
-		for _, uid := range memberIDs {
-			groupMembers[uid] = true
-		}
-	}
 	var out []model.User
 	for _, u := range users {
-		match := false
-		if groupMembers != nil {
-			match = groupMembers[u.ID]
-		} else {
-			match = audienceKeeps(audience, u, now)
-		}
-		if reached[u.ID] || u.MailingOff || (u.TgChatID != 0 && optedOut[u.TgChatID]) || !match {
+		if reached[u.ID] || u.MailingOff || (u.TgChatID != 0 && optedOut[u.TgChatID]) || !aud.keeps(u, now) {
 			continue
 		}
 		out = append(out, u)
@@ -487,19 +514,19 @@ func (m *Manager) audienceHookUsers(audience string, bot bool) ([]model.User, er
 
 // AudienceHookPreview is how many accounts an audience sends to the external system
 // right now (0 while no webhook takes broadcast.sent).
-func (m *Manager) AudienceHookPreview(audience string) (int, error) {
-	audience = strings.TrimSpace(audience)
-	if audience == "" {
-		audience = model.AudienceAll
-	}
-	if !model.ValidAudience(audience) || !m.webhookWanted(model.WebhookBroadcastSent) {
+func (m *Manager) AudienceHookPreview(audience string, groupID int64) (int, error) {
+	if !m.webhookWanted(model.WebhookBroadcastSent) {
 		return 0, nil
+	}
+	aud, err := m.resolveAudience(audience, groupID)
+	if err != nil {
+		return 0, err
 	}
 	set, err := m.store.GetSettings()
 	if err != nil {
 		return 0, err
 	}
-	users, err := m.audienceHookUsers(audience, set.TGUserBotEnabled && strings.TrimSpace(set.TGUserBotToken) != "")
+	users, err := m.audienceHookUsers(aud, set.TGUserBotEnabled && strings.TrimSpace(set.TGUserBotToken) != "")
 	return len(users), err
 }
 
@@ -510,28 +537,22 @@ func (m *Manager) AudienceHookPreview(audience string) (int, error) {
 // unrecognised audience resolved to an empty list and previewed as "0 recipients" —
 // while the launch itself would either refuse it or, for an empty string, fall back
 // to everyone. A preview that disagrees with the send is worse than no preview.
-func (m *Manager) AudiencePreview(audience string) (int, error) {
-	audience = strings.TrimSpace(audience)
-	if audience == "" {
-		audience = model.AudienceAll
+func (m *Manager) AudiencePreview(audience string, groupID int64) (int, error) {
+	aud, err := m.resolveAudience(audience, groupID)
+	if err != nil {
+		return 0, err
 	}
-	if !model.ValidAudience(audience) {
-		return 0, invalidCode("err.unknownAudience", "неизвестная аудитория")
-	}
-	if gid, ok := model.AudienceGroupID(audience); ok {
-		g, err := m.store.GetGroup(gid)
-		if err != nil {
-			return 0, err
-		}
-		if g == nil {
-			return 0, invalidCode("err.groupNotFound", "группа не найдена")
-		}
-	}
-	chats, err := m.audienceChats(audience)
+	chats, err := m.audienceChats(aud)
 	if err != nil {
 		return 0, err
 	}
 	return len(chats), nil
+}
+
+// BroadcastGroups lists the access groups a broadcast can be narrowed to: id, name
+// and member count, readable with the broadcasts permission alone.
+func (m *Manager) BroadcastGroups() ([]model.Group, error) {
+	return m.store.GroupNames()
 }
 
 // ListBroadcasts returns the most recent broadcasts with their progress.
@@ -564,7 +585,7 @@ func (m *Manager) ValidateBroadcast(b *model.Broadcast) error {
 	if strings.TrimSpace(b.Audience) == "" {
 		b.Audience = model.AudienceAll
 	}
-	return m.validateBroadcast(b)
+	return validateBroadcast(b)
 }
 
 // SetBroadcastStatus applies an operator control (pause / resume / cancel). Terminal

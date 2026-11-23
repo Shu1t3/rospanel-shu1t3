@@ -172,7 +172,23 @@ func (m *Manager) UnbindDevice(ctx context.Context, userID int64, hwid string) (
 	}
 	m.audit(ctx, userID, model.EventDeviceUnbound, map[string]any{"hwid": hwid})
 	m.emitUserWebhook(model.WebhookUserDeviceUnbound, userID, map[string]any{"hwid": hwid, "devices": 1})
+	// The AmneziaWG key made for that client goes with it: it was the client's.
+	if gone, err := m.store.DeleteAWGDeviceByHWID(userID, hwid); err != nil {
+		logErr("device unbind: awg key", "user", userID, "err", err)
+	} else if gone {
+		m.awgKeysChanged()
+	}
 	return true, nil
+}
+
+// dropHWIDAWGKeys removes the tunnel keys a user's subscription clients were given,
+// once those clients are released.
+func (m *Manager) dropHWIDAWGKeys(userID int64) {
+	if n, err := m.store.DeleteHWIDAWGKeys(userID); err != nil {
+		logErr("devices: clients' tunnel keys", "user", userID, "err", err)
+	} else if n > 0 {
+		m.awgKeysChanged()
+	}
 }
 
 // UnbindAllDevices releases every device of a user — the "they replaced their
@@ -182,6 +198,7 @@ func (m *Manager) UnbindAllDevices(ctx context.Context, userID int64) (int64, er
 	if err != nil || n == 0 {
 		return n, err
 	}
+	m.dropHWIDAWGKeys(userID)
 	m.audit(ctx, userID, model.EventDeviceUnbound, map[string]any{"devices": n})
 	m.emitUserWebhook(model.WebhookUserDeviceUnbound, userID, map[string]any{"devices": n})
 	return n, nil
@@ -201,6 +218,14 @@ func (m *Manager) PurgeIdleDevices() {
 		return
 	}
 	cutoff := time.Now().AddDate(0, 0, -set.HWIDTTLDays).Unix()
+	// The tunnel keys those clients were given go with them (first: the device rows
+	// are what says which keys were theirs).
+	if k, err := m.store.PurgeIdleAWGKeys(cutoff); err != nil {
+		logErr("devices: idle clients' tunnel keys", "err", err)
+	} else if k > 0 {
+		logInfo("devices: forgot idle clients' tunnel keys", "count", k)
+		m.awgKeysChanged()
+	}
 	n, err := m.store.PurgeDevices(cutoff)
 	if err != nil {
 		logErr("devices: retention sweep failed", "err", err)
@@ -257,5 +282,28 @@ func (m *Manager) SetDeviceCountMode(mode string) error {
 	// live over its API. TriggerReconcile would regenerate and RESTART Xray, dropping
 	// every session on the box because an operator picked an item from a dropdown.
 	m.TriggerUserSync()
+	return nil
+}
+
+// SetUserHWIDLimit changes how many installs may fetch a user's subscription: 0 = the
+// panel-wide default, model.HWIDLimitUnlimited = the built-in ceiling, 1..MaxDeviceLimit
+// = that many. It touches only the HWID roster's cap, never the address limit, and
+// releases nobody already bound: a lowered cap refuses the next new install.
+func (m *Manager) SetUserHWIDLimit(ctx context.Context, id int64, n int) error {
+	if err := ValidateHWIDLimit(n); err != nil {
+		return err
+	}
+	u, err := m.store.GetUser(id)
+	if err != nil {
+		return err
+	}
+	if u.HWIDLimit == n {
+		return nil
+	}
+	if err := m.store.SetUserHWIDLimit(id, n); err != nil {
+		return err
+	}
+	m.audit(ctx, id, model.EventUserLimits, map[string]any{"hwid_limit": n, "was": u.HWIDLimit})
+	m.emitUserWebhook(model.WebhookUserLimitsChanged, id, nil)
 	return nil
 }

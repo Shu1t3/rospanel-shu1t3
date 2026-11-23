@@ -12,6 +12,7 @@ import (
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/auth"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/backup"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/netinfo"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
 )
@@ -76,7 +77,7 @@ func (rt *Router) factoryReset(w http.ResponseWriter, r *http.Request) {
 	}
 	url := ""
 	if host != "" {
-		url = "https://" + host + "/rospanel/"
+		url = "https://" + model.URLHost(host) + "/rospanel/"
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"url": url})
 	scheduleRestart()

@@ -29,10 +29,13 @@ const maxBroadcastUpload = 20 << 20
 
 // broadcastForm is the composed message as the SPA sends it, in the "payload" field.
 type broadcastForm struct {
-	Text        string               `json:"text"`
-	Audience    string               `json:"audience"`
-	Buttons     []broadcastButtonDTO `json:"buttons"`
-	ScheduledAt int64                `json:"scheduled_at"`
+	Text     string                  `json:"text"`
+	Audience string                  `json:"audience"`
+	Buttons  []model.BroadcastButton `json:"buttons"`
+	// GroupID narrows the audience to one access group's members; 0 is none.
+	GroupID int64 `json:"group_id"`
+	// ScheduledAt sends it later (unix seconds); 0 sends it now.
+	ScheduledAt int64 `json:"scheduled_at"`
 }
 
 // parseBroadcastForm reads the multipart body into a broadcast plus the attachment
@@ -53,7 +56,8 @@ func parseBroadcastForm(w http.ResponseWriter, r *http.Request) (*model.Broadcas
 	b := &model.Broadcast{
 		Text:        form.Text,
 		Audience:    form.Audience,
-		Buttons:     fromBroadcastButtonDTOs(form.Buttons),
+		Buttons:     form.Buttons,
+		GroupID:     form.GroupID,
 		ScheduledAt: form.ScheduledAt,
 	}
 	file, header, err := r.FormFile("media")
@@ -106,19 +110,44 @@ func (rt *Router) getBroadcast(w http.ResponseWriter, r *http.Request, id int64)
 func (rt *Router) broadcastAudience(w http.ResponseWriter, r *http.Request) {
 	// The bot's recipients may be none at all while it is off; the accounts the
 	// external system writes to are counted beside them.
+	q := r.URL.Query()
+	audience := q.Get("audience")
+	var groupID int64
+	if g := q.Get("group_id"); g != "" {
+		var err error
+		if groupID, err = strconv.ParseInt(g, 10, 64); err != nil {
+			writeErrCode(w, http.StatusBadRequest, "err.badID", "неверный id")
+			return
+		}
+	}
 	n := 0
 	if set, err := rt.mgr.Settings(); err == nil && set.TGUserBotEnabled && strings.TrimSpace(set.TGUserBotToken) != "" {
-		if n, err = rt.mgr.AudiencePreview(r.URL.Query().Get("audience")); err != nil {
+		if n, err = rt.mgr.AudiencePreview(audience, groupID); err != nil {
 			writeManagerErr(w, err)
 			return
 		}
 	}
-	h, err := rt.mgr.AudienceHookPreview(r.URL.Query().Get("audience"))
+	h, err := rt.mgr.AudienceHookPreview(audience, groupID)
 	if err != nil {
 		writeManagerErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"count": n, "hook_users": h})
+}
+
+// broadcastGroups lists the access groups a broadcast can be narrowed to, for an
+// operator who may send broadcasts but not open the groups page.
+func (rt *Router) broadcastGroups(w http.ResponseWriter, _ *http.Request) {
+	groups, err := rt.mgr.BroadcastGroups()
+	if err != nil {
+		writeManagerErr(w, err)
+		return
+	}
+	out := make([]map[string]any, len(groups))
+	for i, g := range groups {
+		out[i] = map[string]any{"id": g.ID, "name": g.Name, "members": g.Members}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // createBroadcast validates, snapshots the audience, stores the attachment, and only

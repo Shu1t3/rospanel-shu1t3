@@ -29,6 +29,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/h2fix"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/hostfw"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/http80"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/logbuf"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/migration"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/naive"
@@ -51,6 +52,7 @@ import (
 // generate the Xray config, start the background loops and serve the admin API +
 // masquerade/subscription surface until a termination signal arrives.
 func runServer(dataDir string) {
+	splitServerLog(dataDir) // the master: lines about its servers go to their logs
 	log.Printf("startup: RosPanel %s booting (data dir %s)", version.Version, dataDir)
 	logMemoryLimit(tuning.SetMemoryLimit(panelMemoryShare, xray.MemoryLimit))
 	adminAddr := env("ROSPANEL_ADMIN_ADDR", "127.0.0.1:8080")
@@ -107,6 +109,10 @@ func runServer(dataDir string) {
 	defer st.Close()
 	if err := st.ReencryptSensitiveFields(); err != nil {
 		log.Printf("[WARN] reencrypt secrets: %v", err)
+	}
+	// The VLESS-XHTTP-TLS lane's secret path, made once, before any config is built.
+	if err := st.EnsureXHTTPPath(auth.RandomXHTTPPath); err != nil {
+		log.Printf("[WARN] xhttp path: %v", err)
 	}
 
 	// Port 80, before anything asks for a certificate. A host that serves a
@@ -184,6 +190,7 @@ func runServer(dataDir string) {
 	default:
 		log.Printf("bbr: not enabled (unavailable on this kernel or insufficient perms): %v", err)
 	}
+	logConntrack(tuning.EnsureConntrack(tuning.RAMMiB()))
 
 	// Geo databases for geosite/geoip routing rules. Done synchronously before the
 	// first reconcile so the builtin geoip rule resolves and Xray can start.
@@ -195,6 +202,7 @@ func runServer(dataDir string) {
 	// not hold up its start.
 
 	sup := xray.NewSupervisor(xrayBin, xrayConfig, geoDir)
+	sup.UseLogHub(logbuf.Server) // Xray and the panel's lines about this host, one log
 	// The TCP-TLS lane's public port belongs to the front, which answers plain HTTP the
 	// way the decoy's claimed Caddy would and hands everything else to Xray on loopback
 	// (see tlsfront). Taken before the first reconcile starts Xray, which then no longer
@@ -454,6 +462,14 @@ const panelMemoryShare = 0.5
 
 // logMemoryLimit says what SetMemoryLimit decided, so an operator reading the boot log
 // can tell a slow, collecting panel from one that has room.
+// logConntrack says what EnsureConntrack changed; an unchanged table says nothing.
+func logConntrack(c tuning.Conntrack, err error) {
+	if err == nil && c.Changed {
+		slog.Info("conntrack: sized for a proxy", "max", c.Max, "was", c.WasMax,
+			"tcp_established_timeout", c.Established, "was_timeout", c.Was)
+	}
+}
+
 func logMemoryLimit(m tuning.Memory) {
 	switch {
 	case m.Basis == "GOMEMLIMIT":
@@ -690,6 +706,7 @@ func retentionLoop(mgr *core.Manager) func(context.Context) {
 		mgr.PurgeOldAbuse()           // blocklist matches past their (short) window
 		mgr.PurgeOldTraffic()         // per-day traffic history past a year
 		mgr.PurgeOldUptime()          // status-page history past its window
+		mgr.PurgeOldLoad()            // server load charts past their window
 		mgr.PurgeExpiredUsers()       // no-op unless the operator set a grace period
 		mgr.PurgeDeletedNodes()       // reclaim node tombstones past their grace window
 	}
@@ -816,8 +833,7 @@ func bootstrapPanel(st *store.Store) (string, error) {
 	}
 	if n == 0 {
 		// Predictable default login; the first-run wizard forces a password change.
-		const password = "admin"
-		hash, err := auth.HashPassword(password)
+		hash, err := auth.HashPassword(defaultAdminPassword)
 		if err != nil {
 			return "", err
 		}
@@ -832,19 +848,23 @@ func bootstrapPanel(st *store.Store) (string, error) {
 		if _, err := st.CreateAdmin("admin", hash, model.RoleOwner, true); err != nil {
 			return "", err
 		}
-		printFirstRunBanner(set.Host, secret, "admin", password)
+		printFirstRunBanner(set.Host, secret)
 	}
 	return secret, nil
 }
 
-func printFirstRunBanner(host, secret, username, password string) {
+// defaultAdminPassword is the public bootstrap password: requireAuth lets the
+// account do nothing but change it, so the banner prints it as plain text.
+const defaultAdminPassword = "admin"
+
+func printFirstRunBanner(host, secret string) {
 	bar := strings.Repeat("=", 64)
 	log.Printf("\n%s\n FIRST-RUN CREDENTIALS (shown only once — save them now)\n%s\n"+
 		" Panel path : /%s/\n"+
 		" Full URL   : https://%s/%s/\n"+
-		" Username   : %s\n"+
-		" Password   : %s\n%s",
-		bar, bar, secret, host, secret, username, password, bar)
+		" Username   : admin\n"+
+		" Password   : admin (change it on first login)\n%s",
+		bar, bar, secret, model.URLHost(host), secret, bar)
 }
 
 // panelDest converts the admin listen address into the loopback dest Xray uses

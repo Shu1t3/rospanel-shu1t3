@@ -168,20 +168,23 @@ func toAdminSessionDTOs(sessions []store.AdminSession) []adminSessionDTO {
 // --- Billing DTOs ---
 
 type tariffPlanDTO struct {
-	ID          int64   `json:"id"`
-	Slug        string  `json:"slug"`
-	Name        string  `json:"name"`
-	PriceRub    int     `json:"price_rub"`
-	PeriodDays  int     `json:"period_days"`
-	DataLimit   int64   `json:"data_limit"`
-	DeviceLimit int     `json:"device_limit"`
-	SpeedLimit  int     `json:"speed_limit"`
-	ResetPeriod string  `json:"reset_period"`
-	SortOrder   int     `json:"sort_order"`
-	Enabled     bool    `json:"enabled"`
-	GroupIDs    []int64 `json:"group_ids"`
-	DevicePrice int     `json:"device_price"`
-	DeviceMax   int     `json:"device_max"`
+	ID              int64   `json:"id"`
+	Slug            string  `json:"slug"`
+	Name            string  `json:"name"`
+	PriceRub        int     `json:"price_rub"`
+	PeriodDays      int     `json:"period_days"`
+	DataLimit       int64   `json:"data_limit"`
+	DeviceLimit     int     `json:"device_limit"`
+	HWIDLimit       int     `json:"hwid_limit"`
+	SpeedLimit      int     `json:"speed_limit"`
+	ResetPeriod     string  `json:"reset_period"`
+	SortOrder       int     `json:"sort_order"`
+	Enabled         bool    `json:"enabled"`
+	GroupIDs        []int64 `json:"group_ids"`
+	DevicePrice     int     `json:"device_price"`
+	DeviceMax       int     `json:"device_max"`
+	RenewWindowDays int     `json:"renew_window_days"`
+	MaxPrepaidDays  int     `json:"max_prepaid_days"`
 }
 
 func toTariffPlanDTO(p *model.TariffPlan) tariffPlanDTO {
@@ -193,20 +196,23 @@ func toTariffPlanDTO(p *model.TariffPlan) tariffPlanDTO {
 		groupIDs = []int64{}
 	}
 	return tariffPlanDTO{
-		ID:          p.ID,
-		Slug:        p.Slug,
-		Name:        p.Name,
-		PriceRub:    p.PriceRub,
-		PeriodDays:  p.PeriodDays,
-		DataLimit:   p.DataLimit,
-		DeviceLimit: p.DeviceLimit,
-		SpeedLimit:  p.SpeedLimit,
-		ResetPeriod: p.ResetPeriod,
-		SortOrder:   p.SortOrder,
-		Enabled:     p.Enabled,
-		GroupIDs:    groupIDs,
-		DevicePrice: p.DevicePrice,
-		DeviceMax:   p.DeviceMax,
+		ID:              p.ID,
+		Slug:            p.Slug,
+		Name:            p.Name,
+		PriceRub:        p.PriceRub,
+		PeriodDays:      p.PeriodDays,
+		DataLimit:       p.DataLimit,
+		DeviceLimit:     p.DeviceLimit,
+		HWIDLimit:       p.HWIDLimit,
+		SpeedLimit:      p.SpeedLimit,
+		ResetPeriod:     p.ResetPeriod,
+		SortOrder:       p.SortOrder,
+		Enabled:         p.Enabled,
+		GroupIDs:        groupIDs,
+		DevicePrice:     p.DevicePrice,
+		DeviceMax:       p.DeviceMax,
+		RenewWindowDays: p.RenewWindowDays,
+		MaxPrepaidDays:  p.MaxPrepaidDays,
 	}
 }
 
@@ -227,20 +233,23 @@ func fromTariffPlanDTO(d tariffPlanDTO) model.TariffPlan {
 		groupIDs = []int64{}
 	}
 	return model.TariffPlan{
-		ID:          d.ID,
-		Slug:        d.Slug,
-		Name:        d.Name,
-		PriceRub:    d.PriceRub,
-		PeriodDays:  d.PeriodDays,
-		DataLimit:   d.DataLimit,
-		DeviceLimit: d.DeviceLimit,
-		SpeedLimit:  d.SpeedLimit,
-		ResetPeriod: d.ResetPeriod,
-		SortOrder:   d.SortOrder,
-		Enabled:     d.Enabled,
-		GroupIDs:    groupIDs,
-		DevicePrice: d.DevicePrice,
-		DeviceMax:   d.DeviceMax,
+		ID:              d.ID,
+		Slug:            d.Slug,
+		Name:            d.Name,
+		PriceRub:        d.PriceRub,
+		PeriodDays:      d.PeriodDays,
+		DataLimit:       d.DataLimit,
+		DeviceLimit:     d.DeviceLimit,
+		HWIDLimit:       d.HWIDLimit,
+		SpeedLimit:      d.SpeedLimit,
+		ResetPeriod:     d.ResetPeriod,
+		SortOrder:       d.SortOrder,
+		Enabled:         d.Enabled,
+		GroupIDs:        groupIDs,
+		DevicePrice:     d.DevicePrice,
+		DeviceMax:       d.DeviceMax,
+		RenewWindowDays: d.RenewWindowDays,
+		MaxPrepaidDays:  d.MaxPrepaidDays,
 	}
 }
 
@@ -410,23 +419,26 @@ func fromBroadcastButtonDTOs(buttons []broadcastButtonDTO) []model.BroadcastButt
 }
 
 type broadcastDTO struct {
-	HookUsers  int                  `json:"hook_users"`
-	ID         int64                `json:"id"`
-	CreatedBy  string               `json:"created_by"`
-	Text       string               `json:"text"`
-	MediaKind  string               `json:"media_kind"`
-	MediaName  string               `json:"media_name"`
-	Buttons    []broadcastButtonDTO `json:"buttons"`
-	Audience   string               `json:"audience"`
-	Status     string               `json:"status"`
-	CreatedAt  int64                `json:"created_at"`
-	StartedAt  int64                `json:"started_at"`
-	FinishedAt int64                `json:"finished_at"`
-	Total      int                  `json:"total"`
-	Sent       int                  `json:"sent"`
-	Failed     int                  `json:"failed"`
-	Blocked    int                  `json:"blocked"`
-	Skipped    int                  `json:"skipped"`
+	HookUsers   int                  `json:"hook_users"`
+	ID          int64                `json:"id"`
+	CreatedBy   string               `json:"created_by"`
+	Text        string               `json:"text"`
+	MediaKind   string               `json:"media_kind"`
+	MediaName   string               `json:"media_name"`
+	Buttons     []broadcastButtonDTO `json:"buttons"`
+	Audience    string               `json:"audience"`
+	GroupID     int64                `json:"group_id"`
+	GroupName   string               `json:"group_name"`
+	Status      string               `json:"status"`
+	CreatedAt   int64                `json:"created_at"`
+	StartedAt   int64                `json:"started_at"`
+	FinishedAt  int64                `json:"finished_at"`
+	ScheduledAt int64                `json:"scheduled_at"`
+	Total       int                  `json:"total"`
+	Sent        int                  `json:"sent"`
+	Failed      int                  `json:"failed"`
+	Blocked     int                  `json:"blocked"`
+	Skipped     int                  `json:"skipped"`
 }
 
 func toBroadcastDTO(b *model.Broadcast) broadcastDTO {
@@ -434,23 +446,26 @@ func toBroadcastDTO(b *model.Broadcast) broadcastDTO {
 		return broadcastDTO{Buttons: []broadcastButtonDTO{}}
 	}
 	return broadcastDTO{
-		ID:         b.ID,
-		HookUsers:  b.HookUsers,
-		CreatedBy:  b.CreatedBy,
-		Text:       b.Text,
-		MediaKind:  b.MediaKind,
-		MediaName:  b.MediaName,
-		Buttons:    toBroadcastButtonDTOs(b.Buttons),
-		Audience:   b.Audience,
-		Status:     b.Status,
-		CreatedAt:  b.CreatedAt,
-		StartedAt:  b.StartedAt,
-		FinishedAt: b.FinishedAt,
-		Total:      b.Total,
-		Sent:       b.Sent,
-		Failed:     b.Failed,
-		Blocked:    b.Blocked,
-		Skipped:    b.Skipped,
+		ID:          b.ID,
+		HookUsers:   b.HookUsers,
+		CreatedBy:   b.CreatedBy,
+		Text:        b.Text,
+		MediaKind:   b.MediaKind,
+		MediaName:   b.MediaName,
+		Buttons:     toBroadcastButtonDTOs(b.Buttons),
+		Audience:    b.Audience,
+		GroupID:     b.GroupID,
+		GroupName:   b.GroupName,
+		Status:      b.Status,
+		CreatedAt:   b.CreatedAt,
+		StartedAt:   b.StartedAt,
+		FinishedAt:  b.FinishedAt,
+		ScheduledAt: b.ScheduledAt,
+		Total:       b.Total,
+		Sent:        b.Sent,
+		Failed:      b.Failed,
+		Blocked:     b.Blocked,
+		Skipped:     b.Skipped,
 	}
 }
 

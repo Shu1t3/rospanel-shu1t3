@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/core"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/i18n"
@@ -59,6 +60,8 @@ type (
 		PlanID   int64            `json:"plan_id"`
 		PlanName string           `json:"plan_name"`
 		Quotes   []core.PlanQuote `json:"quotes"`
+		// RenewOpensAt is when the renewal opens (unix seconds), 0 = it is open now.
+		RenewOpensAt int64 `json:"renew_opens_at"`
 	}
 	apiBalanceReq struct {
 		AmountKop int64  `json:"amount_kop"` // kopecks, either sign
@@ -186,8 +189,10 @@ func (rt *Router) apiUserSubscription(w http.ResponseWriter, r *http.Request, id
 	if hasTurnInbound(servers) {
 		_ = rt.mgr.ClaimTunnelIdentity(u) // the TURN link carries the user's tunnel key
 	}
+	devices := rt.buildDevices(*u, set, lang)
+	devices.AWG = rt.buildAWGKeys(*u, set, 0)
 	view, err := sub.PageView(*u, set, servers, rt.buildBilling(*u, set, lang, rt.mgr.PaymentMethods()),
-		rt.buildDevices(*u, set, lang), lang)
+		devices, lang)
 	if err != nil {
 		writeAPIManagerErr(w, err)
 		return
@@ -277,6 +282,12 @@ func (rt *Router) apiUserQuotes(w http.ResponseWriter, _ *http.Request, id int64
 			}
 		}
 	}
+	set, err := rt.mgr.Settings()
+	if err != nil {
+		writeAPIManagerErr(w, err)
+		return
+	}
+	now := time.Now().Unix()
 	out := []apiPlanQuotes{}
 	for i := range plans {
 		p := &plans[i]
@@ -284,7 +295,8 @@ func (rt *Router) apiUserQuotes(w http.ResponseWriter, _ *http.Request, id int64
 		if len(quotes) == 0 {
 			quotes = []core.PlanQuote{rt.mgr.QuotePlan(*u, p)}
 		}
-		out = append(out, apiPlanQuotes{PlanID: p.ID, PlanName: p.Name, Quotes: quotes})
+		out = append(out, apiPlanQuotes{PlanID: p.ID, PlanName: p.Name, Quotes: quotes,
+			RenewOpensAt: rt.mgr.RenewOpensAt(set, *u, p, now)})
 	}
 	writeAPIData(w, http.StatusOK, out)
 }

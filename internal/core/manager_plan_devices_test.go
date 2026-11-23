@@ -42,13 +42,13 @@ func TestPlanDeviceLimitValidAndMax(t *testing.T) {
 		}
 	}
 
-	// Negative device limit must be rejected.
+	// Negative device limit below IPLimitUnlimited must be rejected.
 	negPlan := &model.TariffPlan{
 		Slug:        "plan-neg",
 		Name:        "Neg Plan",
 		PriceRub:    100,
 		PeriodDays:  30,
-		DeviceLimit: -1,
+		DeviceLimit: model.IPLimitUnlimited - 1,
 	}
 	if err := m.SaveTariffPlan(negPlan); err == nil {
 		t.Fatal("saving plan with negative device_limit must be rejected")

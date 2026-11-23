@@ -65,7 +65,7 @@ func (s *Store) readSettings() (*model.Settings, error) {
 	var routingCfg, subRulesJSON, subDPIJSON string
 	var reachCountries string
 	var mtprotoEn int
-	var masterHideFull, masterHideOver, awgEn, naiveEn, mieruEn, anytlsEn, ttEn, hideOffline, subHappCrypt, subTGBind, subTGRebind, subShowClash, tgMailingSwitch, subPageEnabled int
+	var masterHideFull, masterHideOver, awgEn, naiveEn, mieruEn, anytlsEn, ttEn, xhttpEn, hideOffline, subHappCrypt, subTGBind, subTGRebind, subShowClash, tgMailingSwitch, subPageEnabled int
 	var awgParamsJSON, connPolicyJSON string
 	var walletEn, refFirstOnly, winbackEn, churnSurvey, autoUpdateNodes, blacklistEn, planChange int
 	var trafficPacksJSON, customAppsJSON, appLinksJSON, wizardAppsJSON string
@@ -101,7 +101,7 @@ func (s *Store) readSettings() (*model.Settings, error) {
 		       tg_admin_events, api_path,
 		       vless_name, reality_name, hysteria_name,
 		       local_backup_cron, local_backup_keep,
-		       sub_announce, user_autodelete_days, node_api_path, master_label,
+		       sub_announce, user_autodelete_days, node_api_path, master_label, master_note,
 		       geo_refresh_hours, iplist_refresh_hours,
 		       tg_support_enabled, tg_support_bot_token, tg_support_bot_username,
 		       tg_support_group_id, tg_support_greeting, tg_lang, tg_proxy, tg_proxy_mode,
@@ -109,7 +109,7 @@ func (s *Store) readSettings() (*model.Settings, error) {
 		       abuse_enabled, abuse_categories, abuse_custom, abuse_alert_min,
 		       abuse_warn_min, abuse_throttle_min, abuse_throttle_kbps, abuse_disable_min, abuse_hours,
 		       hwid_enabled, hwid_require, hwid_fallback_limit, hwid_ttl_days,
-		       device_count_mode,
+		       device_count_mode, ip_fallback_limit,
 		       sub_show_configs, status_enabled, status_path, sub_rules, maintenance_mode,
 		       probe_detect, watchdog_enabled, probe_block, sub_dpi,
 		       sub_order_mode, master_country, master_sort_weight, master_capacity, master_hide_when_full,
@@ -123,9 +123,10 @@ func (s *Store) readSettings() (*model.Settings, error) {
 		       blacklist_enabled, blacklist_url, blacklist_synced_at, blacklist_error,
 		       traffic_packs, plan_change, miniapp_path, tg_menu_url, sub_tg_bind, sub_tg_rebind,
 		       sub_page_url, sub_show_clash, legal_path, tg_mailing_switch,
-		       naive_enabled, naive_name,
+		       naive_enabled, naive_name, billing_return_url, renew_window_days, max_prepaid_days,
 		       mieru_enabled, mieru_port, mieru_transport, mieru_name,
 		       anytls_enabled, anytls_name, trusttunnel_enabled, trusttunnel_name,
+		       xhttp_enabled, xhttp_name, xhttp_path,
 		       reach_countries, reach_probes, reach_every, reach_threshold, reach_token,
 		       mtproto_enabled, mtproto_port, mtproto_name, mtproto_domain,
 		       sub_self_rotate, monthly_report_sent, sub_tg_rebind_hours, sub_page_enabled,
@@ -162,7 +163,7 @@ func (s *Store) readSettings() (*model.Settings, error) {
 		&st.TGAdminEvents, &st.APIPath,
 		&st.VLESSName, &st.RealityName, &st.HysteriaName,
 		&st.LocalBackupCron, &st.LocalBackupKeep,
-		&st.SubAnnounce, &st.UserAutoDeleteDays, &st.NodeAPIPath, &st.MasterLabel,
+		&st.SubAnnounce, &st.UserAutoDeleteDays, &st.NodeAPIPath, &st.MasterLabel, &st.MasterNote,
 		&st.GeoRefreshHours, &st.IPListRefreshHours,
 		&tgSupportEn, &st.TGSupportBotToken, &st.TGSupportBotUsername,
 		&st.TGSupportGroupID, &st.TGSupportGreeting, &st.TGLang, &st.TGProxy, &st.TGProxyMode,
@@ -171,7 +172,7 @@ func (s *Store) readSettings() (*model.Settings, error) {
 		&st.AbuseMeasures.WarnMin, &st.AbuseMeasures.ThrottleMin, &st.AbuseMeasures.ThrottleKbps,
 		&st.AbuseMeasures.DisableMin, &st.AbuseMeasures.Hours,
 		&hwidEn, &hwidRequire, &st.HWIDFallbackLimit, &st.HWIDTTLDays,
-		&st.DeviceCountMode,
+		&st.DeviceCountMode, &st.IPFallbackLimit,
 		&subShowConfigs, &statusEn, &st.StatusPath, &subRulesJSON, &maintenanceMode,
 		&probeDetect, &watchdogEnabled, &probeBlock, &subDPIJSON,
 		&st.SubOrderMode, &st.MasterPlacement.Country, &st.MasterPlacement.Weight,
@@ -187,9 +188,10 @@ func (s *Store) readSettings() (*model.Settings, error) {
 		&blacklistEn, &st.BlacklistURL, &st.BlacklistSyncedAt, &st.BlacklistError,
 		&trafficPacksJSON, &planChange, &st.MiniAppPath, &st.TGMenuURL, &subTGBind, &subTGRebind,
 		&st.SubPageURL, &subShowClash, &st.LegalPath, &tgMailingSwitch,
-		&naiveEn, &st.NaiveName,
+		&naiveEn, &st.NaiveName, &st.BillingReturnURL, &st.RenewWindowDays, &st.MaxPrepaidDays,
 		&mieruEn, &st.MieruPort, &st.MieruTransport, &st.MieruName,
 		&anytlsEn, &st.AnyTLSName, &ttEn, &st.TrustTunnelName,
+		&xhttpEn, &st.XHTTPName, &st.XHTTPPath,
 		&reachCountries, &st.Reach.Probes, &st.Reach.Every, &st.Reach.Threshold, &st.Reach.Token,
 		&mtprotoEn, &st.MTProtoPort, &st.MTProtoName, &st.MTProtoDomain,
 		&st.SubSelfRotateHours, &st.MonthlyReportSent, &st.SubTGRebindHours, &subPageEnabled,
@@ -225,6 +227,7 @@ func (s *Store) readSettings() (*model.Settings, error) {
 	st.MieruEnabled = mieruEn != 0
 	st.AnyTLSEnabled = anytlsEn != 0
 	st.TrustTunnelEnabled = ttEn != 0
+	st.XHTTPEnabled = xhttpEn != 0
 	st.MTProtoEnabled = mtprotoEn != 0
 	st.MieruTransport = model.MieruTransportOr(st.MieruTransport)
 	st.WalletEnabled = walletEn != 0
@@ -500,6 +503,9 @@ func (s *Store) SetFingerprints(vless, reality string) error {
 // SetAnyTLSName persists the AnyTLS lane's custom display name.
 func (s *Store) SetAnyTLSName(name string) error { return s.setSetting("anytls_name", name) }
 
+// SetXHTTPName persists the VLESS-XHTTP-TLS lane's custom display name.
+func (s *Store) SetXHTTPName(name string) error { return s.setSetting("xhttp_name", name) }
+
 // SetTrustTunnelName persists the TrustTunnel lane's custom display name.
 func (s *Store) SetTrustTunnelName(name string) error {
 	return s.setSetting("trusttunnel_name", name)
@@ -711,11 +717,11 @@ func (s *Store) SetHWIDSettings(st *model.Settings) error {
 	_, err := s.db.Exec(`
 		UPDATE settings SET
 			hwid_enabled = ?, hwid_require = ?,
-			hwid_fallback_limit = ?, hwid_ttl_days = ?,
+			hwid_fallback_limit = ?, hwid_ttl_days = ?, ip_fallback_limit = ?,
 			updated_at = unixepoch()
 		WHERE id = 1`,
 		boolToInt(st.HWIDEnabled), boolToInt(st.HWIDRequire),
-		st.HWIDFallbackLimit, st.HWIDTTLDays,
+		st.HWIDFallbackLimit, st.HWIDTTLDays, st.IPFallbackLimit,
 	)
 	return err
 }
@@ -759,6 +765,7 @@ var protocolColumn = map[string]string{
 	"mieru":       "mieru_enabled",
 	"anytls":      "anytls_enabled",
 	"trusttunnel": "trusttunnel_enabled",
+	"xhttp":       "xhttp_enabled",
 	"mtproto":     "mtproto_enabled",
 }
 
@@ -804,6 +811,9 @@ func (s *Store) SetNodeAPIPath(p string) error { return s.setSetting("node_api_p
 
 // SetMasterLabel persists the panel server's display name used in config labels.
 func (s *Store) SetMasterLabel(label string) error { return s.setSetting("master_label", label) }
+
+// SetMasterNote persists the operator's note on the master's server card.
+func (s *Store) SetMasterNote(note string) error { return s.setSetting("master_note", note) }
 
 // SetGeoRefresh persists the geo auto-refresh cadence in hours (0 ⇒ never).
 func (s *Store) SetGeoRefresh(hours int) error { return s.setSetting("geo_refresh_hours", hours) }
@@ -1039,6 +1049,16 @@ func splitCountries(s string) []string {
 // SetTelegramMenuURL records the address the user bot's menu button was pointed at.
 func (s *Store) SetTelegramMenuURL(url string) error {
 	_, err := s.db.Exec(`UPDATE settings SET tg_menu_url = ? WHERE id = 1`, url)
+	return err
+}
+
+// EnsureXHTTPPath gives the VLESS-XHTTP-TLS lane its random path if it has none.
+func (s *Store) EnsureXHTTPPath(gen func() (string, error)) error {
+	path, err := gen()
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`UPDATE settings SET xhttp_path = ? WHERE id = 1 AND xhttp_path = ''`, path)
 	return err
 }
 

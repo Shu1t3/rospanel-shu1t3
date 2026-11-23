@@ -53,6 +53,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/turnrelay"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/updater"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/version"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/xhttpfront"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/xray"
 )
 
@@ -257,6 +258,8 @@ type Agent struct {
 	syncCancel      context.CancelFunc
 	syncWaiting     bool
 	syncInterrupted atomic.Bool
+	// syncBeatAt is when the sync loop last showed it is alive (see stall.go).
+	syncBeatAt atomic.Int64
 
 	// awg is this node's AmneziaWG tunnel (see awg.go); awgEmails maps a peer's
 	// public key to the user tag it reports under, awgLast the counters last read.
@@ -310,6 +313,9 @@ type Agent struct {
 	// anytls answers AnyTLS behind the decoy (internal/anytls); its users are
 	// anytls-in's clients in the config last applied.
 	anytls *anytls.Server
+	// xhttp routes the VLESS-XHTTP-TLS lane's path on the TCP-TLS lane's port to its
+	// inbound, in front of the decoy (internal/xhttpfront).
+	xhttp *xhttpfront.Router
 }
 
 // Run loads the node identity and runs the agent until the context is cancelled
@@ -331,6 +337,11 @@ func Run(ctx context.Context, dataDir string) error {
 	// Best-effort host tuning (same as the panel).
 	if state, _ := tuning.EnsureBBR(); state == tuning.BBREnabled {
 		slog.Info("node: BBR enabled")
+	}
+	// A full conntrack table drops new connections, ours to the panel among them.
+	if c, err := tuning.EnsureConntrack(tuning.RAMMiB()); err == nil && c.Changed {
+		slog.Info("node: conntrack sized for a proxy", "max", c.Max, "was", c.WasMax,
+			"tcp_established_timeout", c.Established, "was_timeout", c.Was)
 	}
 	// A node the panel switched off stays off across a reboot. Suspending BEFORE the
 	// re-apply below is what makes that airtight: the config, certificate and
@@ -373,6 +384,18 @@ func Run(ctx context.Context, dataDir string) error {
 	go a.quotaLoop(ctx) // quotas between the minute-long traffic samples
 	go keepHostFW(ctx)  // a firewall reload drops the ports we opened
 	go a.reverseGuard.Keep(ctx)
+	go a.dumpOnSignal(ctx)
+	// A stop must not wait behind an apply that cannot reach Xray's API.
+	go func() {
+		<-ctx.Done()
+		a.sup.Abort()
+	}()
+	a.syncBeat(0)
+	go a.watchSyncStall(ctx, syncStallLimit, stallCheckEvery, a.exitOnStall)
+	go a.watchSyncStall(ctx, syncSlowLimit, stallCheckEvery, a.noteSlowSync)
+	stopped := make(chan struct{})
+	defer close(stopped)
+	go a.exitIfStopHangs(ctx, stopDeadline, stopped)
 	a.syncLoop(ctx)
 	a.shutdown()
 	return nil
@@ -484,8 +507,11 @@ func (a *Agent) hostStats() *nodeapi.HostStats {
 	firewall := ipblock.CanEnforce()
 	return &nodeapi.HostStats{
 		CPUPercent: st.CPUPercent,
+		CPUAvg:     st.CPUAvg,
 		NetUp:      st.NetUp,
 		NetDown:    st.NetDown,
+		NetUpAvg:   st.NetUpAvg,
+		NetDownAvg: st.NetDownAvg,
 		DiskUsed:   st.DiskUsed,
 		DiskTotal:  st.DiskTotal,
 		MemUsed:    st.MemUsed,
@@ -552,7 +578,7 @@ func newAgent(dataDir string, ident *Identity) (*Agent, error) {
 		keyPath:      filepath.Join(dataDir, "certs", "key.pem"),
 		acmeDir:      filepath.Join(dataDir, "acme"),
 		geoDir:       filepath.Join(dataDir, "geo"),
-		operaSup:     opera.New(filepath.Join(operaDir, "opera-proxy")),
+		operaSup:     opera.New(filepath.Join(operaDir, "opera-proxy"), sup.LogSink()),
 		operaDir:     operaDir,
 		state:        loadState(dataDir),
 		sys:          sysstat.New(dataDir),
@@ -567,6 +593,7 @@ func newAgent(dataDir string, ident *Identity) (*Agent, error) {
 		shaper:       shaper.New(),
 		awg:          awg.New(),
 		naive:        naive.New(xray.NaiveInnerAddr),
+		xhttp:        xhttpfront.New(),
 		trusttunnel:  naive.NewTrustTunnel(xray.TrustTunnelInnerAddr),
 		mieru:        mieru.New(xray.MieruInnerAddr),
 		mtproto:      mtproto.New(xray.MTProtoInnerAddr),
@@ -848,6 +875,7 @@ func (a *Agent) syncLoop(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		a.syncBeat(0)
 		// Cleared per attempt so the flag only ever describes the request in flight.
 		a.syncInterrupted.Store(false)
 		pollStart := time.Now()
@@ -874,13 +902,13 @@ func (a *Agent) syncLoop(ctx context.Context) {
 			if benignPollCut(err) && time.Since(pollStart) >= minHeldPoll {
 				slog.Debug("node: long-poll cut, re-polling", "err", err)
 				backoff = backoffMin
-				if !sleepCtx(ctx, backoffMin) {
+				if !a.syncSleep(ctx, backoffMin) {
 					return
 				}
 				continue
 			}
 			slog.Warn("node: sync failed (keeping last config)", "err", err)
-			if !sleepCtx(ctx, backoff) {
+			if !a.syncSleep(ctx, backoff) {
 				return
 			}
 			backoff = min(backoff*2, backoffMax)
@@ -908,7 +936,7 @@ func (a *Agent) syncLoop(ctx context.Context) {
 				a.setRevoked(true)
 				a.revoked.Store(true)
 			}
-			if !sleepCtx(ctx, revokedPoll) {
+			if !a.syncSleep(ctx, revokedPoll) {
 				return
 			}
 			continue
@@ -1007,7 +1035,7 @@ func (a *Agent) syncLoop(ctx context.Context) {
 			if err != nil {
 				// As below: the panel keeps sending what this node could not apply.
 				slog.Error("node: applying pushed config failed — backing off", "err", err, "backoff", applyBackoff)
-				if !sleepCtx(ctx, applyBackoff) {
+				if !a.syncSleep(ctx, applyBackoff) {
 					return
 				}
 				applyBackoff = min(applyBackoff*2, backoffMax)
@@ -1022,7 +1050,7 @@ func (a *Agent) syncLoop(ctx context.Context) {
 				// otherwise a config this node's Xray can't parse (e.g. version skew)
 				// spins geo/ACME/`xray -test` every few seconds on both sides forever.
 				slog.Error("node: applying pushed config failed — backing off", "err", err, "backoff", applyBackoff)
-				if !sleepCtx(ctx, applyBackoff) {
+				if !a.syncSleep(ctx, applyBackoff) {
 					return
 				}
 				applyBackoff = min(applyBackoff*2, backoffMax)
@@ -1206,6 +1234,7 @@ func (a *Agent) buildSyncRequest() nodeapi.SyncRequest {
 		TrustTunnel:       true,
 		Mieru:             true,
 		AnyTLS:            a.anytls != nil,
+		XHTTP:             a.xhttp != nil,
 		MieruError:        a.mieruError(),
 		MTProto:           a.mtproto != nil,
 		MTProtoError:      a.mtprotoError(),
@@ -1479,6 +1508,7 @@ func (a *Agent) applyUsers(st *nodeapi.NodeState) error {
 	a.syncMieru(data, m.Mieru)
 	a.syncMTProto(data, m.MTProto)
 	a.syncAnyTLS(data)
+	a.syncXHTTP(data, public)
 	switch how {
 	case xray.RawUnchanged:
 		slog.Info("node: state applied without an Xray restart (config unchanged)")

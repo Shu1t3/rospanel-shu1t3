@@ -42,6 +42,13 @@ type (
 		// ChurnSurvey asks a user whose paid term lapsed why it was not renewed (the user
 		// bot a day later, and the subscription page); left out keeps it.
 		ChurnSurvey *bool `json:"churn_survey"`
+		// ReturnURL is where a payer lands after paying when the flow brings no address
+		// of its own; "" sends them to the Mini App or their subscription page. Left out keeps it.
+		ReturnURL *string `json:"return_url"`
+		// RenewWindowDays opens a renewal only this many days before the term ends;
+		// MaxPrepaidDays caps the paid time a purchase may leave. 0 = no limit, left out keeps it.
+		RenewWindowDays *int `json:"renew_window_days"`
+		MaxPrepaidDays  *int `json:"max_prepaid_days"`
 	}
 	apiMigratePlanReq struct {
 		ToPlanID int64 `json:"to_plan_id"`
@@ -63,22 +70,25 @@ func (rt *Router) apiGetBillingSettings(w http.ResponseWriter, _ *http.Request) 
 		return
 	}
 	writeAPIData(w, http.StatusOK, apiBillingSettingsReq{
-		Enabled:     set.BillingEnabled,
-		FreePlanID:  set.BillingFreePlanID,
-		TrialPlanID: set.BillingTrialPlanID,
-		PaymentNote: set.BillingPaymentNote,
-		Manual:      set.BillingManualEnabled,
-		ManualLabel: set.BillingManualLabel,
-		Wallet:      &set.WalletEnabled,
-		TopupMin:    set.WalletTopupMin,
-		TopupMax:    set.WalletTopupMax,
-		RefMode:     set.RefMode,
-		RefPercent:  set.RefPercent,
-		RefDays:     set.RefDays,
-		RefFirst:    &set.RefFirstOnly,
-		Periods:     ptrTo(periodOffersOrEmpty(set.BillingPeriods)),
-		Winback:     &set.Winback,
-		ChurnSurvey: &set.ChurnSurvey,
+		Enabled:         set.BillingEnabled,
+		FreePlanID:      set.BillingFreePlanID,
+		TrialPlanID:     set.BillingTrialPlanID,
+		PaymentNote:     set.BillingPaymentNote,
+		Manual:          set.BillingManualEnabled,
+		ManualLabel:     set.BillingManualLabel,
+		Wallet:          &set.WalletEnabled,
+		TopupMin:        set.WalletTopupMin,
+		TopupMax:        set.WalletTopupMax,
+		RefMode:         set.RefMode,
+		RefPercent:      set.RefPercent,
+		RefDays:         set.RefDays,
+		RefFirst:        &set.RefFirstOnly,
+		Periods:         ptrTo(periodOffersOrEmpty(set.BillingPeriods)),
+		Winback:         &set.Winback,
+		ChurnSurvey:     &set.ChurnSurvey,
+		ReturnURL:       &set.BillingReturnURL,
+		RenewWindowDays: &set.RenewWindowDays,
+		MaxPrepaidDays:  &set.MaxPrepaidDays,
 	})
 }
 
@@ -129,6 +139,15 @@ func (rt *Router) apiSaveBillingSettings(w http.ResponseWriter, r *http.Request)
 	}
 	if req.ChurnSurvey != nil {
 		set.ChurnSurvey = *req.ChurnSurvey
+	}
+	if req.ReturnURL != nil {
+		set.BillingReturnURL = *req.ReturnURL
+	}
+	if req.RenewWindowDays != nil {
+		set.RenewWindowDays = *req.RenewWindowDays
+	}
+	if req.MaxPrepaidDays != nil {
+		set.MaxPrepaidDays = *req.MaxPrepaidDays
 	}
 	// Designating a plan free/trial also makes it free and re-applies it to everyone
 	// already on it — see core.SaveBillingSettings.

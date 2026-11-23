@@ -2,6 +2,7 @@ package xray
 
 import (
 	"encoding/binary"
+	"strconv"
 	"strings"
 )
 
@@ -15,7 +16,7 @@ const LaneAWG = "awg"
 // laneTags are the built-in inbounds whose traffic is a lane's; custom inbounds count
 // under their own tags (custom-<id>). The API, the system proxies and the panel's
 // egress carry no user's tunnel and are left out.
-var laneTags = map[string]bool{TagVLESS: true, TagReality: true, TagHysteria: true, TagNaive: true, TagTrustTunnel: true, TagMieru: true, TagAnyTLS: true, TagMTProto: true}
+var laneTags = map[string]bool{TagVLESS: true, TagReality: true, TagHysteria: true, TagNaive: true, TagTrustTunnel: true, TagMieru: true, TagAnyTLS: true, TagMTProto: true, TagXHTTP: true}
 
 // IsLaneTag reports whether an inbound tag is a lane the split shows.
 func IsLaneTag(tag string) bool {
@@ -24,7 +25,7 @@ func IsLaneTag(tag string) bool {
 
 // QueryLanesLive reads, and zeroes, the per-inbound counters through the gRPC API: what
 // each lane carried since the previous read. NaiveProxy reaches naive-in through the
-// fallback of the TCP-TLS inbound, and so do TrustTunnel and AnyTLS, which counts those bytes too; they are taken off
+// fallback of the TCP-TLS inbound, and so do TrustTunnel, AnyTLS and VLESS-XHTTP-TLS, which counts those bytes too; they are taken off
 // VLESS so a tunnel is not counted on two lanes. The web traffic of the decoy and the
 // panel behind :443 stays in VLESS — it is not a lane of its own.
 func (s *Supervisor) QueryLanesLive(apiAddr string) (map[string]Traffic, error) {
@@ -33,7 +34,7 @@ func (s *Supervisor) QueryLanesLive(apiAddr string) (map[string]Traffic, error) 
 		if s.statsAPI != nil {
 			s.statsAPI.close()
 		}
-		s.statsAPI = newXrayAPI(apiAddr, s.waitFn)
+		s.statsAPI = s.newAPI(apiAddr)
 	}
 	api := s.statsAPI
 	s.mu.Unlock()
@@ -41,11 +42,37 @@ func (s *Supervisor) QueryLanesLive(apiAddr string) (map[string]Traffic, error) 
 	if err != nil {
 		return nil, err
 	}
-	return lanesOf(raw), nil
+	out := lanesOf(raw)
+	// The cascade bridges of an exit server, under their own keys (bridge-<entry>). A
+	// failed read leaves their counters for the next one; the lanes are already taken.
+	if bridges, err := api.queryStatsReset("user>>>" + BridgeLanePrefix); err == nil {
+		for key, t := range bridges {
+			if _, ok := BridgeLaneEntry(key); ok && (t.Up > 0 || t.Down > 0) {
+				out[key] = t
+			}
+		}
+	}
+	return out, nil
+}
+
+// BridgeLanePrefix starts the lane key of what an entry server sent through this exit
+// server over its cascade bridge: the bridge credential's own email (bridge-<entry id>,
+// model.BridgeEmail). Those bytes are inside the bridge lane's count too; this key says
+// which entry they came from.
+const BridgeLanePrefix = "bridge-"
+
+// BridgeLaneEntry is the entry server id of a bridge lane key.
+func BridgeLaneEntry(key string) (int64, bool) {
+	rest, ok := strings.CutPrefix(key, BridgeLanePrefix)
+	if !ok || rest == "" || strings.TrimLeft(rest, "0123456789") != "" || (len(rest) > 1 && rest[0] == '0') {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(rest, 10, 64)
+	return id, err == nil
 }
 
 // lanesOf keeps the lane inbounds and takes the shares of the lanes behind the TCP-TLS
-// fallback — NaiveProxy, TrustTunnel and AnyTLS — off VLESS.
+// fallback — NaiveProxy, TrustTunnel, AnyTLS and VLESS-XHTTP-TLS — off VLESS.
 func lanesOf(raw map[string]Traffic) map[string]Traffic {
 	out := make(map[string]Traffic, len(raw))
 	for tag, t := range raw {
@@ -53,7 +80,7 @@ func lanesOf(raw map[string]Traffic) map[string]Traffic {
 			out[tag] = t
 		}
 	}
-	for _, behind := range []string{TagNaive, TagTrustTunnel, TagAnyTLS} {
+	for _, behind := range []string{TagNaive, TagTrustTunnel, TagAnyTLS, TagXHTTP} {
 		n, ok := out[behind]
 		if !ok {
 			continue
@@ -106,7 +133,11 @@ func decodeInboundStats(msg []byte) (map[string]Traffic, error) {
 
 func foldInboundStat(out map[string]Traffic, name string, val int64) {
 	parts := strings.Split(name, ">>>")
-	if len(parts) != 4 || parts[0] != "inbound" || parts[2] != "traffic" {
+	if len(parts) != 4 || parts[2] != "traffic" {
+		return
+	}
+	// Inbound counters, and the user counters of the cascade bridges.
+	if parts[0] != "inbound" && (parts[0] != "user" || !strings.HasPrefix(parts[1], BridgeLanePrefix)) {
 		return
 	}
 	t := out[parts[1]]

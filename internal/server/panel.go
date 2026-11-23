@@ -98,6 +98,9 @@ func makeUserView(u model.User, set *model.Settings, userBotUsername string, cus
 		v.VLESS = link.VLESS(u, set)
 		v.Links = append(v.Links, namedLink{set.ProtoLabelFor(model.ProtoVLESS, &u), v.VLESS})
 	}
+	if set.XHTTPOn() && access.AllowsBuiltin(model.LocalNodeID, model.LaneXHTTP) {
+		v.Links = append(v.Links, namedLink{set.ProtoLabelFor(model.ProtoXHTTP, &u), link.XHTTP(u, set)})
+	}
 	if set.RealityEnabled && access.AllowsBuiltin(model.LocalNodeID, model.LaneReality) {
 		v.Reality = link.Reality(u, set)
 		v.Links = append(v.Links, namedLink{set.ProtoLabelFor(model.ProtoReality, &u), v.Reality})
@@ -602,6 +605,10 @@ func (rt *Router) panelMux() http.Handler {
 	canUsersView("GET /api/users/{id}/connections", withID(rt.userConnections))
 	canUsersView("GET /api/users/{id}/devices", withID(rt.userDevices))
 	canUsersManage("POST /api/users/{id}/devices/unbind", withID(rt.unbindUserDevice))
+	canUsersView("GET /api/users/{id}/awg-keys", withID(rt.userAWGKeys))
+	canUsersManage("POST /api/users/{id}/awg-keys", withID(rt.addUserAWGKey))
+	canUsersManage("POST /api/users/{id}/awg-keys/rename", withID(rt.renameUserAWGKey))
+	canUsersManage("POST /api/users/{id}/awg-keys/delete", withID(rt.deleteUserAWGKey))
 	canUsersView("GET /api/users/{id}/abuse", withID(rt.userAbuse))
 	canUsersManage("POST /api/users/{id}/rotate-sub", withID(rt.rotateSubToken))
 	canUsersManage("POST /api/users/{id}/reset-uuid", withID(rt.resetUserUUID))
@@ -657,6 +664,7 @@ func (rt *Router) panelMux() http.Handler {
 	canStatsOrUsersView("GET /api/stats/series", rt.statsSeries)
 	canStatsOrUsersView("GET /api/stats/nodes", rt.statsNodes)
 	canStatsView("GET /api/stats/lanes", rt.statsLanes)
+	canStatsView("GET /api/stats/cascade", rt.statsCascade)
 	canStatsView("GET /api/stats/users", rt.statsByUser)
 	canStatsView("GET /api/stats/abuse", rt.statsAbuse)
 	canStatsView("GET /api/stats/countries", rt.statsCountries)
@@ -705,6 +713,7 @@ func (rt *Router) panelMux() http.Handler {
 	canLogs("GET /api/nodes/{id}/logs", withID(rt.nodeLogs))
 	canServersManage("GET /api/nodes/{id}/xray-config", withID(rt.nodeXrayConfig))
 	canServersView("GET /api/nodes/{id}/health", withID(rt.nodeHealth))
+	canServersView("GET /api/nodes/{id}/load", withID(rt.nodeLoad))
 	canServersView("GET /api/nodes/{id}/reach", withID(rt.nodeReach))
 	canServersView("POST /api/nodes/{id}/reach", withID(rt.checkNodeReach))
 	canServersView("GET /api/reach", rt.getReach)
@@ -787,6 +796,7 @@ func (rt *Router) panelMux() http.Handler {
 	canBroadcasts("GET /api/broadcasts", rt.listBroadcasts)
 	canBroadcasts("POST /api/broadcasts", rt.createBroadcast)
 	canBroadcasts("GET /api/broadcasts/audience", rt.broadcastAudience)
+	canBroadcasts("GET /api/broadcasts/groups", rt.broadcastGroups)
 	canBroadcasts("POST /api/broadcasts/test", rt.testBroadcast)
 	canBroadcasts("GET /api/broadcasts/rules", rt.listAutoRules)
 	canBroadcasts("POST /api/broadcasts/rules", rt.saveAutoRule)

@@ -93,6 +93,9 @@ type SyncRequest struct {
 	Naive bool `json:"naive,omitempty"`
 	// TrustTunnel is Naive for TrustTunnel (internal/naive, tt.go).
 	TrustTunnel bool `json:"trusttunnel,omitempty"`
+	// XHTTP ⇒ this agent routes the VLESS-XHTTP-TLS path behind its decoy
+	// (internal/xhttpfront).
+	XHTTP bool `json:"xhttp,omitempty"`
 	// Mieru ⇒ this agent answers mieru on the port the panel gives it (MieruState),
 	// and MieruError is why its listener is not up, when it is not.
 	Mieru bool `json:"mieru,omitempty"`
@@ -358,8 +361,15 @@ type HostStats struct {
 	// struct, so an older agent simply reports zero — the panel shows those fields as
 	// unknown rather than as an idle machine.
 	CPUPercent float64 `json:"cpu_percent,omitempty"`
-	NetUp      int64   `json:"net_up,omitempty"`
-	NetDown    int64   `json:"net_down,omitempty"`
+	// CPUAvg is the same averaged over the last minute, for the load history. Zero
+	// from an agent older than it: the panel then falls back to CPUPercent.
+	CPUAvg  float64 `json:"cpu_avg,omitempty"`
+	NetUp   int64   `json:"net_up,omitempty"`
+	NetDown int64   `json:"net_down,omitempty"`
+	// NetUpAvg and NetDownAvg are the rates averaged over the last minute, for the
+	// load history. Zero from an older agent: the panel then takes NetUp/NetDown.
+	NetUpAvg   int64 `json:"net_up_avg,omitempty"`
+	NetDownAvg int64 `json:"net_down_avg,omitempty"`
 
 	DiskUsed   int64 `json:"disk_used"`
 	DiskTotal  int64 `json:"disk_total"`

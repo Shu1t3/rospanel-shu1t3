@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/decoy"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/tlsmgr"
 )
 
@@ -67,7 +68,7 @@ func Handler(host func() string) http.Handler {
 			return
 		}
 		// RequestURI, not Path: the query belongs to the redirect too.
-		w.Header().Set("Location", "https://"+target+r.URL.RequestURI())
+		w.Header().Set("Location", "https://"+model.URLHost(target)+r.URL.RequestURI())
 		// No body. http.Redirect would write a short HTML page for a GET, which the
 		// server this imitates does not.
 		w.WriteHeader(http.StatusPermanentRedirect)

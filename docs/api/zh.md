@@ -515,7 +515,8 @@ Telegram 只永久享受一次试用——被删除的账户不会获得第二�
 | `POST` | `/v1/alerts` | 添加规则：`name`、`metric`、`op`（`gt` / `lt`）、`threshold`、`for_secs`（条件持续多久后触发）、`node_id`（-1 表示每台服务器，0 表示主服务器）、`enabled`。 |
 | `POST` | `/v1/alerts/{id}` | 替换规则的设置。 |
 | `DELETE` | `/v1/alerts/{id}` | 删除规则；其历史会保留。 |
-| `GET` | `/v1/nodes/{id}/logs` | 节点的最近日志行。 |
+| `GET` | `/v1/nodes/{id}/logs` | 服务器的最近日志行（0 为主服务器）。 |
+| `GET` | `/v1/logs` | 面板自身的最近日志行。 |
 
 **注册节点** — body `{ "name": "NL #1", "host": "nl1.example.com" }`。响应携带节点 id、
 一次性加入令牌，以及可在全新 Ubuntu 服务器上直接运行的安装命令：
@@ -645,7 +646,7 @@ schema 只能标为 `string` 的两种格式：`reality_dest` 是裸主机名（
 
 **授权令牌**（grant token）指向一条连接：
 
-- `builtin:<server_id>:<lane>` — 内置线路，其中 `<lane>` 取 `vless`、`reality`、
+- `builtin:<server_id>:<lane>` — 内置线路，其中 `<lane>` 取 `vless`、`xhttp`、`reality`、
   `hysteria2`、`naive`、`trusttunnel`、`anytls`、`mieru`、`awg` 或 `mtproto`，`<server_id>` 为 `0`
   表示主服务器，或一个来自 `GET /v1/nodes` 的节点 id。
 - `inbound:<id>` — 自定义入站，id 来自 `GET /v1/servers/{id}/inbounds`。
@@ -985,6 +986,7 @@ GET $BASE/v1/nodes/{id}/health → 单台服务器的诊断（id 0 = 主服务�
 POST $BASE/v1/nodes/{id}/reach → {"host": …, "port": 443, "countries": [{"code": "RU", "ok": 9, "blocked": 1, "failed": 0, "probes": […]}]}
 POST $BASE/v1/reach {"countries": ["RU", "CN", "IR"], "probes": 10, "every": 60, "threshold": 50}  (every 0 = 仅在需要时)
 GET $BASE/v1/nodes/{id}/logs   → 节点的最近日志行
+GET $BASE/v1/logs              → 面板自身的日志行
 GET $BASE/v1/backup/info       → 现在做一次备份会包含什么
 GET $BASE/v1/backup            → 下载该备份（.tar.gz 内容，不是 JSON）
 GET $BASE/v1/metrics           → Prometheus 导出格式（文本，不是 JSON）
@@ -1210,7 +1212,7 @@ localhost 主机**——接收方往往是运营者自己的内部服务，而�
 | `incident.updated` | 它被编辑、发布了进展中的一步（`data.update`：`stage`、`body`、`created_at`），或撤回了某一步（没有 `data.update`；`data.updates` 是当前的进展记录） |
 | `incident.resolved` | 它被解决，或维护被标记为结束；只是在 `ends_at` 自然关闭的窗口不会发送任何内容 |
 | `incident.deleted` | 它被删除；`data` 是它原来的内容 |
-| `broadcast.sent` | 一次群发已发出——每次群发一条投递：`data.id`、`data.text`、`data.buttons`、`data.audience`、`data.media_kind`/`data.media_name`、`data.telegram_recipients`（bot 要发送到的聊天）、`data.users`（`id`、`external_id`）——受众中 bot 触达不到的账户，但在 bot 中关闭了邮件的用户除外。订阅此事件后，群发在 bot 关闭时也能工作（仅文本） |
+| `broadcast.sent` | 一次群发已发出——每次群发一条投递：`data.id`、`data.text`、`data.buttons`、`data.audience`、`data.group_id`（仅在限定到访问组时）、`data.media_kind`/`data.media_name`、`data.telegram_recipients`（bot 要发送到的聊天）、`data.users`（`id`、`external_id`）——受众中 bot 触达不到的账户，但在 bot 中关闭了邮件的用户除外。订阅此事件后，群发在 bot 关闭时也能工作（仅文本） |
 
 ## 投递格式
 

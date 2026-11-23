@@ -354,7 +354,8 @@ GET $BASE/healthz
 | `POST` | `/v1/alerts` | إضافة قاعدة: `name`، و`metric`، و`op` (`gt` / `lt`)، و`threshold`، و`for_secs` (مدة بقاء الشرط قبل الإطلاق)، و`node_id` (-1 كل الخوادم، و0 الرئيسي)، و`enabled`. |
 | `POST` | `/v1/alerts/{id}` | استبدال إعدادات قاعدة. |
 | `DELETE` | `/v1/alerts/{id}` | حذف قاعدة؛ ويبقى تاريخها. |
-| `GET` | `/v1/nodes/{id}/logs` | أحدث أسطر سجل العقدة. |
+| `GET` | `/v1/nodes/{id}/logs` | أحدث أسطر سجل الخادم (0 هو الخادم الرئيسي). |
+| `GET` | `/v1/logs` | أحدث أسطر سجل اللوحة نفسها. |
 
 **تسجيل عقدة** — الجسم `{ "name": "NL #1", "host": "nl1.example.com" }`. تحمل الاستجابة معرف العقدة، ورمز الانضمام الأحادي، وأمر التثبيت الجاهز على خادم Ubuntu جديد:
 
@@ -440,7 +441,7 @@ GET $BASE/healthz
 
 **رمز المنح** يسمي اتصالا واحدا:
 
-- `builtin:<server_id>:<lane>` — قناة مدمجة، حيث `<lane>` هي `vless` أو `reality`
+- `builtin:<server_id>:<lane>` — قناة مدمجة، حيث `<lane>` هي `vless` أو `xhttp` أو `reality`
   أو `hysteria2` أو `naive` أو `trusttunnel` أو `anytls` أو `mieru` أو `awg` أو `mtproto`، و`<server_id>` هي `0` للرئيسي أو معرف عقدة
   من `GET /v1/nodes`.
 - `inbound:<id>` — مدخل مخصص، بمعرف المدخل نفسه من `GET /v1/servers/{id}/inbounds`.
@@ -706,6 +707,7 @@ GET $BASE/v1/nodes/{id}/health → one server's diagnostics (id 0 = the master)
 POST $BASE/v1/nodes/{id}/reach → {"host": …, "port": 443, "countries": [{"code": "RU", "ok": 9, "blocked": 1, "failed": 0, "probes": […]}]}
 POST $BASE/v1/reach {"countries": ["RU", "CN", "IR"], "probes": 10, "every": 60, "threshold": 50}  (every 0 = only on demand)
 GET $BASE/v1/nodes/{id}/logs   → a node's recent log lines
+GET $BASE/v1/logs              → the panel's own log lines
 GET $BASE/v1/backup/info       → what a backup taken now would contain
 GET $BASE/v1/backup            → download that backup (.tar.gz body, not JSON)
 GET $BASE/v1/metrics           → Prometheus exposition (text, not JSON)
@@ -885,7 +887,7 @@ Webhooks** (أضف عنوان URL للمستقبل وأشر الأحداث ال�
 | `incident.updated` | جرى تعديله، أو نشرت خطوة من مساره (`data.update`: `stage`، و`body`، و`created_at`) أو سحبت واحدة (بلا `data.update`؛ و`data.updates` هو المسار كما صار الآن) |
 | `incident.resolved` | حل، أو علمت الصيانة منتهية؛ والنافذة التي تغلق ببساطة عند `ends_at` لا ترسل شيئا |
 | `incident.deleted` | حذف؛ و`data` هو الحادث كما كان |
-| `broadcast.sent` | خرج بث — تسليم واحد لكل بث: `data.id`، و`data.text`، و`data.buttons`، و`data.audience`، و`data.media_kind`/`data.media_name`، و`data.telegram_recipients` (المحادثات التي يرسل إليها البوت)، و`data.users` (`id`، `external_id`) — والحسابات في الجمهور التي لا يبلغها البوت، عدا من أطفأ الرسائل في البوت. وباشتراك هذا الحدث تعمل البثوث والبوت معطل (نصا فقط) |
+| `broadcast.sent` | خرج بث — تسليم واحد لكل بث: `data.id`، و`data.text`، و`data.buttons`، و`data.audience`، و`data.group_id` (فقط عند حصرها في مجموعة وصول)، و`data.media_kind`/`data.media_name`، و`data.telegram_recipients` (المحادثات التي يرسل إليها البوت)، و`data.users` (`id`، `external_id`) — والحسابات في الجمهور التي لا يبلغها البوت، عدا من أطفأ الرسائل في البوت. وباشتراك هذا الحدث تعمل البثوث والبوت معطل (نصا فقط) |
 
 ## صيغة التسليم
 

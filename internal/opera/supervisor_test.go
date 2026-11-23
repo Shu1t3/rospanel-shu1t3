@@ -5,7 +5,7 @@ import (
 )
 
 func TestSupervisorLifecycle(t *testing.T) {
-	sup := New("/nonexistent/opera-proxy")
+	sup := New("/nonexistent/opera-proxy", nil)
 	if sup == nil {
 		t.Fatal("New returned nil")
 	}

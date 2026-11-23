@@ -2,6 +2,7 @@ package sub
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"net"
 	"net/url"
 	"regexp"
@@ -64,12 +65,13 @@ func AWGClientConf(u model.User, s *model.Settings) string {
 	if err != nil {
 		return ""
 	}
-	addr, ok := awg.ClientAddr(u.AWGSlot)
-	if !ok || u.WGPrivateKey == "" {
+	key, slot := u.AWGIdentity()
+	addr, ok := awg.ClientAddr(slot)
+	if !ok || key == "" {
 		return ""
 	}
 	return awg.ClientConfig{
-		PrivateKey:      u.WGPrivateKey,
+		PrivateKey:      key,
 		Address:         addr,
 		DNS:             awg.TunnelDNS(s),
 		Params:          p,
@@ -93,14 +95,16 @@ func AWGThroneLink(u model.User, s *model.Settings) string {
 	if err != nil || p.IsZero() {
 		return ""
 	}
-	addr, ok := awg.ClientAddr(u.AWGSlot)
-	if !ok || u.WGPrivateKey == "" {
+	key, slot := u.AWGIdentity()
+	addr, ok := awg.ClientAddr(slot)
+	if !ok || key == "" {
 		return ""
 	}
 	q := []string{
-		"private_key=" + u.WGPrivateKey,
+		"private_key=" + key,
 		"local_address=" + addr.String() + "/32",
 		"public_key=" + s.AWGPublicKey,
+		"mtu=" + strconv.Itoa(awg.DefaultMTU),
 		"persistent_keepalive_interval=" + strconv.Itoa(awg.Keepalive),
 		"enable_amnezia=true",
 		"jc=" + strconv.Itoa(p.Jc), "jmin=" + strconv.Itoa(p.Jmin), "jmax=" + strconv.Itoa(p.Jmax),
@@ -140,9 +144,73 @@ func AWGThroneLink(u model.User, s *model.Settings) string {
 		url.PathEscape(link.LabelFor(model.ProtoAWG, u, s))
 }
 
+// AWGShadowrocketLink is a user's tunnel on one server in the form Shadowrocket imports
+// with its AmneziaWG obfuscation (checked on a device by the issue-122 reporter):
+// wg://host:port?publicKey=…&privateKey=…&ip=…&obfs=amneziawg&obfsParam=<JSON>#label,
+// the obfuscation set as one URL-encoded JSON object of strings. Bands are written
+// "min-max" even when they hold one value — the form that was seen working; timers
+// left at the protocol default are left out. I1/I2 are left out as for Throne.
+// "" when the user has no tunnel identity yet or the parameters are unreadable.
+func AWGShadowrocketLink(u model.User, s *model.Settings) string {
+	if s.Host != "" && !model.ValidServerHost(s.Host) {
+		return ""
+	}
+	p, err := awg.FromModel(s.AWGParams)
+	if err != nil || p.IsZero() {
+		return ""
+	}
+	key, slot := u.AWGIdentity()
+	addr, ok := awg.ClientAddr(slot)
+	if !ok || key == "" {
+		return ""
+	}
+	band := func(r awg.Range) string {
+		return strconv.FormatUint(uint64(r.Min), 10) + "-" + strconv.FormatUint(uint64(r.Max), 10)
+	}
+	obfs := map[string]string{
+		"jc": strconv.Itoa(p.Jc), "jmin": strconv.Itoa(p.Jmin), "jmax": strconv.Itoa(p.Jmax),
+		"s1": strconv.Itoa(p.S1), "s2": strconv.Itoa(p.S2), "s3": strconv.Itoa(p.S3), "s4": strconv.Itoa(p.S4),
+		"h1": band(p.H1), "h2": band(p.H2), "h3": band(p.H3), "h4": band(p.H4),
+	}
+	if p.HeaderKey != "" {
+		obfs["header_protection_key"] = p.HeaderKey
+	}
+	if !p.Padding.IsZero() {
+		obfs["content_padding_addition"] = band(p.Padding)
+	}
+	if p.Trailers {
+		obfs["random_trailers"] = "true" // reads as yes to both NSString.boolValue and Swift Bool(_:)
+	}
+	for k, r := range map[string]awg.Range{
+		"rekey_after_time": p.RekeyAfter, "rekey_timeout": p.RekeyTimeout, "reject_after_time": p.RejectAfter,
+		"keepalive_timeout": p.Keepalive, "max_handshake_attempts": p.Handshakes,
+	} {
+		if !r.IsZero() {
+			obfs[k] = band(r)
+		}
+	}
+	js, err := json.Marshal(obfs) // map keys come out sorted: one server, one link
+	if err != nil {
+		return ""
+	}
+	q := url.Values{}
+	q.Set("publicKey", s.AWGPublicKey)
+	q.Set("privateKey", key)
+	q.Set("ip", addr.String()+"/32")
+	q.Set("mtu", strconv.Itoa(awg.DefaultMTU))
+	q.Set("keepalive", strconv.Itoa(awg.Keepalive))
+	q.Set("udp", "1")
+	q.Set("reserved", "0,0,0")
+	q.Set("obfs", "amneziawg")
+	q.Set("obfsParam", string(js))
+	return "wg://" + net.JoinHostPort(s.Host, strconv.Itoa(s.AWGPort)) + "?" + q.Encode() + "#" +
+		url.PathEscape(link.LabelFor(model.ProtoAWG, u, s))
+}
+
 // awgLinkFor is the AmneziaWG link form a subscription client imports, or nil: INCY
-// (AWGLinkFor) its amneziawg://, Throne from 1.3.0 (random trailers among the rest) its
-// wg://. The others with an AmneziaWG of their own speak 1.5 or 2.0 — Hiddify, Karing,
+// (AWGLinkFor) its amneziawg://, Throne from 1.3.0 (random trailers among the rest) and
+// Throne for Android from 2.0.0 its wg://, Shadowrocket its own wg:// with obfsParam
+// (AWGShadowrocketLink; no version known to start from, so every one). The others with an AmneziaWG of their own speak 1.5 or 2.0 — Hiddify, Karing,
 // NyameBox, v2RayTun — and cannot finish a handshake with a 3.1 server.
 func awgLinkFor(userAgent string) func(model.User, *model.Settings) string {
 	if AWGLinkFor(userAgent) {
@@ -151,5 +219,58 @@ func awgLinkFor(userAgent string) func(model.User, *model.Settings) string {
 	if m := throneUA.FindStringSubmatch(userAgent); m != nil && versionAtLeast(m[1:], 1, 3, 0) {
 		return AWGThroneLink
 	}
+	if m := throneAndroidUA.FindStringSubmatch(userAgent); m != nil && versionAtLeast(m[1:], 2, 0, 0) {
+		return AWGThroneLink // its WireGuard.kt reads Throne's wg:// keys, "+" "/" "=" literally
+	}
+	if strings.Contains(strings.ToLower(userAgent), "shadowrocket") {
+		return AWGShadowrocketLink
+	}
 	return nil
+}
+
+// CarriesAWG reports whether a subscription answer in format for userAgent writes
+// AmneziaWG configs: some server in it has the lane on for the user, and the client
+// reads the lane in that format (a Clash core ClashAWG admits, or a link-list client
+// awgLinkFor has a form for). Only then is a key of the client's own worth making.
+func CarriesAWG(servers []Server, format, userAgent string) bool {
+	switch format {
+	case "clash":
+		if !ClashAWG(userAgent) {
+			return false
+		}
+	case "v2ray", "":
+		if awgLinkFor(userAgent) == nil {
+			return false
+		}
+	default:
+		return false
+	}
+	return HasAWG(servers)
+}
+
+// HasTunnel reports whether some server gives the user a lane the device keys serve:
+// AmneziaWG, or a WireGuard inbound (TURN-VK included).
+func HasTunnel(servers []Server) bool {
+	if HasAWG(servers) {
+		return true
+	}
+	for _, srv := range servers {
+		for _, in := range srv.Custom {
+			if model.IsWireGuard(in.Protocol) && srv.allowsInbound(in) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// HasAWG reports whether some server has the AmneziaWG lane on for the user.
+func HasAWG(servers []Server) bool {
+	for _, srv := range servers {
+		s := srv.Set
+		if s.AWGEnabled && s.AWGPort != 0 && s.AWGPublicKey != "" && srv.allowsBuiltin(model.LaneAWG) {
+			return true
+		}
+	}
+	return false
 }

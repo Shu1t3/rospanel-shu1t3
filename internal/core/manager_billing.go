@@ -72,8 +72,11 @@ func (m *Manager) SaveTariffPlan(p *model.TariffPlan) error {
 	if p.PeriodDays < 0 || p.PeriodDays > maxPlanPeriodDays {
 		return invalidCode("err.planPeriodRange", "срок действия: от 0 до {{max}} дней", map[string]any{"max": maxPlanPeriodDays})
 	}
-	if p.DataLimit < 0 || p.DeviceLimit < 0 || p.SpeedLimit < 0 {
+	if p.DataLimit < 0 || p.DeviceLimit < model.IPLimitUnlimited || p.SpeedLimit < 0 {
 		return invalidCode("err.planLimitsNegative", "лимиты тарифа не могут быть отрицательными")
+	}
+	if p.RenewWindowDays < 0 || p.RenewWindowDays > maxPlanPeriodDays || p.MaxPrepaidDays < 0 || p.MaxPrepaidDays > maxPlanPeriodDays {
+		return invalidCode("err.renewLimitsRange", "ограничения продления: от 0 до {{max}} дней", map[string]any{"max": maxPlanPeriodDays})
 	}
 	if p.DevicePrice < 0 || p.DevicePrice > promoValueMaxRub || p.DeviceMax < 0 || p.DeviceMax > model.MaxDeviceLimit {
 		return invalidCode("err.planDevicesRange", "доп. устройства: цена от 0 до {{price}} ₽, не больше {{max}} штук",
@@ -82,8 +85,11 @@ func (m *Manager) SaveTariffPlan(p *model.TariffPlan) error {
 	// Extra devices exist only on a paid plan with a term and a device cap; on any
 	// other they are dropped rather than refused, so a plan made unlimited, lifetime
 	// or free can still be saved.
-	if p.DeviceLimit == 0 || p.PeriodDays == 0 || p.PriceRub == 0 {
+	if p.DeviceLimit <= 0 || p.PeriodDays == 0 || p.PriceRub == 0 {
 		p.DevicePrice, p.DeviceMax = 0, 0
+	}
+	if err := ValidateHWIDLimit(p.HWIDLimit); err != nil {
+		return err
 	}
 	if p.DeviceLimit > model.MaxDeviceLimit {
 		return invalidCode("err.deviceLimitTooHigh", "лимит устройств не может быть больше {{max}}",
@@ -265,6 +271,13 @@ func (m *Manager) SaveBillingSettings(st *model.Settings) error {
 	// already on the free plan — so the trial expires and nothing ever rescues them.
 	if err := validateWalletSettings(st); err != nil {
 		return err
+	}
+	if st.RenewWindowDays < 0 || st.RenewWindowDays > maxPlanPeriodDays || st.MaxPrepaidDays < 0 || st.MaxPrepaidDays > maxPlanPeriodDays {
+		return invalidCode("err.renewLimitsRange", "ограничения продления: от 0 до {{max}} дней", map[string]any{"max": maxPlanPeriodDays})
+	}
+	st.BillingReturnURL = strings.TrimSpace(st.BillingReturnURL)
+	if st.BillingReturnURL != "" && !model.ValidReturnURL(st.BillingReturnURL) {
+		return invalidCode("err.badReturnURL", "адрес возврата после оплаты — полный адрес http(s)")
 	}
 	if st.BillingFreePlanID != 0 && st.BillingFreePlanID == st.BillingTrialPlanID {
 		return invalidCode("err.freeAndTrialMustDiffer", "бесплатный и пробный тарифы должны быть разными: иначе после окончания пробного периода пользователю некуда переходить")
@@ -647,6 +660,7 @@ func planLimits(userID int64, plan *model.TariffPlan, expireAt int64, freeReset 
 		DataLimit:   plan.DataLimit,
 		ExpireAt:    expireAt,
 		DeviceLimit: plan.DeviceLimit,
+		HWIDLimit:   plan.HWIDLimit,
 		SpeedLimit:  plan.SpeedLimit,
 		ResetPeriod: planResetPeriod(plan, freeReset),
 		ResetAnchor: now,
@@ -866,6 +880,15 @@ func (m *Manager) planWriteForDays(u model.User, planID int64, extendFromCurrent
 	}
 	w.ExtraDevices = min(max(devices, 0), plan.DeviceMax)
 	w.DeviceLimit += w.ExtraDevices
+	// Onto the HWID limit too. A plan on the panel default gets that default as a
+	// number to add to, or the devices bought would not change what the user may
+	// bind; "none" has nothing to add to.
+	if w.ExtraDevices > 0 && w.HWIDLimit >= 0 {
+		if w.HWIDLimit == 0 {
+			w.HWIDLimit = set.DeviceCap(model.User{})
+		}
+		w.HWIDLimit += w.ExtraDevices
+	}
 	// A different plan means a different quota, so the counter starts over. Without
 	// this the expiry path is a trap: EnforceBilling hands the user the free plan with
 	// a fresh 30-day cycle, the 20 GB they spent on the paid one stays on the counter,
@@ -1013,6 +1036,15 @@ func (m *Manager) confirmOrderPaid(order *model.PaymentOrder, paidAt int64) (sto
 	// either taken away or carried into the new term unpaid — the money goes to the
 	// balance instead, and the renewal is bought again at its current price.
 	if m.isPlanRenewalFor(*u, order.PlanID) {
+		// Another order, paid first, may have moved the end date out of the renewal
+		// window or past the prepaid cap: this one waits on the balance instead.
+		if plan, err := m.store.GetTariffPlan(order.PlanID); err == nil && set.WalletEnabled &&
+			m.checkRenewLimitsAt(set, *u, plan, order.Periods, time.Now().Unix()) != nil {
+			spec.CreditKop = int64(order.AmountRub) * 100
+			spec.AsTopup = true
+			spec.PromoID = 0
+			return m.store.ConfirmOrder(order.ID, paidAt, spec)
+		}
 		if plan, err := m.store.GetTariffPlan(order.PlanID); err == nil && heldDevices(*u, plan) != order.Devices {
 			spec.CreditKop = int64(order.AmountRub) * 100
 			spec.AsTopup = true
@@ -1126,6 +1158,7 @@ func (m *Manager) cancelUserPlan(ctx context.Context, userID int64, lapse bool) 
 		DataLimit:   u.DataLimit,
 		ExpireAt:    now, // expire immediately: there is no free plan to fall back to
 		DeviceLimit: u.DeviceLimit,
+		HWIDLimit:   u.HWIDLimit,
 		ResetPeriod: "none",
 		ResetAnchor: now,
 		TrialUsed:   u.TrialUsed,

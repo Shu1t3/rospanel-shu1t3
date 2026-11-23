@@ -548,7 +548,8 @@ enabled node automatically, and each server can be edited independently.
 | `POST` | `/v1/alerts` | Add a rule: `name`, `metric`, `op` (`gt` / `lt`), `threshold`, `for_secs` (how long the condition holds before it fires), `node_id` (-1 every server, 0 the master), `enabled`. |
 | `POST` | `/v1/alerts/{id}` | Replace a rule's settings. |
 | `DELETE` | `/v1/alerts/{id}` | Delete a rule; its history stays. |
-| `GET` | `/v1/nodes/{id}/logs` | A node's recent log lines. |
+| `GET` | `/v1/nodes/{id}/logs` | A server's recent log lines (0 is the master). |
+| `GET` | `/v1/logs` | The panel's own recent log lines. |
 
 **Register a node** — body `{ "name": "NL #1", "host": "nl1.example.com" }`. The
 response carries the node id, the one-time join token and the ready-to-run install
@@ -674,7 +675,7 @@ link all expose only what's granted.
 
 A **grant token** names one connection:
 
-- `builtin:<server_id>:<lane>` — a built-in lane, where `<lane>` is `vless`, `reality`,
+- `builtin:<server_id>:<lane>` — a built-in lane, where `<lane>` is `vless`, `xhttp`, `reality`,
   `hysteria2`, `naive`, `trusttunnel`, `anytls`, `mieru`, `awg` or `mtproto` and `<server_id>` is `0` for the master or a node id
   from `GET /v1/nodes`.
 - `inbound:<id>` — a custom inbound, by the id from `GET /v1/servers/{id}/inbounds`.
@@ -1049,6 +1050,7 @@ GET $BASE/v1/nodes/{id}/health → one server's diagnostics (id 0 = the master)
 POST $BASE/v1/nodes/{id}/reach → {"host": …, "port": 443, "countries": [{"code": "RU", "ok": 9, "blocked": 1, "failed": 0, "probes": […]}]}
 POST $BASE/v1/reach {"countries": ["RU", "CN", "IR"], "probes": 10, "every": 60, "threshold": 50}  (every 0 = only on demand)
 GET $BASE/v1/nodes/{id}/logs   → a node's recent log lines
+GET $BASE/v1/logs              → the panel's own log lines
 GET $BASE/v1/backup/info       → what a backup taken now would contain
 GET $BASE/v1/backup            → download that backup (.tar.gz body, not JSON)
 GET $BASE/v1/metrics           → Prometheus exposition (text, not JSON)
@@ -1299,7 +1301,7 @@ body is never read).
 | `incident.updated` | it was edited, a step of its course was posted (`data.update`: `stage`, `body`, `created_at`) or one was taken back (no `data.update`; `data.updates` is the course as it now is) |
 | `incident.resolved` | it was resolved, or maintenance was marked finished; a window that simply closes at `ends_at` sends nothing |
 | `incident.deleted` | it was deleted; `data` is the incident as it was |
-| `broadcast.sent` | a broadcast went out — one delivery per broadcast: `data.id`, `data.text`, `data.buttons`, `data.audience`, `data.media_kind`/`data.media_name`, `data.telegram_recipients` (chats the bot sends it to), `data.users` (`id`, `external_id`) — the accounts in the audience the bot does not reach, except who turned mailings off in the bot. With this event subscribed broadcasts work with the bot off (text only) |
+| `broadcast.sent` | a broadcast went out — one delivery per broadcast: `data.id`, `data.text`, `data.buttons`, `data.audience`, `data.group_id` (only when narrowed to an access group), `data.media_kind`/`data.media_name`, `data.telegram_recipients` (chats the bot sends it to), `data.users` (`id`, `external_id`) — the accounts in the audience the bot does not reach, except who turned mailings off in the bot. With this event subscribed broadcasts work with the bot off (text only) |
 
 ## Delivery format
 

@@ -7,9 +7,11 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/auth"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/decoy"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/logbuf"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/nodeapi"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
@@ -91,6 +93,9 @@ func (m *Manager) UpdateNode(id int64, e store.NodeEdit) error {
 	if e.Routing != nil {
 		if err := e.Routing.ValidateLanes(); err != nil {
 			return fromFieldErr(err)
+		}
+		if err := m.pruneLaneGroups(e.Routing); err != nil {
+			return err
 		}
 		var prev *model.RoutingConfig
 		if cur, err := m.store.GetNode(id); err == nil && cur != nil {
@@ -505,6 +510,11 @@ func (m *Manager) ApplyNodeConnections(id int64, u ConnectionsUpdate) error {
 			return err
 		}
 	}
+	if on, ok := u.Protocols["xhttp"]; ok {
+		if err := m.store.SetNodeXHTTPEnabled(id, on); err != nil {
+			return err
+		}
+	}
 	if on, ok := u.Protocols["anytls"]; ok {
 		if err := m.store.SetNodeAnyTLSEnabled(id, on); err != nil {
 			return err
@@ -579,6 +589,7 @@ func (m *Manager) ApplyNodeConnections(id int64, u ConnectionsUpdate) error {
 		MieruName:          connNames["mieru"],
 		AnyTLSName:         connNames["anytls"],
 		TrustTunnelName:    connNames["trusttunnel"],
+		XHTTPName:          connNames["xhttp"],
 		MTProtoPort:        mtprotoPort,
 		MTProtoName:        nodeMTProtoName(n),
 	}
@@ -630,18 +641,22 @@ func (m *Manager) DeleteNode(id int64) error {
 	if err := m.store.DeleteNode(id); err != nil {
 		return err
 	}
+	logbuf.ForgetNode(id)
+	// The cleanup below is the panel's own bookkeeping and the node's log is gone, so
+	// its failures name the node as "deleted_node", which keeps them in the panel's log.
+	//
 	// A node row is tombstoned rather than removed, but its custom inbounds are not
 	// carried by that row — they are their own table keyed by server id. Left behind
 	// they would be orphans the fleet-wide readers still hand out, and a re-created
 	// node reusing the id would silently inherit them.
 	inbounds, _ := m.store.Inbounds(id) // for grant cleanup below, before they're gone
 	if err := m.store.DeleteServerInbounds(id); err != nil {
-		logErr("inbounds: cleanup after node delete failed", "node", id, "err", err)
+		logErr("inbounds: cleanup after node delete failed", "deleted_node", id, "err", err)
 	}
 	// Sweep group grants that referenced this node's built-in lanes and its inbounds,
 	// so a group doesn't keep tokens for a server that no longer exists.
 	if err := m.store.DeleteServerGrants(id); err != nil {
-		logErr("groups: builtin grant cleanup after node delete failed", "node", id, "err", err)
+		logErr("groups: builtin grant cleanup after node delete failed", "deleted_node", id, "err", err)
 	}
 	for _, in := range inbounds {
 		if err := m.store.DeleteInboundGrants(in.ID); err != nil {
@@ -670,6 +685,19 @@ func (m *Manager) IssueJoinToken(id int64) (string, error) { return m.store.Issu
 // SetMasterLabel sets the panel server's display name used in config labels.
 func (m *Manager) SetMasterLabel(label string) error {
 	return m.store.SetMasterLabel(strings.TrimSpace(label))
+}
+
+// SetServerNote replaces the operator's note on a server card (node 0 = the
+// master). The note is panel-only: nothing is pushed to the node or reloaded.
+func (m *Manager) SetServerNote(id int64, note string) error {
+	note = strings.TrimSpace(strings.ReplaceAll(note, "\r\n", "\n"))
+	if utf8.RuneCountInString(note) > model.MaxServerNoteLen {
+		return invalidCode("err.noteTooLong", "заметка длиннее {{max}} символов", map[string]any{"max": model.MaxServerNoteLen})
+	}
+	if id == model.LocalNodeID {
+		return m.store.SetMasterNote(note)
+	}
+	return m.store.SetNodeNote(id, note)
 }
 
 // What a node's restart request currently reads as, for the UI.

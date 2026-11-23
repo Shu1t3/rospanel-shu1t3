@@ -46,6 +46,7 @@ type apiSettingsView struct {
 	HWIDEnabled        bool     `json:"hwid_enabled"`
 	HWIDRequire        bool     `json:"hwid_require"`
 	HWIDFallbackLimit  int      `json:"hwid_fallback_limit"`
+	IPFallbackLimit    int      `json:"ip_fallback_limit"` // address cap for users on 0 (0 = none)
 	HWIDTTLDays        int      `json:"hwid_ttl_days"`
 	DeviceCountMode    string   `json:"device_count_mode"`
 	LocalBackupCron    string   `json:"local_backup_cron"`
@@ -82,6 +83,7 @@ type apiSettingsReq struct {
 	HWIDEnabled        *bool   `json:"hwid_enabled"`
 	HWIDRequire        *bool   `json:"hwid_require"`
 	HWIDFallbackLimit  *int    `json:"hwid_fallback_limit"`
+	IPFallbackLimit    *int    `json:"ip_fallback_limit"`
 	HWIDTTLDays        *int    `json:"hwid_ttl_days"`
 	DeviceCountMode    *string `json:"device_count_mode"`
 	LocalBackupCron    *string `json:"local_backup_cron"`
@@ -113,6 +115,7 @@ func (rt *Router) apiSettingsPayload() (*apiSettingsView, error) {
 		HWIDEnabled:        set.HWIDEnabled,
 		HWIDRequire:        set.HWIDRequire,
 		HWIDFallbackLimit:  set.HWIDFallbackLimit,
+		IPFallbackLimit:    set.IPFallbackLimit,
 		DeviceCountMode:    set.DeviceCountModeOr(),
 		HWIDTTLDays:        set.HWIDTTLDays,
 		LocalBackupCron:    set.LocalBackupCron,
@@ -147,6 +150,7 @@ func (rt *Router) apiPatchSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.HWIDFallbackLimit != nil && *req.HWIDFallbackLimit < 0 ||
+		req.IPFallbackLimit != nil && (*req.IPFallbackLimit < 0 || *req.IPFallbackLimit > model.MaxDeviceLimit) ||
 		req.HWIDTTLDays != nil && *req.HWIDTTLDays < 0 ||
 		req.UserAutoDeleteDays != nil && *req.UserAutoDeleteDays < 0 ||
 		req.LocalBackupKeep != nil && *req.LocalBackupKeep < 0 {
@@ -303,7 +307,7 @@ func (rt *Router) apiPatchSettings(w http.ResponseWriter, r *http.Request) {
 // otherwise setting hwid_enabled alone would silently reset the limit and the TTL.
 func (rt *Router) apiApplyHWID(req apiSettingsReq) error {
 	if req.HWIDEnabled == nil && req.HWIDRequire == nil &&
-		req.HWIDFallbackLimit == nil && req.HWIDTTLDays == nil {
+		req.HWIDFallbackLimit == nil && req.HWIDTTLDays == nil && req.IPFallbackLimit == nil {
 		return nil
 	}
 	set, err := rt.mgr.Store().GetSettings()
@@ -322,8 +326,16 @@ func (rt *Router) apiApplyHWID(req apiSettingsReq) error {
 	if req.HWIDTTLDays != nil {
 		set.HWIDTTLDays = *req.HWIDTTLDays
 	}
+	ipMoved := req.IPFallbackLimit != nil && *req.IPFallbackLimit != set.IPFallbackLimit
+	if req.IPFallbackLimit != nil {
+		set.IPFallbackLimit = *req.IPFallbackLimit
+	}
 	if err := rt.mgr.Store().SetHWIDSettings(set); err != nil {
 		return err
+	}
+	// The address default decides who is in the config, so it has to reach it.
+	if ipMoved {
+		rt.mgr.TriggerUserSync()
 	}
 	// No user sync — see the panel path for why these settings do not reach the config.
 	return nil
@@ -731,6 +743,7 @@ func settingsFieldPerms(req apiSettingsReq) []fieldPerm {
 		{req.HWIDEnabled != nil, "hwid_enabled", model.PermSettingsManage},
 		{req.HWIDRequire != nil, "hwid_require", model.PermSettingsManage},
 		{req.HWIDFallbackLimit != nil, "hwid_fallback_limit", model.PermSettingsManage},
+		{req.IPFallbackLimit != nil, "ip_fallback_limit", model.PermSettingsManage},
 		{req.HWIDTTLDays != nil, "hwid_ttl_days", model.PermSettingsManage},
 		{req.DeviceCountMode != nil, "device_count_mode", model.PermSettingsManage},
 		{req.SubOrderMode != nil, "sub_order_mode", model.PermSettingsManage},

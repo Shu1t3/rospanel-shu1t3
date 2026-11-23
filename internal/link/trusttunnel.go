@@ -2,7 +2,9 @@ package link
 
 import (
 	"encoding/base64"
+	"fmt"
 	"net"
+	"net/url"
 	"strconv"
 
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
@@ -18,7 +20,7 @@ func TrustTunnelOn(set *model.Settings) bool {
 	return set.TrustTunnelEnabled && !set.TLSInsecure && net.ParseIP(NaiveServerName(set)) == nil
 }
 
-// Deep link tags (TrustTunnel DEEP_LINK.md, version 2).
+// Deep link tags (TrustTunnel DEEP_LINK.md).
 const (
 	ttTagVersion  = 0x00
 	ttTagHostname = 0x01
@@ -28,7 +30,9 @@ const (
 	ttTagProtocol = 0x09
 	ttTagName     = 0x0C
 
-	ttLinkVersion = 2
+	// ttLinkVersion is 1: version 2 only adds subscription_url, which the link does not
+	// carry, and Shadowrocket rejects a version 2 link while every reader takes a lower one.
+	ttLinkVersion = 1
 	ttHTTP2       = 0x01
 )
 
@@ -76,4 +80,17 @@ func appendQUICVarint(b []byte, v uint64) []byte {
 		return append(b, byte(v>>56)|0xc0, byte(v>>48), byte(v>>40), byte(v>>32),
 			byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
 	}
+}
+
+// TrustTunnelURL is a user's TrustTunnel link in the URL form NyameBox reads in place of
+// the deep link (its TrustTunnelBean: user:password@host:port, TLS from sni/alpn):
+// tt://<login>:<uuid>@<host>:<port>?sni=<name>&alpn=h2#<label>. HTTP/2, as TrustTunnel.
+func TrustTunnelURL(u model.User, set *model.Settings) string {
+	q := url.Values{}
+	q.Set("sni", NaiveServerName(set))
+	q.Set("alpn", "h2")
+	return fmt.Sprintf("tt://%s:%s@%s?%s#%s",
+		url.QueryEscape(model.TrustTunnelLogin(model.UserEmail(u.ID))), url.QueryEscape(u.UUID),
+		net.JoinHostPort(set.Host, strconv.Itoa(set.VLESSPort)), q.Encode(),
+		url.PathEscape(LabelFor(model.ProtoTrustTunnel, u, set)))
 }

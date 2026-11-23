@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"html/template"
 	"net"
-	"net/netip"
 	"net/url"
 	"reflect"
 	"strconv"
@@ -31,7 +30,7 @@ import (
 // enabled built-in lanes first, then each custom inbound in its display order.
 // Protocols switched off in the Connections panel are omitted.
 func ShareLinks(u model.User, srv Server) []string {
-	return shareLinks(u, srv, linkForms{naive: link.Naive, mieru: true, anytls: true, vlessEnc: true})
+	return shareLinks(u, srv, linkForms{naive: link.Naive, mieru: true, anytls: true, trusttunnel: link.TrustTunnel, vlessEnc: true})
 }
 
 // linkForms are the per-client link forms of the lanes not every client reads; a nil
@@ -41,10 +40,16 @@ type linkForms struct {
 	awg    func(model.User, *model.Settings) string
 	mieru  bool // the client imports mierus:// (MieruLinkFor)
 	anytls bool // the client imports anytls:// (AnyTLSLinkFor)
+	// trusttunnel: the tt:// form the client imports (trustTunnelLinkFor)
+	trusttunnel func(model.User, *model.Settings) string
 	// vlessEnc: the client hands a vless:// link's encryption to a core that speaks it
 	// (VLESSEncLinkFor); without it a VLESS Encryption inbound is left out, as a client
 	// dropping the parameter would only show an entry that never connects.
 	vlessEnc bool
+	// dropPinned leaves out a custom inbound that pins the certificate under a borrowed
+	// SNI (PinCert) for a client that cannot check that pin: without the pin, nothing
+	// verifies the borrowed name. nil keeps them all.
+	dropPinned func(model.Inbound) bool
 }
 
 // shareLinks is ShareLinks with the given forms of the client-dependent lanes.
@@ -53,6 +58,9 @@ func shareLinks(u model.User, srv Server, f linkForms) []string {
 	links := make([]string, 0, 3+len(srv.Custom))
 	if set.VLESSEnabled && srv.allowsBuiltin(model.LaneVLESS) {
 		links = append(links, link.VLESS(u, set))
+	}
+	if set.XHTTPOn() && srv.allowsBuiltin(model.LaneXHTTP) {
+		links = append(links, link.XHTTP(u, set))
 	}
 	// A REALITY lane with no public key cannot be dialled: the key is what the client
 	// authenticates the handshake with, and the panel mints it when the lane is first
@@ -73,13 +81,17 @@ func shareLinks(u model.User, srv Server, f linkForms) []string {
 	if f.mieru && link.MieruOn(set) && srv.allowsBuiltin(model.LaneMieru) {
 		links = append(links, link.Mieru(u, set))
 	}
+	if f.trusttunnel != nil && link.TrustTunnelOn(set) && srv.allowsBuiltin(model.LaneTrustTunnel) {
+		links = append(links, f.trusttunnel(u, set))
+	}
 	if f.awg != nil && set.AWGEnabled && set.AWGPort != 0 && set.AWGPublicKey != "" && srv.allowsBuiltin(model.LaneAWG) {
 		if l := f.awg(u, set); l != "" {
 			links = append(links, l)
 		}
 	}
 	for _, in := range srv.Custom {
-		if !srv.allowsInbound(in) || in.Opts.EncMode != "" && !f.vlessEnc {
+		if !srv.allowsInbound(in) || in.Opts.EncMode != "" && !f.vlessEnc ||
+			in.Opts.PinCert && f.dropPinned != nil && f.dropPinned(in) {
 			continue
 		}
 		if l := link.Custom(u, in, set); l != "" {
@@ -116,8 +128,22 @@ func ShareLinksFor(u model.User, servers []Server, userAgent string) []string {
 // ShareLinksRule is ShareLinksFor with a response rule's overrides (servers already
 // passed through Overrides.Apply).
 func ShareLinksRule(u model.User, servers []Server, userAgent string, o Overrides) []string {
+	links := shareLinksRule(u, servers, userAgent, o, dropPinnedFor(userAgent))
+	switch {
+	case HiddifyLinkList(userAgent):
+		return hiddifyLinks(links)
+	case NyameBoxLinkList(userAgent):
+		return nyameBoxLinks(links)
+	}
+	return links
+}
+
+// shareLinksRule is ShareLinksRule before the rewrites for a client's own link parser
+// (Hiddify, NyameBox): the Xray form, which the Xray JSON profile is built from.
+func shareLinksRule(u model.User, servers []Server, userAgent string, o Overrides, dropPinned func(model.Inbound) bool) []string {
 	f := o.links(linkForms{naive: NaiveLinkFor(userAgent), mieru: MieruLinkFor(userAgent), awg: awgLinkFor(userAgent),
-		anytls: AnyTLSLinkFor(userAgent), vlessEnc: VLESSEncLinkFor(userAgent)})
+		anytls: AnyTLSLinkFor(userAgent), trusttunnel: trustTunnelLinkFor(userAgent), vlessEnc: VLESSEncLinkFor(userAgent),
+		dropPinned: dropPinned})
 	var links []string
 	for _, srv := range servers {
 		links = append(links, shareLinks(u, srv, f)...)
@@ -125,12 +151,25 @@ func ShareLinksRule(u model.User, servers []Server, userAgent string, o Override
 	return links
 }
 
+// dropPinnedFor is which PinCert custom inbounds a client is not handed (linkForms):
+// Hiddify's hysteria2 reads no pin, NyameBox before 5.11.28.7 reads none at all.
+func dropPinnedFor(userAgent string) func(model.Inbound) bool {
+	switch {
+	case HiddifyLinkList(userAgent):
+		return func(in model.Inbound) bool { return in.Protocol == model.InbHysteria }
+	case NyameBoxLinkList(userAgent):
+		return func(model.Inbound) bool { return true }
+	}
+	return nil
+}
+
 // NaiveLinkFor is the NaiveProxy link form a subscription client imports, or nil for a
 // client that has none — checked against each client's own parser:
 //
 //   - Shadowrocket: its HTTP2 (NaiveProxy) type, http2://base64(…) — link.NaiveShadowrocket;
-//   - Throne (from 1.1.2, sing-box core): naive+https:// with uot=1, which it reads, so UDP
-//     rides the tunnel — link.NaiveUoT;
+//   - Throne (from 1.1.2, sing-box core) and Throne for Android (from 2.0.0): naive+https://
+//     with uot=1, which it reads, so UDP rides the tunnel — link.NaiveUoT;
+//   - Hiddify on the link list (HiddifyLinkList): naive+https://;
 //   - v2rayN from 7.20.0 (sing-box core), Karing, Exclave and NekoBox (with their naive plugin):
 //     naive+https:// — NekoBox when it asks for links (?format=), its User-Agent otherwise
 //     getting the Clash profile, which has no NaiveProxy.
@@ -144,11 +183,23 @@ func NaiveLinkFor(userAgent string) func(model.User, *model.Settings) string {
 		}
 		return nil
 	}
+	if m := throneAndroidUA.FindStringSubmatch(userAgent); m != nil {
+		if versionAtLeast(m[1:], 2, 0, 0) {
+			return link.NaiveUoT
+		}
+		return nil
+	}
 	if m := v2raynUA.FindStringSubmatch(userAgent); m != nil {
 		if versionAtLeast(m[1:], 7, 20, 0) {
 			return link.Naive
 		}
 		return nil
+	}
+	if HiddifyLinkList(userAgent) {
+		return link.Naive
+	}
+	if NyameBoxLinkList(userAgent) {
+		return link.NaiveUoT // its naive reads uot
 	}
 	switch {
 	case ua == "":
@@ -171,11 +222,7 @@ func Base64Payload(links []string) string {
 
 // URL is the public subscription URL for a token (always https on the host).
 func URL(set *model.Settings, token string) string {
-	host := set.Host
-	if ip, err := netip.ParseAddr(host); err == nil && ip.Is6() {
-		host = "[" + host + "]"
-	}
-	return "https://" + host + "/" + set.SubPathOr() + "/" + token
+	return "https://" + model.URLHost(set.Host) + "/" + set.SubPathOr() + "/" + token
 }
 
 // DeepLink is one "open in client" button. Href is template.URL so html/template
@@ -223,7 +270,9 @@ func appCatalog(subURL string, lang i18n.Lang, set *model.Settings) []DeepLink {
 		{"incy", "INCY", allTV, template.URL("incy://import/" + subURL)},
 		{"v2raytun", "v2RayTun", allTV, template.URL("v2raytun://import/" + subURL)},
 		{"hiddify", "Hiddify", all, template.URL("hiddify://import/" + subURL)},
-		{"karing", "Karing", allTV, template.URL("karing://install-config?url=" + enc)},
+		// Karing sends its x-hwid header only when told to; xhwid=true turns that on
+		// at import, so the HWID limit sees the device from the first fetch.
+		{"karing", "Karing", allTV, template.URL("karing://install-config?url=" + enc + "&xhwid=true")},
 		{"singbox", "sing-box", all, template.URL("sing-box://import-remote-profile?url=" + enc)},
 		{"clash", "Clash Meta / Mihomo", "Windows · macOS · Linux · Android", template.URL("clash://install-config?url=" + enc)},
 		{"v2box", "V2Box", "iOS · macOS · Android", template.URL("v2box://install-sub?url=" + enc)},
@@ -515,13 +564,14 @@ func confFileName(label, fallback string) string {
 // what the panel's relay serves unshaped. The mode switches are all spelled out: the
 // app applies them as a set, and one left out keeps whatever mode the device was in.
 func TurnImportLink(u model.User, s *model.Settings, in model.Inbound) string {
-	addr, ok := awg.ClientAddr(u.AWGSlot)
-	if !ok || u.WGPrivateKey == "" || in.Opts.WGPublicKey == "" || in.Opts.TurnMaskKey == "" {
+	key, slot := u.AWGIdentity()
+	addr, ok := awg.ClientAddr(slot)
+	if !ok || key == "" || in.Opts.WGPublicKey == "" || in.Opts.TurnMaskKey == "" {
 		return ""
 	}
 	settings := map[string]any{
 		"serverName":    link.CustomLabel(in, s),
-		"privateKey":    u.WGPrivateKey,
+		"privateKey":    key,
 		"peerPublicKey": in.Opts.WGPublicKey,
 		// Present though empty: the app's builds before 134 refuse a link without it,
 		// and an empty key is WireGuard's "no preshared key".
@@ -587,12 +637,13 @@ func FreeTurnImportLink(u model.User, s *model.Settings, in model.Inbound, conf 
 // It is the file the subscription serves and what the freeturn:// link carries. "" for
 // a user with no tunnel identity yet.
 func TurnClientConf(u model.User, s *model.Settings, in model.Inbound) string {
-	addr, ok := awg.ClientAddr(u.AWGSlot)
-	if !ok || u.WGPrivateKey == "" || in.Opts.WGPublicKey == "" {
+	key, slot := u.AWGIdentity()
+	addr, ok := awg.ClientAddr(slot)
+	if !ok || key == "" || in.Opts.WGPublicKey == "" {
 		return ""
 	}
 	return awg.ClientConfig{
-		PrivateKey:      u.WGPrivateKey,
+		PrivateKey:      key,
 		Address:         addr,
 		DNS:             awg.TunnelDNS(s),
 		MTU:             TurnMTU,
@@ -605,13 +656,14 @@ func TurnClientConf(u model.User, s *model.Settings, in model.Inbound) string {
 // inbound: the tunnel pointed at the server's own address and the inbound's port, for any
 // stock WireGuard client. "" for a user with no tunnel identity yet.
 func WireGuardClientConf(u model.User, s *model.Settings, in model.Inbound) string {
-	addr, ok := awg.ClientAddr(u.AWGSlot)
-	if !ok || u.WGPrivateKey == "" || in.Opts.WGPublicKey == "" || in.Protocol != model.InbWireGuard {
+	key, slot := u.AWGIdentity()
+	addr, ok := awg.ClientAddr(slot)
+	if !ok || key == "" || in.Opts.WGPublicKey == "" || in.Protocol != model.InbWireGuard {
 		return ""
 	}
 	host, port := in.ClientEndpoint(s.Host)
 	return awg.ClientConfig{
-		PrivateKey:      u.WGPrivateKey,
+		PrivateKey:      key,
 		Address:         addr,
 		DNS:             awg.TunnelDNS(s),
 		MTU:             WireGuardMTU,
@@ -620,9 +672,9 @@ func WireGuardClientConf(u model.User, s *model.Settings, in model.Inbound) stri
 	}.Render()
 }
 
-// WireGuardMTU is the tunnel MTU of a plain WireGuard inbound's client: WireGuard's own
-// default, matching the server end (xray.WireGuardMTU).
-const WireGuardMTU = 1420
+// WireGuardMTU is the tunnel MTU of a plain WireGuard inbound's client,
+// matching the server end (xray.WireGuardMTU).
+const WireGuardMTU = 1280
 
 // TurnMTU is the tunnel MTU on the client end of a TURN lane: vk-turn-proxy and Free
 // Turn Proxy both ask for 1280, their DTLS, mask and TURN framing riding inside the
@@ -643,8 +695,9 @@ const TurnMTU = 1280
 // relay does not have) and WRAP is OFF (unset means PREFERRED). The WireGuard endpoint is
 // the app's local TURN client, as in the .conf.
 func WingsVImportLink(u model.User, s *model.Settings, in model.Inbound) string {
-	addr, ok := awg.ClientAddr(u.AWGSlot)
-	priv, errPriv := base64.StdEncoding.DecodeString(u.WGPrivateKey)
+	key, slot := u.AWGIdentity()
+	addr, ok := awg.ClientAddr(slot)
+	priv, errPriv := base64.StdEncoding.DecodeString(key)
 	pub, errPub := base64.StdEncoding.DecodeString(in.Opts.WGPublicKey)
 	if !ok || errPriv != nil || errPub != nil || len(priv) != 32 || len(pub) != 32 {
 		return ""

@@ -46,6 +46,7 @@ func nodeSettings(set *model.Settings, n *model.Node) *model.Settings {
 	ns.MieruEnabled, ns.MieruPort, ns.MieruTransport, ns.MieruName = derefBool(n.MieruEnabled), 0, model.MieruTCP, ""
 	ns.AnyTLSEnabled, ns.AnyTLSName = derefBool(n.AnyTLSEnabled), ""
 	ns.TrustTunnelEnabled, ns.TrustTunnelName = derefBool(n.TrustTunnelEnabled), ""
+	ns.XHTTPEnabled, ns.XHTTPName = derefBool(n.XHTTPEnabled), "" // the path stays the panel's
 	ns.MTProtoEnabled, ns.MTProtoPort, ns.MTProtoName = derefBool(n.MTProtoEnabled), 0, ""
 	ns.MTProtoDomain = n.MTProtoDomain
 	// REALITY donor: the node's own if set, otherwise inherit the panel's (a node
@@ -130,6 +131,7 @@ func nodeSettings(set *model.Settings, n *model.Node) *model.Settings {
 		ns.MieruName = c.MieruName
 		ns.AnyTLSName = c.AnyTLSName
 		ns.TrustTunnelName = c.TrustTunnelName
+		ns.XHTTPName = c.XHTTPName
 		ns.MTProtoPort = c.MTProtoPort
 		ns.MTProtoName = c.MTProtoName
 	}
@@ -227,6 +229,7 @@ func (m *Manager) generateNodeState(n *model.Node, x *nodeStateInputs, users []m
 	opts := x.opts
 	opts.ServerID = n.ID
 	opts.Access = in.access
+	opts.GroupMembers = in.members
 	opts.LegacyUDPHop = nodeLegacyHop(n)
 	if x.inbErr != nil {
 		// Soft, as in genOptsFor: the built-in lanes still keep the server reachable.
@@ -354,6 +357,7 @@ type nodeInputs struct {
 	users   []model.User // read-only: copy before changing a user (see nodeAWGState)
 	ids     []int64      // the users' ids, in their order: what the next read compares
 	access  map[int64]model.Access
+	members map[int64][]int64 // group → its members (store.GroupMembers)
 	speed   map[string]int
 	blocked []string
 	banned  []string
@@ -407,7 +411,8 @@ func (m *Manager) readNodeInputsLocked(ws *workingSet) (*nodeInputs, error) {
 	// The credentials cost several times the rest of this read put together, in time
 	// and in garbage both, and they change only by paths that forget this snapshot: a
 	// uuid and a password are written when the account is made and again only by a
-	// UUID reset (markRekeyed), and a tunnel identity is claimed once (see claimAWG).
+	// UUID reset (markRekeyed), a tunnel identity is claimed once (see claimAWG), and
+	// a device key changes only through awgKeysChanged.
 	// So while the set is the same, last read's credentials are the same.
 	if prev != nil && slices.Equal(prev.ids, ids) {
 		in.users, in.ids = prev.users, prev.ids
@@ -427,6 +432,10 @@ func (m *Manager) readNodeInputsLocked(ws *workingSet) (*nodeInputs, error) {
 	// user's credential would be written into every lane.
 	if in.access, err = m.store.AccessMap(); err != nil {
 		return nil, fmt.Errorf("load access map: %w", err)
+	}
+	// Hard too: a lane scoped to groups would route nobody without them.
+	if in.members, err = m.store.GroupMembers(); err != nil {
+		return nil, fmt.Errorf("load group members: %w", err)
 	}
 	if len(capped) > 0 {
 		in.speed = make(map[string]int, len(capped))
@@ -491,7 +500,7 @@ func (m *Manager) fleetChanged(ws *workingSet) bool {
 func sameNodeInputs(a, b *nodeInputs) bool {
 	if len(a.users) != len(b.users) || !maps.Equal(a.speed, b.speed) || !slices.Equal(a.blocked, b.blocked) ||
 		!slices.Equal(a.banned, b.banned) ||
-		!reflect.DeepEqual(a.access, b.access) {
+		!reflect.DeepEqual(a.access, b.access) || !reflect.DeepEqual(a.members, b.members) {
 		return false
 	}
 	// The same users, reused rather than read again: there is nothing to walk.
@@ -501,7 +510,8 @@ func sameNodeInputs(a, b *nodeInputs) bool {
 	for i := range a.users {
 		x, y := &a.users[i], &b.users[i]
 		if x.ID != y.ID || x.UUID != y.UUID || x.Password != y.Password ||
-			x.WGPrivateKey != y.WGPrivateKey || x.AWGSlot != y.AWGSlot {
+			x.WGPrivateKey != y.WGPrivateKey || x.AWGSlot != y.AWGSlot ||
+			!slices.Equal(x.AWGDevices, y.AWGDevices) {
 			return false
 		}
 	}

@@ -88,6 +88,9 @@ function toCfg(d: BillingInfo, plans: TariffPlan[]): BillingInfo {
     churn_survey: !!d.churn_survey,
     traffic_packs: d.traffic_packs ?? [],
     plan_change: d.plan_change ?? true,
+    return_url: d.return_url ?? "",
+    renew_window_days: d.renew_window_days ?? 0,
+    max_prepaid_days: d.max_prepaid_days ?? 0,
     plans,
   };
 }
@@ -215,7 +218,10 @@ export function BillingPanel() {
     JSON.stringify(cfg.winback) !== JSON.stringify(saved.winback) ||
     cfg.churn_survey !== saved.churn_survey ||
     JSON.stringify(cfg.traffic_packs) !== JSON.stringify(saved.traffic_packs) ||
-    cfg.plan_change !== saved.plan_change;
+    cfg.plan_change !== saved.plan_change ||
+    cfg.return_url !== saved.return_url ||
+    cfg.renew_window_days !== saved.renew_window_days ||
+    cfg.max_prepaid_days !== saved.max_prepaid_days;
 
   // Which providers have unsaved edits (skip any whose server view we don't have).
   const dirtyProviders = (providers ?? []).filter(
@@ -288,6 +294,9 @@ export function BillingPanel() {
           churn_survey: cfg.churn_survey,
           traffic_packs: cfg.traffic_packs,
           plan_change: cfg.plan_change,
+          return_url: cfg.return_url.trim(),
+          renew_window_days: cfg.renew_window_days,
+          max_prepaid_days: cfg.max_prepaid_days,
         });
         setSaved({ ...cfg, plans: safePlans });
         // Tell the top nav to re-read billing_enabled so the payments menu item
@@ -399,6 +408,17 @@ export function BillingPanel() {
                 {t("bill.globalHint")}{" "}
                 <Trans i18nKey="bill.existingUsers" components={{ b: <b /> }} />
               </>
+            }
+          />
+          <SettingRow
+            label={t("bill.returnUrl")}
+            hint={t("bill.returnUrlHint")}
+            field={
+              <TextInput
+                value={cfg.return_url}
+                placeholder="https://…"
+                onChange={(v) => setCfg({ ...cfg, return_url: v })}
+              />
             }
           />
         </Panel>
@@ -788,6 +808,32 @@ export function BillingPanel() {
           aside={<Switch checked={cfg.plan_change} onChange={(v) => setCfg({ ...cfg, plan_change: v })} />}
         >
           <SettingRow hint={t("planChange.hint")} />
+        </Panel>
+
+        <Panel title={t("renewLimit.title")}>
+          <SettingRow hint={t("renewLimit.hint")} />
+          <SettingRow
+            label={t("renewLimit.window")}
+            hint={t("renewLimit.windowHint")}
+            field={
+              <TextInput
+                type="number"
+                value={String(cfg.renew_window_days)}
+                onChange={(v) => setCfg({ ...cfg, renew_window_days: Math.max(0, Math.floor(Number(v) || 0)) })}
+              />
+            }
+          />
+          <SettingRow
+            label={t("renewLimit.maxDays")}
+            hint={t("renewLimit.maxDaysHint")}
+            field={
+              <TextInput
+                type="number"
+                value={String(cfg.max_prepaid_days)}
+                onChange={(v) => setCfg({ ...cfg, max_prepaid_days: Math.max(0, Math.floor(Number(v) || 0)) })}
+              />
+            }
+          />
         </Panel>
 
         <Panel title={t("bill.pricing")}>

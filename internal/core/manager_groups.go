@@ -73,6 +73,7 @@ func (m *Manager) GroupTargets() ([]GroupTarget, error) {
 	target := func(id int64, name string, s *model.Settings) GroupTarget {
 		lanes := []GroupLaneOpt{
 			{model.LaneVLESS, s.ProtoLabel(model.ProtoVLESS), model.BuiltinToken(id, model.LaneVLESS), s.VLESSEnabled},
+			{model.LaneXHTTP, s.ProtoLabel(model.ProtoXHTTP), model.BuiltinToken(id, model.LaneXHTTP), s.XHTTPEnabled},
 			{model.LaneReality, s.ProtoLabel(model.ProtoReality), model.BuiltinToken(id, model.LaneReality), s.RealityEnabled},
 			{model.LaneHysteria, s.ProtoLabel(model.ProtoHysteria), model.BuiltinToken(id, model.LaneHysteria), s.HysteriaEnabled},
 			{model.LaneNaive, s.ProtoLabel(model.ProtoNaive), model.BuiltinToken(id, model.LaneNaive), s.NaiveEnabled},
@@ -134,7 +135,7 @@ func sanitizeGrants(tokens []string) []string {
 		} else if _, lane, isBuiltin := model.ParseBuiltinToken(t); isBuiltin {
 			ok = lane == model.LaneVLESS || lane == model.LaneReality || lane == model.LaneHysteria || lane == model.LaneAWG ||
 				lane == model.LaneNaive || lane == model.LaneMieru || lane == model.LaneAnyTLS || lane == model.LaneMTProto ||
-				lane == model.LaneTrustTunnel
+				lane == model.LaneTrustTunnel || lane == model.LaneXHTTP
 		}
 		if ok {
 			seen[t] = true
@@ -314,4 +315,26 @@ func groupErr(err error) error {
 		return invalidCode("err.groupNameTaken", "группа с таким названием уже есть")
 	}
 	return err
+}
+
+// pruneLaneGroups drops the groups deleted since the routing editor was opened from the
+// lanes scoped to them. A lane left with none is refused rather than saved unscoped:
+// that would hand everyone the lane meant for a few.
+func (m *Manager) pruneLaneGroups(rc *model.RoutingConfig) error {
+	for i := range rc.Lanes {
+		l := &rc.Lanes[i]
+		if !l.Scoped() {
+			continue
+		}
+		ids, err := m.store.ExistingGroupIDs(l.Groups)
+		if err != nil {
+			return err
+		}
+		if len(ids) == 0 {
+			return invalidCode("err.laneGroupsGone", "группы полосы «{{name}}» удалены — выберите другие или уберите ограничение",
+				map[string]any{"name": l.Name})
+		}
+		l.Groups = ids
+	}
+	return nil
 }

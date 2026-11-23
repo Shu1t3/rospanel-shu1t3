@@ -54,6 +54,9 @@ type Node struct {
 	Name    string `json:"name"`
 	Host    string `json:"host"`
 	Enabled bool   `json:"enabled"`
+	// Note is the operator's own free text about this server (panel-only; never
+	// sent to the node and never part of its config).
+	Note string `json:"note"`
 
 	// TrafficCoefficient scales how much of a user's quota is spent per real byte on
 	// this node: 2.0 makes an expensive location drain the allowance twice as fast,
@@ -98,7 +101,10 @@ type Node struct {
 	TrustTunnelEnabled *bool `json:"trusttunnel_enabled"`
 	// ServesTrustTunnel is ServesNaive for TrustTunnel (nodeapi.SyncRequest.TrustTunnel).
 	ServesTrustTunnel bool  `json:"-"`
-	MTProtoEnabled    *bool `json:"mtproto_enabled"`
+	XHTTPEnabled      *bool `json:"xhttp_enabled"`
+	// ServesXHTTP is ServesNaive for VLESS-XHTTP-TLS (nodeapi.SyncRequest.XHTTP).
+	ServesXHTTP    bool  `json:"-"`
+	MTProtoEnabled *bool `json:"mtproto_enabled"`
 	// MTProtoDomain is the name in the node's MTProto secrets, kept from the first time
 	// the lane ran (see Settings.MTProtoDomain).
 	MTProtoDomain string `json:"-"`
@@ -211,6 +217,7 @@ type NodeConnections struct {
 	MieruName          string `json:"mieru_name"`
 	AnyTLSName         string `json:"anytls_name"`
 	TrustTunnelName    string `json:"trusttunnel_name"`
+	XHTTPName          string `json:"xhttp_name"`
 	MTProtoPort        int    `json:"mtproto_port"`
 	MTProtoName        string `json:"mtproto_name"`
 }
@@ -244,6 +251,16 @@ type NodeStatusUpdate struct {
 	ServesAnyTLS      bool
 	ServesMTProto     bool
 	ServesTrustTunnel bool
+	ServesXHTTP       bool
+}
+
+// URLHost is host as it goes before ":port" or into a URL: an IPv6 literal in
+// brackets, anything else unchanged. A bare "2001:db8::1" there reads as a port.
+func URLHost(h string) string {
+	if strings.Contains(h, ":") && !strings.HasPrefix(h, "[") && net.ParseIP(h) != nil {
+		return "[" + h + "]"
+	}
+	return h
 }
 
 // UnbracketIPv6 accepts the bracketed spelling used in URLs without treating a

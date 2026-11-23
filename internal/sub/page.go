@@ -48,22 +48,37 @@ func Font(name string) ([]byte, bool) {
 //go:embed page.html
 var pageHTML string
 
-var pageTmpl = template.Must(template.New("sub").Parse(pageHTML))
+// pageBase is never executed, so a theme can be cloned from it (html/template
+// refuses to clone a template that ran); the page itself renders pageTmpl.
+var (
+	pageBase = template.Must(template.New("sub").Parse(pageHTML))
+	pageTmpl = template.Must(pageBase.Clone())
+)
 
 // appRedirectTmpl is a tiny page that immediately hands off to a client's deep
 // link. It's opened in the EXTERNAL browser (via Telegram's openLink) because a
 // custom app scheme (happ://, v2rayng://, …) can't be launched from inside the
 // Telegram webview — but the browser it lands in resolves the scheme and opens
 // the app. Href is template.URL so the scheme survives html/template's URL filter.
+// Inside the Telegram webview itself the auto-redirect is a dead end: the webview
+// swallows the custom scheme and is left on a blank document. There the page stays
+// put and shows the hand-off link as a big visible button — a user tap on it is
+// what lets the webview hand the scheme to the OS.
 var appRedirectTmpl = template.Must(template.New("appredir").Parse(
 	`<!doctype html><html lang="{{.Lang}}" dir="{{.Dir}}"><head><meta charset="utf-8">` +
 		`<meta name="viewport" content="width=device-width,initial-scale=1">` +
 		`<title>{{.Opening}}</title>` +
-		`<script>location.replace("{{.Href}}")</script>` +
-		`<meta http-equiv="refresh" content="0;url={{.Href}}"></head>` +
+		`<script>(function(){` +
+		`var tg=/Telegram/i.test(navigator.userAgent)||!!window.TelegramWebviewProxy||(window.Telegram&&window.Telegram.WebApp);` +
+		`if(tg){document.documentElement.className+=" tgwebview";}` +
+		`else{location.replace("{{.Href}}");}` +
+		`})();</script>` +
+		`<style>.tgwebview #go{display:inline-block;margin:12px 0;padding:14px 22px;border-radius:12px;` +
+		`background:#1c9ad6;color:#fff;font-weight:700;text-decoration:none;font-size:17px}</style>` +
+		`</head>` +
 		`<body style="font-family:sans-serif;padding:24px;color:#333">` +
 		`<p>{{.Opening}}<br>{{.IfNotOpened}} ` +
-		`<a href="{{.Href}}">{{.ClickHere}}</a>{{.Stop}}</p></body></html>`))
+		`<a id="go" href="{{.Href}}">{{.ClickHere}}</a>{{.Stop}}</p></body></html>`))
 
 // AppRedirect renders the deep-link hand-off page for one client's share link.
 func AppRedirect(href template.URL, lang i18n.Lang) ([]byte, error) {
@@ -99,6 +114,7 @@ type pageText struct {
 	DefaultBrand   string
 	Greeting       string
 	GreetingName   string // Greeting with the user's name, a %s
+	UserID         string // the label before the user's id
 	Online         string
 	Offline        string
 	Traffic        string
@@ -150,6 +166,19 @@ type pageText struct {
 	AWGTitle       string
 	AWGHint        string
 	AWGDownload    string
+	AWGKey         string
+	AWGKeyTurn     string
+	AWGKeyMain     string
+	AWGKeyAdd      string
+	AWGKeyName     string
+	AWGKeyDelete   string
+	AWGKeyConfirm  string
+	AWGKeyFailed   string
+	AWGKeysOne     string
+	AWGKeyOff      string
+	AWGKeyNth      string // a device with no name: "Device %d"
+	Close          string
+	AWGKeysFull    string
 	AWGSite        string // where the Amnezia apps are downloaded, in the page's language
 	WGTitle        string
 	WGHint         string
@@ -211,6 +240,7 @@ func text(lang i18n.Lang) pageText {
 		DefaultBrand:   t("sub.defaultBrand"),
 		Greeting:       t("sub.greeting"),
 		GreetingName:   t("sub.greetingName"),
+		UserID:         t("sub.userID"),
 		Online:         t("sub.online"),
 		Offline:        t("sub.offline"),
 		Traffic:        t("sub.traffic"),
@@ -262,6 +292,19 @@ func text(lang i18n.Lang) pageText {
 		AWGTitle:       t("sub.awgTitle"),
 		AWGHint:        t("sub.awgHint"),
 		AWGDownload:    t("sub.awgDownload"),
+		AWGKey:         t("sub.awgKey"),
+		AWGKeyTurn:     t("sub.awgKeyTurn"),
+		AWGKeyMain:     t("sub.awgKeyMain"),
+		AWGKeyAdd:      t("sub.awgKeyAdd"),
+		AWGKeyName:     t("sub.awgKeyName"),
+		AWGKeyDelete:   t("sub.awgKeyDelete"),
+		AWGKeyConfirm:  t("sub.awgKeyConfirm"),
+		AWGKeyFailed:   t("sub.awgKeyFailed"),
+		AWGKeysOne:     t("sub.awgKeysOne"),
+		AWGKeyOff:      t("sub.awgKeyOff"),
+		AWGKeyNth:      t("sub.awgKeyNth"),
+		Close:          t("sub.close"),
+		AWGKeysFull:    t("sub.awgKeysFull"),
 		AWGSite:        amneziaSite(lang),
 		WGTitle:        t("sub.wgTitle"),
 		WGHint:         t("sub.wgHint"),
@@ -370,6 +413,73 @@ type tgProxyCard struct {
 	QRURL   string
 }
 
+// tunnelCards are a user's AmneziaWG, WireGuard and TURN cards across the servers,
+// written with u's key (model.User.AWGIdentity); keyID names that key on the config
+// URLs (0: the main one). The label names the server whose tunnel it is, but the files
+// are downloaded from the panel — a node hosts no /sub path.
+func tunnelCards(u model.User, local *model.Settings, servers []Server, keyID int64) (awgs, wgs []awgCard, turns []turnCard) {
+	subURL := URL(local, u.SubToken)
+	q := awgKeyQuery(keyID)
+	for _, srv := range servers {
+		s := srv.Set
+		if s.AWGEnabled && s.AWGPort != 0 && srv.allowsBuiltin(model.LaneAWG) {
+			awgs = append(awgs, awgCard{
+				Label:   s.ProtoLabelFor(model.ProtoAWG, &u),
+				ConfURL: AWGConfURL(local, u.SubToken, s.ServerID) + q,
+				QRURL:   fmt.Sprintf("%s/awg/%d.png", subURL, s.ServerID) + q,
+			})
+		}
+		for _, in := range srv.Custom {
+			if !srv.allowsInbound(in) {
+				continue
+			}
+			switch in.Protocol {
+			case model.InbWireGuard:
+				wgs = append(wgs, awgCard{
+					Label:   link.CustomLabelFor(in, u, s),
+					ConfURL: TurnConfURL(local, u.SubToken, in.ID) + q,
+					QRURL:   fmt.Sprintf("%s/wg/%d.png", subURL, in.ID) + q,
+				})
+			case model.InbTurnVK:
+				c := turnCard{
+					Label:   link.CustomLabelFor(in, u, s),
+					Peer:    net.JoinHostPort(s.Host, strconv.Itoa(in.Port)),
+					Link:    in.Opts.TurnLink,
+					ConfURL: TurnConfURL(local, u.SubToken, in.ID) + q,
+				}
+				// Free Turn Proxy's masked wire first: the apps that speak it are the ones
+				// the call service does not shape. WINGS V reaches the relay unmasked.
+				for _, app := range []struct {
+					name, link, appLink string
+				}{
+					{"VK Turn Proxy (iOS)", TurnImportLink(u, s, in),
+						"https://github.com/anton48/vk-turn-proxy-ios"},
+					{"Free Turn Proxy (Android)", FreeTurnImportLink(u, s, in, TurnClientConf(u, s, in)),
+						"https://github.com/samosvalishe/turn-proxy-android"},
+					{"WINGS V (Android, Windows, Linux)", WingsVImportLink(u, s, in),
+						"https://github.com/WINGS-N/WINGSV"},
+				} {
+					if app.link != "" {
+						c.Apps = append(c.Apps, turnApp{
+							Name: app.name, Link: app.link, Href: template.URL(app.link), AppLink: app.appLink,
+						})
+					}
+				}
+				turns = append(turns, c)
+			}
+		}
+	}
+	return awgs, wgs, turns
+}
+
+// awgKeyQuery is the query naming a device key on a config URL, "" for the main key.
+func awgKeyQuery(id int64) string {
+	if id == 0 {
+		return ""
+	}
+	return fmt.Sprintf("?k=%d", id)
+}
+
 // awgCard is one server's AmneziaWG config on the page.
 type awgCard struct {
 	Label   string
@@ -417,17 +527,18 @@ func colorsOf(t branding.Theme) pageColors {
 }
 
 type pageData struct {
-	Lang       i18n.Lang
+	Lang       i18n.Lang // the reader's language: ru, en, zh, ar; .Lang.Dir is ltr or rtl
 	L          pageText
-	Name       string
+	UserID     int64       // the user's id, to quote to support
+	Name       string      // the user's name, "" when they have none
 	BrandName  string      // panel display name (defaults to the stock RosPanel name)
 	pageColors             // the light theme
 	Dark       *pageColors // the dark theme, for a dark system
 	IsDefault  bool        // true when the stock RosPanel name is in effect
-	SubURL     string
-	Access     Access
-	Links      []protoLink
-	DeepLinks  []DeepLink
+	SubURL     string      // the subscription link: what a client imports; {{.SubURL}}/qr.png is its QR
+	Access     Access      // the reader's access to this page, plugin blocks, notices and the survey
+	Links      []protoLink // one share link per protocol and server (shown when ShowConfigs)
+	DeepLinks  []DeepLink  // "open in app" links, one per client, in the operator's order
 	// Wizard is the connect wizard per platform; empty (every platform's client
 	// switched off) hides it.
 	Wizard []WizardPlatform
@@ -442,22 +553,22 @@ type pageData struct {
 	// Telegram lists one card per server whose Telegram proxy the user may use.
 	Telegram []tgProxyCard
 
-	StatusLabel string
-	StatusClass string
-	Used        string
-	Limit       string
+	StatusLabel string // the subscription's state, worded: active, expired, disabled, limited
+	StatusClass string // the same as a colour: green, red, gray, orange
+	Used        string // traffic used, formatted ("12 GB")
+	Limit       string // the traffic limit, formatted; set when HasLimit
 	HasLimit    bool
-	UsedPct     int
+	UsedPct     int    // used of the limit, 0-100
 	ResetText   string // date the traffic quota next refills, e.g. "07.08.2026"
 	HasReset    bool
-	Expire      string
+	Expire      string // "until 23.12.2026", worded; set when HasExpire
 	HasExpire   bool
-	Online      bool
-	LastSeen    string
+	Online      bool   // a client is connected now
+	LastSeen    string // when one last was, "3 h ago"; "" if never
 
-	Billing     Billing
-	Devices     Devices
-	ShowConfigs bool // render the raw per-lane share links
+	Billing     Billing // plans, balance, promo codes, history and referrals; Billing.Show is false when selling is off
+	Devices     Devices // the devices bound to the subscription; Devices.Show is false when the operator does not show them
+	ShowConfigs bool    // render the raw per-lane share links
 	// ShowDownload renders the "download the Clash config" button. Off when the
 	// operator requires an HWID: the button fetches this same URL from the browser,
 	// which sends no id and would be refused — an offer the page cannot keep.
@@ -475,6 +586,80 @@ type Devices struct {
 	Limit      int         `json:"limit"`      // 0 = unlimited
 	CountText  string      `json:"count_text"` // "2 / 3", or just the count when unlimited
 	UnbindPath string      `json:"-"`          // POST target that releases one device (<SubURL>/devices/unbind)
+	// AWG is the reader's tunnel keys (AmneziaWG, WireGuard, TURN), one per device;
+	// AWG.Show is false without a tunnel card on the page.
+	AWG AWGKeys `json:"awg"`
+}
+
+// AWGKeys is the tunnel key picker: the main key and one per device. The AmneziaWG,
+// WireGuard and TURN cards are written with the picked one.
+type AWGKeys struct {
+	Show bool        `json:"show"`
+	List []AWGKeyRow `json:"list"` // the device keys, oldest first; the main key is not in it
+	// Pick is the id of the key the card's configs use, 0 for the main one.
+	Pick int64 `json:"pick"`
+	// CanAdd is whether the reader may make another key (the device cap counts the
+	// main key too); Count and Limit are the keys held, main included, and the cap.
+	CanAdd     bool   `json:"can_add"`
+	Count      int    `json:"count"`
+	Limit      int    `json:"limit"`
+	AddPath    string `json:"-"` // POST target that makes a key: {"name"} → {"id"}
+	DeletePath string `json:"-"` // POST target that deletes one: {"id"}
+	// All is every device with its own configs: the main key, then List. The page
+	// opens one device's configs at a time (#tdev-<ID>, 0 the main key).
+	All  []AWGKeyRow            `json:"-"`
+	keys map[int64]model.AWGKey // by id: the keys of List in force (WithKeys)
+}
+
+// WithKeys hands the page the keys in force, by id, that the device rows of All are
+// written with. Kept off the type's exported surface: a theme gets the configs, never
+// the keys.
+func WithKeys(k AWGKeys, keys map[int64]model.AWGKey) AWGKeys {
+	k.keys = keys
+	return k
+}
+
+// deviceTunnels is every device of the user with its tunnel cards: the main key first,
+// then each key in force. A key past the cap (Off) is listed with none, to be deleted.
+func deviceTunnels(u model.User, local *model.Settings, servers []Server, k AWGKeys, mainName, nth string) []AWGKeyRow {
+	if !k.Show {
+		return nil
+	}
+	main := u
+	main.AWGPick = nil
+	row := AWGKeyRow{Name: mainName, Main: true}
+	row.AWG, row.WG, row.Turn = tunnelCards(main, local, servers, 0)
+	out := []AWGKeyRow{row}
+	for i, r := range k.List {
+		// A device made without a name is named by its place: the main key is the first.
+		if r.Name == "" {
+			r.Name = fmt.Sprintf(nth, i+2)
+		}
+		if key, ok := k.keys[r.ID]; ok && !r.Off {
+			dev := u
+			dev.AWGPick = &key
+			r.AWG, r.WG, r.Turn = tunnelCards(dev, local, servers, r.ID)
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// AWGKeyRow is one device key in the picker.
+type AWGKeyRow struct {
+	ID       int64  `json:"id"`
+	Name     string `json:"name"` // the name given, else the client's own; may be ""
+	Selected bool   `json:"selected"`
+	// Off is a key past the user's device cap (a cheaper plan since): it connects
+	// nowhere and cannot be picked, only deleted.
+	Off bool `json:"off"`
+	// Main is the user's own key, the first of All; it cannot be deleted.
+	Main bool `json:"main"`
+	// AWG, WG and Turn are the device's configs, as the top-level cards of the same
+	// names; set on the rows of All only.
+	AWG  []awgCard  `json:"-"`
+	WG   []awgCard  `json:"-"`
+	Turn []turnCard `json:"-"`
 }
 
 // DeviceRow is one bound install as the page shows it.
@@ -493,6 +678,10 @@ type Billing struct {
 	CurrentPlan string        `json:"current_plan"` // active plan name ("" = none / manual)
 	ExpireText  string        `json:"expire_text"`  // "until DD.MM.YYYY" for a paid expiry, else ""
 	Plans       []BillingPlan `json:"plans"`        // paid plans offered for purchase/renewal
+	// RenewOpens says when the renewal of the active plan opens ("Renewal opens on
+	// DD.MM.YYYY"), "" when it is open or there is nothing to renew. Plans is then
+	// empty.
+	RenewOpens string `json:"renew_opens"`
 	// Providers are the payment methods offered, in the order they are shown. Manual
 	// payment, when the operator has it on, is one of them under ManualPayKey.
 	Providers []BillingPay `json:"providers"`
@@ -690,6 +879,9 @@ func Page(u model.User, local *model.Settings, servers []Server, billing Billing
 		return nil, err
 	}
 	data.Access = access
+	if b, ok := renderThemed(data); ok {
+		return b, nil
+	}
 	var buf bytes.Buffer
 	if err := pageTmpl.Execute(&buf, data); err != nil {
 		return nil, err
@@ -724,17 +916,11 @@ func buildPageData(u model.User, local *model.Settings, servers []Server, billin
 				QRURL:   fmt.Sprintf("%s/tg/%d.png", subURL, s.ServerID),
 			})
 		}
-		if s.AWGEnabled && s.AWGPort != 0 && srv.allowsBuiltin(model.LaneAWG) {
-			awgCards = append(awgCards, awgCard{
-				Label: s.ProtoLabelFor(model.ProtoAWG, &u),
-				// The label names the server whose tunnel this is, but the config
-				// itself is downloaded from the panel — the node hosts no /sub path.
-				ConfURL: AWGConfURL(local, u.SubToken, s.ServerID),
-				QRURL:   fmt.Sprintf("%s/awg/%d.png", subURL, s.ServerID),
-			})
-		}
 		if s.VLESSEnabled && srv.allowsBuiltin(model.LaneVLESS) {
 			protoLinks = append(protoLinks, protoLink{s.ProtoLabelFor(model.ProtoVLESS, &u), link.VLESS(u, s)})
+		}
+		if s.XHTTPOn() && srv.allowsBuiltin(model.LaneXHTTP) {
+			protoLinks = append(protoLinks, protoLink{s.ProtoLabelFor(model.ProtoXHTTP, &u), link.XHTTP(u, s)})
 		}
 		if s.RealityEnabled && s.RealityPublicKey != "" && srv.allowsBuiltin(model.LaneReality) {
 			protoLinks = append(protoLinks, protoLink{s.ProtoLabelFor(model.ProtoReality, &u), link.Reality(u, s)})
@@ -745,8 +931,8 @@ func buildPageData(u model.User, local *model.Settings, servers []Server, billin
 		if link.NaiveOn(s) && srv.allowsBuiltin(model.LaneNaive) {
 			protoLinks = append(protoLinks, protoLink{s.ProtoLabelFor(model.ProtoNaive, &u), link.Naive(u, s)})
 		}
-		// TrustTunnel's apps import the tt:// link, not a subscription: it is on the
-		// page only (ShareLinks leaves it out).
+		// TrustTunnel's own apps import the tt:// link, not a subscription; the
+		// subscription carries it only for the clients that read it (TrustTunnelLinkFor).
 		if link.TrustTunnelOn(s) && srv.allowsBuiltin(model.LaneTrustTunnel) {
 			protoLinks = append(protoLinks, protoLink{s.ProtoLabelFor(model.ProtoTrustTunnel, &u), link.TrustTunnel(u, s)})
 		}
@@ -760,42 +946,8 @@ func buildPageData(u model.User, local *model.Settings, servers []Server, billin
 			if !srv.allowsInbound(in) {
 				continue
 			}
-			if in.Protocol == model.InbWireGuard {
-				wgCards = append(wgCards, awgCard{
-					Label:   link.CustomLabelFor(in, u, s),
-					ConfURL: TurnConfURL(local, u.SubToken, in.ID),
-					QRURL:   fmt.Sprintf("%s/wg/%d.png", subURL, in.ID),
-				})
-				continue
-			}
-			if in.Protocol == model.InbTurnVK {
-				peer := net.JoinHostPort(s.Host, strconv.Itoa(in.Port))
-				turnCards = append(turnCards, turnCard{
-					Label:   link.CustomLabelFor(in, u, s),
-					Peer:    peer,
-					Link:    in.Opts.TurnLink,
-					ConfURL: TurnConfURL(local, u.SubToken, in.ID),
-				})
-				c := &turnCards[len(turnCards)-1]
-				// Free Turn Proxy's masked wire first: the apps that speak it are the ones
-				// the call service does not shape. WINGS V reaches the relay unmasked.
-				for _, app := range []struct {
-					name, link, appLink string
-				}{
-					{"VK Turn Proxy (iOS)", TurnImportLink(u, s, in),
-						"https://github.com/anton48/vk-turn-proxy-ios"},
-					{"Free Turn Proxy (Android)", FreeTurnImportLink(u, s, in, TurnClientConf(u, s, in)),
-						"https://github.com/samosvalishe/turn-proxy-android"},
-					{"WINGS V (Android, Windows, Linux)", WingsVImportLink(u, s, in),
-						"https://github.com/WINGS-N/WINGSV"},
-				} {
-					if app.link != "" {
-						c.Apps = append(c.Apps, turnApp{
-							Name: app.name, Link: app.link, Href: template.URL(app.link), AppLink: app.appLink,
-						})
-					}
-				}
-				continue
+			if model.IsWireGuard(in.Protocol) {
+				continue // the tunnel cards (tunnelCards)
 			}
 			if l := link.Custom(u, in, s); l != "" {
 				protoLinks = append(protoLinks, protoLink{link.CustomLabelFor(in, u, s), l})
@@ -823,11 +975,18 @@ func buildPageData(u model.User, local *model.Settings, servers []Server, billin
 	if isDefault {
 		brandName = i18n.T(lang, "sub.defaultBrand")
 	}
+	// The tunnel lanes, written with the key picked (?k=, the main one by default):
+	// what a theme's own cards show. The panel's page lists every device with its own
+	// (Devices.AWG.All).
+	awgCards, wgCards, turnCards = tunnelCards(u, local, servers, devices.AWG.Pick)
+	lt := text(lang)
+	devices.AWG.All = deviceTunnels(u, local, servers, devices.AWG, lt.AWGKeyMain, lt.AWGKeyNth)
 	pal := branding.ParsePalette(local.PanelTheme)
 	dark := colorsOf(pal.Dark)
 	data := pageData{
 		Lang:        lang,
 		L:           text(lang),
+		UserID:      u.ID,
 		Name:        u.Name,
 		BrandName:   brandName,
 		pageColors:  colorsOf(pal.Light),
@@ -859,6 +1018,11 @@ func buildPageData(u model.User, local *model.Settings, servers []Server, billin
 		ShowDownload: showDownload && local.SubShowClash,
 	}
 	data.Wizard = Wizard(lang, local, data.DeepLinks)
+	// The picker serves every tunnel card: AmneziaWG, WireGuard and TURN all take the
+	// same key.
+	if len(awgCards)+len(wgCards)+len(turnCards) == 0 {
+		data.Devices.AWG.Show = false
+	}
 	if u.DataLimit > 0 {
 		data.HasLimit = true
 		data.Limit = fmtBytes(u.DataLimit)
@@ -968,6 +1132,11 @@ type Access struct {
 	Blocks []Block
 	// ThemeCSS is the theme plugin's stylesheet, applied over the page's own.
 	ThemeCSS string
+	// Markup is the theme plugin's sections, nil when it replaces none (theme.go).
+	Markup *ThemeMarkup
+	// NoPanelStyles leaves the panel's stylesheet out: the theme styles the whole
+	// page (provides.theme.panel_styles = false). Fonts and colours stay.
+	NoPanelStyles bool
 	// RotatePath is where the reader reissues their own link, "" when the operator
 	// does not allow it (Settings.SubSelfRotateHours); RotateWait says how often they
 	// may, in their language.

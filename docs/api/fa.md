@@ -348,7 +348,8 @@ GET $BASE/healthz
 | `POST` | `/v1/alerts` | افزودن یک قاعده: `name`، `metric`، `op` (`gt` / `lt`)، `threshold`، `for_secs` (چه مدت شرط برقرار بماند تا فعال شود)، `node_id` (-1 همهٔ سرورها، 0 مستر)، `enabled`. |
 | `POST` | `/v1/alerts/{id}` | جایگزینی تنظیمات یک قاعده. |
 | `DELETE` | `/v1/alerts/{id}` | حذف یک قاعده؛ تاریخچه‌اش می‌ماند. |
-| `GET` | `/v1/nodes/{id}/logs` | تازه‌ترین سطرهای لاگ یک نود. |
+| `GET` | `/v1/nodes/{id}/logs` | تازه‌ترین سطرهای لاگ یک سرور (۰ سرور اصلی است). |
+| `GET` | `/v1/logs` | تازه‌ترین سطرهای لاگ خود پنل. |
 
 **ثبت نود** — بدنه `{ "name": "NL #1", "host": "nl1.example.com" }`. پاسخ شناسهٔ نود، توکن پیوند یک‌بارمصرف و دستور نصب آمادهٔ اجرا برای یک سرور تازهٔ Ubuntu را می‌آورد:
 
@@ -429,7 +430,7 @@ GET $BASE/healthz
 
 یک **توکن grant** یک اتصال را نام می‌برد:
 
-- `builtin:<server_id>:<lane>` — یک خط داخلی، که `<lane>` برابر `vless`، `reality`، `hysteria2`، `naive`، `trusttunnel`، `anytls`، `mieru`، `awg` یا `mtproto` است و `<server_id>` صفر برای مستر یا شناسهٔ نودی از `GET /v1/nodes`.
+- `builtin:<server_id>:<lane>` — یک خط داخلی، که `<lane>` برابر `vless`، `xhttp`، `reality`، `hysteria2`، `naive`، `trusttunnel`، `anytls`، `mieru`، `awg` یا `mtproto` است و `<server_id>` صفر برای مستر یا شناسهٔ نودی از `GET /v1/nodes`.
 - `inbound:<id>` — یک دربازهٔ سفارشی، با شناسه‌ای از `GET /v1/servers/{id}/inbounds`.
 
 آرایهٔ خالی `grants` یعنی گروه **دسترسی را محدود نمی‌کند**: این‌طور ذخیره شود، تنها برای سقف سرعتش یک سطح است و اعضایش همهٔ اتصال‌ها را نگه می‌دارند. پاسخ این را به‌صورت `limits_access` می‌آورد — هنگام ذخیرهٔ گروه تعیین می‌شود، نه از فهرست grant خوانده می‌شود. grantها همچنین وقتی دربازه، نود یا سرور بیرونی‌ای که نام می‌برند حذف شود خودکار پاک می‌شوند، و گروهی که این‌طور آخرین grantش را از دست بدهد `limits_access: true` را نگه می‌دارد: اعضایش به هیچ چیز نمی‌رسند، نه اینکه ناگهان به همه چیز برسند. آن را دوباره بدون هیچ grant ذخیره کنید تا باز شود. گروه‌هایی که پیش از این رفتار وجود داشته‌اند تا دوباره ذخیره نشوند به محدود کردن دسترسی ادامه می‌دهند. پاسخ `data` همان گروه است.
@@ -690,6 +691,7 @@ GET $BASE/v1/nodes/{id}/health → تشخیصی یک سرور (id صفر = مس�
 POST $BASE/v1/nodes/{id}/reach → {"host": …, "port": 443, "countries": [{"code": "RU", "ok": 9, "blocked": 1, "failed": 0, "probes": […]}]}
 POST $BASE/v1/reach {"countries": ["RU", "CN", "IR"], "probes": 10, "every": 60, "threshold": 50}  (every صفر = فقط وقتی درخواست شود)
 GET $BASE/v1/nodes/{id}/logs   → تازه‌ترین سطرهای لاگ یک نود
+GET $BASE/v1/logs              → سطرهای لاگ خود پنل
 GET $BASE/v1/backup/info       → آنچه یک پشتیبان گرفته‌شده در همین لحظه خواهد داشت
 GET $BASE/v1/backup            → دانلود همان پشتیبان (بدنهٔ .tar.gz، نه JSON)
 GET $BASE/v1/metrics           → خروجی Prometheus (متن، نه JSON)
@@ -864,7 +866,7 @@ curl -sS -X DELETE "$BASE/v1/users/5" -H "Authorization: Bearer $KEY"
 | `incident.updated` | ویرایش شد، یک گام از مسیرش ارسال شد (`data.update`: `stage`، `body`، `created_at`) یا یکی پس گرفته شد (بدون `data.update`؛ `data.updates` مسیر همان‌طور که حالا هست) |
 | `incident.resolved` | حل شد، یا تعمیر تمام‌شده علامت خورد؛ پنجره‌ای که فقط در `ends_at` بسته می‌شود چیزی نمی‌فرستد |
 | `incident.deleted` | حذف شد؛ `data` همان رخداد به‌صورتی که بود |
-| `broadcast.sent` | یک ارسال همگانی رفت — یک تحویل برای هر ارسال همگانی: `data.id`، `data.text`، `data.buttons`، `data.audience`، `data.media_kind`/`data.media_name`، `data.telegram_recipients` (چت‌هایی که ربات به آن‌ها می‌فرستد)، `data.users` (`id`، `external_id`) — حساب‌های مخاطب که ربات به آن‌ها نمی‌رسد، جز کسانی که ارسال‌ها را در ربات خاموش کرده‌اند. با اشتراک این رویداد، ارسال‌های همگانی با ربات خاموش هم کار می‌کنند (فقط متن) |
+| `broadcast.sent` | یک ارسال همگانی رفت — یک تحویل برای هر ارسال همگانی: `data.id`، `data.text`، `data.buttons`، `data.audience`، `data.group_id` (فقط وقتی به یک گروه دسترسی محدود شده باشد)، `data.media_kind`/`data.media_name`، `data.telegram_recipients` (چت‌هایی که ربات به آن‌ها می‌فرستد)، `data.users` (`id`، `external_id`) — حساب‌های مخاطب که ربات به آن‌ها نمی‌رسد، جز کسانی که ارسال‌ها را در ربات خاموش کرده‌اند. با اشتراک این رویداد، ارسال‌های همگانی با ربات خاموش هم کار می‌کنند (فقط متن) |
 
 ## قالب تحویل
 

@@ -1,6 +1,69 @@
 {
   "components": {
     "schemas": {
+      "AWGKeyRow": {
+        "properties": {
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "main": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "off": {
+            "type": "boolean"
+          },
+          "selected": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "selected",
+          "off",
+          "main"
+        ],
+        "type": "object"
+      },
+      "AWGKeys": {
+        "properties": {
+          "can_add": {
+            "type": "boolean"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "list": {
+            "items": {
+              "$ref": "#/components/schemas/AWGKeyRow"
+            },
+            "type": "array"
+          },
+          "pick": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "show": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "show",
+          "list",
+          "pick",
+          "can_add",
+          "count",
+          "limit"
+        ],
+        "type": "object"
+      },
       "AbuseMatch": {
         "properties": {
           "category": {
@@ -380,6 +443,9 @@
           "renew_note": {
             "type": "string"
           },
+          "renew_opens": {
+            "type": "string"
+          },
           "renew_short": {
             "type": "boolean"
           },
@@ -410,6 +476,7 @@
           "current_plan",
           "expire_text",
           "plans",
+          "renew_opens",
           "providers",
           "manual",
           "manual_only",
@@ -775,6 +842,9 @@
       },
       "Devices": {
         "properties": {
+          "awg": {
+            "$ref": "#/components/schemas/AWGKeys"
+          },
           "count": {
             "type": "integer"
           },
@@ -799,7 +869,8 @@
           "list",
           "count",
           "limit",
-          "count_text"
+          "count_text",
+          "awg"
         ],
         "type": "object"
       },
@@ -813,6 +884,13 @@
           },
           "enabled": {
             "type": "boolean"
+          },
+          "groups": {
+            "items": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "type": "array"
           },
           "id": {
             "type": "string"
@@ -1864,6 +1942,9 @@
           "node_version": {
             "type": "string"
           },
+          "note": {
+            "type": "string"
+          },
           "online": {
             "type": "boolean"
           },
@@ -2009,6 +2090,7 @@
           "reality_public_key",
           "reality_short_id",
           "reality_path",
+          "note",
           "bridges",
           "country",
           "sort_weight",
@@ -2877,6 +2959,9 @@
           "cert_days_left": {
             "type": "integer"
           },
+          "cpu_avg": {
+            "type": "number"
+          },
           "cpu_cores": {
             "type": "integer"
           },
@@ -2913,7 +2998,15 @@
             "format": "int64",
             "type": "integer"
           },
+          "net_down_avg": {
+            "format": "int64",
+            "type": "integer"
+          },
           "net_up": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "net_up_avg": {
             "format": "int64",
             "type": "integer"
           },
@@ -2968,6 +3061,7 @@
         },
         "required": [
           "cpu_percent",
+          "cpu_avg",
           "mem_used",
           "mem_total",
           "swap_used",
@@ -2977,6 +3071,8 @@
           "host_uptime",
           "net_up",
           "net_down",
+          "net_up_avg",
+          "net_down_avg",
           "xray_running",
           "xray_uptime",
           "xray_version",
@@ -3058,8 +3154,14 @@
             },
             "type": "array"
           },
+          "hwid_limit": {
+            "type": "integer"
+          },
           "id": {
             "format": "int64",
+            "type": "integer"
+          },
+          "max_prepaid_days": {
             "type": "integer"
           },
           "name": {
@@ -3069,6 +3171,9 @@
             "type": "integer"
           },
           "price_rub": {
+            "type": "integer"
+          },
+          "renew_window_days": {
             "type": "integer"
           },
           "reset_period": {
@@ -3092,13 +3197,16 @@
           "period_days",
           "data_limit",
           "device_limit",
+          "hwid_limit",
           "speed_limit",
           "reset_period",
           "sort_order",
           "enabled",
           "group_ids",
           "device_price",
-          "device_max"
+          "device_max",
+          "renew_window_days",
+          "max_prepaid_days"
         ],
         "type": "object"
       },
@@ -3177,6 +3285,9 @@
           "maintenance": {
             "type": "boolean"
           },
+          "miniapp_url": {
+            "type": "string"
+          },
           "name": {
             "type": "string"
           },
@@ -3232,6 +3343,10 @@
           "used_pct": {
             "type": "integer"
           },
+          "user_id": {
+            "format": "int64",
+            "type": "integer"
+          },
           "wg": {
             "items": {
               "$ref": "#/components/schemas/ViewAWG"
@@ -3240,6 +3355,7 @@
           }
         },
         "required": [
+          "user_id",
           "name",
           "status",
           "status_label",
@@ -3868,6 +3984,9 @@
           "manual_label": {
             "type": "string"
           },
+          "max_prepaid_days": {
+            "type": "integer"
+          },
           "payment_note": {
             "type": "string"
           },
@@ -3888,6 +4007,12 @@
           },
           "ref_percent": {
             "type": "integer"
+          },
+          "renew_window_days": {
+            "type": "integer"
+          },
+          "return_url": {
+            "type": "string"
           },
           "topup_max": {
             "type": "integer"
@@ -4049,6 +4174,9 @@
           },
           "hold_seconds": {
             "format": "int64",
+            "type": "integer"
+          },
+          "hwid_limit": {
             "type": "integer"
           },
           "name": {
@@ -4398,6 +4526,9 @@
           "name": {
             "type": "string"
           },
+          "note": {
+            "type": "string"
+          },
           "opera_country": {
             "type": "string"
           },
@@ -4459,6 +4590,9 @@
           },
           "hold_seconds": {
             "format": "int64",
+            "type": "integer"
+          },
+          "hwid_limit": {
             "type": "integer"
           },
           "lang": {
@@ -4529,12 +4663,17 @@
               "$ref": "#/components/schemas/PlanQuote"
             },
             "type": "array"
+          },
+          "renew_opens_at": {
+            "format": "int64",
+            "type": "integer"
           }
         },
         "required": [
           "plan_id",
           "plan_name",
-          "quotes"
+          "quotes",
+          "renew_opens_at"
         ],
         "type": "object"
       },
@@ -4730,6 +4869,9 @@
           "hwid_ttl_days": {
             "type": "integer"
           },
+          "ip_fallback_limit": {
+            "type": "integer"
+          },
           "local_backup_cron": {
             "type": "string"
           },
@@ -4798,6 +4940,9 @@
           "hwid_ttl_days": {
             "type": "integer"
           },
+          "ip_fallback_limit": {
+            "type": "integer"
+          },
           "local_backup_cron": {
             "type": "string"
           },
@@ -4863,6 +5008,7 @@
           "hwid_enabled",
           "hwid_require",
           "hwid_fallback_limit",
+          "ip_fallback_limit",
           "hwid_ttl_days",
           "device_count_mode",
           "local_backup_cron",
@@ -6000,8 +6146,14 @@
             },
             "type": "array"
           },
+          "hwid_limit": {
+            "type": "integer"
+          },
           "id": {
             "format": "int64",
+            "type": "integer"
+          },
+          "max_prepaid_days": {
             "type": "integer"
           },
           "name": {
@@ -6011,6 +6163,9 @@
             "type": "integer"
           },
           "price_rub": {
+            "type": "integer"
+          },
+          "renew_window_days": {
             "type": "integer"
           },
           "reset_period": {
@@ -6034,13 +6189,16 @@
           "period_days",
           "data_limit",
           "device_limit",
+          "hwid_limit",
           "speed_limit",
           "reset_period",
           "sort_order",
           "enabled",
           "group_ids",
           "device_price",
-          "device_max"
+          "device_max",
+          "renew_window_days",
+          "max_prepaid_days"
         ],
         "type": "object"
       },
@@ -6162,11 +6320,17 @@
             "format": "int64",
             "type": "integer"
           },
+          "hwid_limit": {
+            "type": "integer"
+          },
           "hysteria2": {
             "type": "string"
           },
           "id": {
             "format": "int64",
+            "type": "integer"
+          },
+          "ip_limit": {
             "type": "integer"
           },
           "lang": {
@@ -6278,7 +6442,9 @@
           "reset_period",
           "last_seen",
           "device_limit",
+          "ip_limit",
           "active_devices",
+          "hwid_limit",
           "speed_limit",
           "note",
           "tags",
@@ -6360,7 +6526,7 @@
   "info": {
     "description": "External REST API for managing RosPanel users, billing and stats.",
     "title": "RosPanel API",
-    "version": "5.11.0"
+    "version": "5.11.1"
   },
   "openapi": "3.0.3",
   "paths": {
@@ -6940,7 +7106,7 @@
             }
           },
           {
-            "description": "page size (default 100, max 1000; \u003c=0 means everything from offset)",
+            "description": "page size (default 100, max 1000; <=0 means everything from offset)",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -7380,8 +7546,14 @@
                     },
                     "type": "array"
                   },
+                  "hwid_limit": {
+                    "type": "integer"
+                  },
                   "id": {
                     "format": "int64",
+                    "type": "integer"
+                  },
+                  "max_prepaid_days": {
                     "type": "integer"
                   },
                   "name": {
@@ -7391,6 +7563,9 @@
                     "type": "integer"
                   },
                   "price_rub": {
+                    "type": "integer"
+                  },
+                  "renew_window_days": {
                     "type": "integer"
                   },
                   "reset_period": {
@@ -7916,6 +8091,9 @@
                   "manual_label": {
                     "type": "string"
                   },
+                  "max_prepaid_days": {
+                    "type": "integer"
+                  },
                   "payment_note": {
                     "type": "string"
                   },
@@ -7936,6 +8114,12 @@
                   },
                   "ref_percent": {
                     "type": "integer"
+                  },
+                  "renew_window_days": {
+                    "type": "integer"
+                  },
+                  "return_url": {
+                    "type": "string"
                   },
                   "topup_max": {
                     "type": "integer"
@@ -8032,7 +8216,7 @@
       "get": {
         "parameters": [
           {
-            "description": "page size (default 100, max 1000; \u003c=0 means everything from offset)",
+            "description": "page size (default 100, max 1000; <=0 means everything from offset)",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -9581,6 +9765,41 @@
         ]
       }
     },
+    "/v1/logs": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/apiNodeLogsResp"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "The panel's own recent log lines (users, billing, bots; servers' lines are under /v1/nodes/{id}/logs)",
+        "tags": [
+          "Nodes"
+        ]
+      }
+    },
     "/v1/metrics": {
       "get": {
         "responses": {
@@ -9874,6 +10093,9 @@
                   "name": {
                     "type": "string"
                   },
+                  "note": {
+                    "type": "string"
+                  },
                   "opera_country": {
                     "type": "string"
                   },
@@ -10101,7 +10323,7 @@
             "description": "Error"
           }
         },
-        "summary": "A node's recent log lines (collected on its next poll; `at` says how fresh)",
+        "summary": "A server's recent log lines: its Xray, helpers and what the panel did to it (0 is the master; a node's are collected on its next poll, `at` says how fresh)",
         "tags": [
           "Nodes"
         ]
@@ -11207,6 +11429,9 @@
                   "hwid_ttl_days": {
                     "type": "integer"
                   },
+                  "ip_fallback_limit": {
+                    "type": "integer"
+                  },
                   "local_backup_cron": {
                     "type": "string"
                   },
@@ -11413,7 +11638,7 @@
       "get": {
         "parameters": [
           {
-            "description": "page size (default 100, max 1000; \u003c=0 means everything from offset)",
+            "description": "page size (default 100, max 1000; <=0 means everything from offset)",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -11485,7 +11710,7 @@
       "get": {
         "parameters": [
           {
-            "description": "page size (default 100, max 1000; \u003c=0 means everything from offset)",
+            "description": "page size (default 100, max 1000; <=0 means everything from offset)",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -11758,7 +11983,7 @@
       "get": {
         "parameters": [
           {
-            "description": "page size (default 100, max 1000; \u003c=0 means everything from offset)",
+            "description": "page size (default 100, max 1000; <=0 means everything from offset)",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -12059,7 +12284,7 @@
             }
           },
           {
-            "description": "page size (\u003c=0 = all from offset)",
+            "description": "page size (<=0 = all from offset)",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -12152,6 +12377,9 @@
                   },
                   "hold_seconds": {
                     "format": "int64",
+                    "type": "integer"
+                  },
+                  "hwid_limit": {
                     "type": "integer"
                   },
                   "name": {
@@ -12405,6 +12633,9 @@
                   },
                   "hold_seconds": {
                     "format": "int64",
+                    "type": "integer"
+                  },
+                  "hwid_limit": {
                     "type": "integer"
                   },
                   "lang": {
@@ -12739,7 +12970,7 @@
             }
           },
           {
-            "description": "page size (default 100, max 1000; \u003c=0 means everything from offset)",
+            "description": "page size (default 100, max 1000; <=0 means everything from offset)",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -12820,7 +13051,7 @@
             }
           },
           {
-            "description": "page size (default 100, max 1000; \u003c=0 means everything from offset)",
+            "description": "page size (default 100, max 1000; <=0 means everything from offset)",
             "in": "query",
             "name": "limit",
             "required": false,

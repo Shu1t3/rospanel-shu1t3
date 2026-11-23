@@ -137,26 +137,89 @@ func (s *Settings) CountsIPAsDevice() bool {
 // one token would otherwise insert a row per request forever.
 const MaxDevicesPerUser = 50
 
-// DeviceCap is the number of devices this user may bind: their own limit when they have
-// one, the panel-wide fallback when that is set, and MaxDevicesPerUser when neither is.
-//
-// It reuses users.device_limit deliberately — an operator sets "three devices" once and
-// both counters honour it, rather than the account carrying two limits that can disagree.
+// IPLimitUnlimited is the device_limit value for "no address limit", whatever the
+// panel default is.
+const IPLimitUnlimited = -1
+
+// EffectiveIPLimit resolves a stored device_limit against the panel default: the
+// address cap in force, 0 = none. ipLimitSQL in the store is the same rule in SQL.
+func EffectiveIPLimit(deviceLimit, fallback int) int {
+	switch {
+	case deviceLimit > 0:
+		return deviceLimit
+	case deviceLimit < 0:
+		return 0
+	default:
+		return max(fallback, 0)
+	}
+}
+
+// HWIDLimitUnlimited is the users.hwid_limit value for "no limit of their own and not
+// the default either": the user may bind up to MaxDevicesPerUser installs.
+const HWIDLimitUnlimited = -1
+
+// DeviceCap is the number of devices this user may bind: their own HWID limit when
+// they have one, MaxDevicesPerUser when it is HWIDLimitUnlimited, otherwise the
+// panel-wide fallback, and MaxDevicesPerUser when that is not set either.
 //
 // It never returns 0. The enforced number and the displayed number have to be the SAME
 // number: while this returned 0 for "unlimited", the store still refused the 51st device
 // and the refused user was told "51 / 0", with the operator's roster and the API both
 // reporting the limit as unlimited.
 func (s *Settings) DeviceCap(u User) int {
-	cap := s.HWIDFallbackLimit
-	if u.DeviceLimit > 0 {
-		cap = u.DeviceLimit
-	}
-	// Only "no number given" is replaced by the ceiling. An operator who deliberately
-	// allows 100 devices gets 100 — capping their explicit choice would be a silent
-	// policy change, and it is the UNSET case that was unbounded, not the set one.
-	if cap <= 0 {
+	switch {
+	case u.HWIDLimit > 0:
+		// An operator who deliberately allows 100 devices gets 100 — capping their
+		// explicit choice would be a silent policy change.
+		return u.HWIDLimit
+	case u.HWIDLimit < 0:
+		return MaxDevicesPerUser
+	case s.HWIDFallbackLimit > 0:
+		return s.HWIDFallbackLimit
+	default:
 		return MaxDevicesPerUser
 	}
-	return cap
+}
+
+// AWGDevice is one extra AmneziaWG key of a user (migration 0147): a device of
+// theirs with its own key and its own address on the tunnel, next to the user's main
+// key. HWID is the subscription client it was made for, "" when made by hand.
+type AWGDevice struct {
+	ID         int64  `json:"id"`
+	UserID     int64  `json:"user_id"`
+	Name       string `json:"name"`
+	HWID       string `json:"hwid,omitempty"`
+	PrivateKey string `json:"-"`
+	Slot       int    `json:"-"`
+	CreatedAt  int64  `json:"created_at"`
+}
+
+// AWGKey is one tunnel identity: a private key and its slot on the subnet.
+type AWGKey struct {
+	ID   int64 // the AWGDevice it is; 0 for the user's main key
+	Key  string
+	Slot int
+}
+
+// AWGDeviceNameMax bounds a device's name, in runes.
+const AWGDeviceNameMax = 40
+
+// AWGKeyCap is how many tunnel keys a user may hold, their main one included: the
+// HWID device cap, one key per device.
+func (s *Settings) AWGKeyCap(u User) int { return s.DeviceCap(u) }
+
+// ActiveAWGDevices is how many of a user's device keys, oldest first, are in force
+// under a cap of keys that counts the main one: a cap lowered after the keys were
+// made (a cheaper plan) leaves the newest ones out rather than serving past it.
+func ActiveAWGDevices(n, capKeys int) int {
+	return max(0, min(n, capKeys-1))
+}
+
+// AWGIdentity is the key the user's AmneziaWG configs are written with: the one
+// picked for this request (a device's), else the user's main key.
+func (u *User) AWGIdentity() (key string, slot int) {
+	if u.AWGPick != nil {
+		return u.AWGPick.Key, u.AWGPick.Slot
+	}
+	return u.WGPrivateKey, u.AWGSlot
 }

@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/Shu1t3/rospanel-shu1t3/internal/link"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 )
 
@@ -20,11 +21,20 @@ type clashCaps struct {
 	// pin: the client checks a pinned certificate's fingerprint (clashPinCert); without
 	// it a custom inbound that pins one (its SNI anyone's name) is left out.
 	pin bool
+	// trusttunnel: the core has the trusttunnel proxy type (clashTrustTunnel)
+	trusttunnel bool
+	// xhttp: the core has VLESS over XHTTP (clashXHTTP) — the VLESS-XHTTP-TLS lane and
+	// the custom XHTTP inbounds
+	xhttp bool
+	// reality: the same check for the VLESS-XHTTP-REALITY lane, which a rule overrides
+	// on its own key
+	reality bool
 }
 
 func clashCapsFor(userAgent string) clashCaps {
 	return clashCaps{awg: ClashAWG(userAgent), mieru: clashMieru(userAgent), anytls: clashAnyTLS(userAgent),
-		vlessEnc: clashVLESSEnc(userAgent), pin: clashPinCert(userAgent)}
+		vlessEnc: clashVLESSEnc(userAgent), pin: clashPinCert(userAgent), trusttunnel: clashTrustTunnel(userAgent),
+		xhttp: clashXHTTP(userAgent), reality: clashXHTTP(userAgent)}
 }
 
 // clashPinCert reports whether a Clash-format client honours a proxy's fingerprint:
@@ -51,6 +61,78 @@ func clashVLESSEnc(userAgent string) bool {
 		return versionAtLeast(m[1:], 1, 19, 14)
 	}
 	return ClashAWG(userAgent)
+}
+
+// clashTrustTunnel reports whether a Clash client's core has the trusttunnel proxy type
+// (mihomo v1.19.21, 2026-03-09) — by the core's own version where the client names it, or
+// by the first client version bundling it: ClashMetaForAndroid 2.11.24 and FlClash 0.8.93
+// (their core submodules), Clash Verge Rev 2.4.7 and Clash Party 1.9.3 (built after it with
+// the stable core of the day); else a client past the AmneziaWG 3.1 gate (1.19.30). Clash
+// Nyanpasu runs the user's pick of core, so it is not risked. Hiddify and NekoBox read the
+// profile into sing-box, which has no such type, and ClashAWG already leaves them out.
+func clashTrustTunnel(userAgent string) bool {
+	for _, re := range []*regexp.Regexp{clashCoreUA, clashMiUA, flClashXCoreUA} {
+		if m := re.FindStringSubmatch(userAgent); m != nil {
+			return versionAtLeast(m[1:], 1, 19, 21)
+		}
+	}
+	for _, c := range []struct {
+		re   *regexp.Regexp
+		want []int
+	}{
+		{cmfaUA, []int{2, 11, 24}},
+		{flClashUA, []int{0, 8, 93}},
+		{vergeUA, []int{2, 4, 7}},
+		{partyUA, []int{1, 9, 3}},
+	} {
+		if m := c.re.FindStringSubmatch(userAgent); m != nil {
+			return versionAtLeast(m[1:], c.want...)
+		}
+	}
+	return ClashAWG(userAgent)
+}
+
+// clashXHTTP reports whether a Clash client may be handed VLESS over XHTTP — the REALITY
+// lane, the VLESS-XHTTP-TLS lane and the custom XHTTP inbounds. mihomo has it from v1.19.22
+// (2026-04-01); an older core reads the unknown network as plain TCP (adapter/outbound/
+// vless.go at v1.19.21), so the entry is there and never connects — but nothing else in
+// the profile breaks. So, unlike a new proxy type, it is left out only for a client known
+// to be older: by the core's version where the client names it, or by the last client
+// version bundling an older core — ClashMetaForAndroid 2.11.24 (2.11.25 is the v1.19.22
+// tag), FlClash 0.8.92 (0.8.93's core is past v1.19.22), Clash Verge Rev 2.4.x (2.5.0
+// ships v1.19.25), Mihomo Party 1.9.4 (1.9.5 was built after v1.19.22). Hiddify and
+// NekoBox read the profile into sing-box, which has no XHTTP. Anyone else gets it.
+func clashXHTTP(userAgent string) bool {
+	for _, re := range []*regexp.Regexp{clashCoreUA, clashMiUA, flClashXCoreUA} {
+		if m := re.FindStringSubmatch(userAgent); m != nil {
+			return versionAtLeast(m[1:], 1, 19, 22)
+		}
+	}
+	if !clashPinCert(userAgent) { // Hiddify, NekoBox: sing-box underneath
+		return false
+	}
+	if m := cmfaUA.FindStringSubmatch(userAgent); m != nil && !clashFestUA(m) {
+		return versionAtLeast(m[1:], 2, 11, 25)
+	}
+	if m := flClashUA.FindStringSubmatch(userAgent); m != nil {
+		return versionAtLeast(m[1:], 0, 8, 93)
+	}
+	if m := vergeUA.FindStringSubmatch(userAgent); m != nil && !koalaAsVerge(m) {
+		return versionAtLeast(m[1:], 2, 5, 0)
+	}
+	if m := partyUA.FindStringSubmatch(userAgent); m != nil {
+		return versionAtLeast(m[1:], 1, 9, 5)
+	}
+	return true
+}
+
+// clashTrustTunnelLine is a user's TrustTunnel lane on one server as a mihomo proxy:
+// HTTP/2 to the VLESS-TCP-TLS port, as the tt:// link (link.TrustTunnel). udp: it carries
+// UDP (_udp2), which mihomo would otherwise send outside the tunnel.
+func clashTrustTunnelLine(name string, u model.User, s *model.Settings) string {
+	return fmt.Sprintf(
+		"  - {name: %q, type: trusttunnel, server: %q, port: %d, username: %q, password: %q, sni: %q, alpn: [h2], client-fingerprint: %s, udp: true}",
+		name, s.Host, s.VLESSPort, model.TrustTunnelLogin(model.UserEmail(u.ID)), u.UUID, link.NaiveServerName(s), s.VLESSFP())
 }
 
 // clashAnyTLS reports whether a Clash client's core has the anytls proxy type (mihomo

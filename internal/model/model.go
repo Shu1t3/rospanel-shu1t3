@@ -25,6 +25,7 @@ const (
 // keeping them here as the single source stops those copies from drifting apart.
 const (
 	ProtoVLESS       = "VLESS-TCP-TLS"
+	ProtoXHTTP       = "VLESS-XHTTP-TLS"
 	ProtoReality     = "VLESS-XHTTP-REALITY"
 	ProtoHysteria    = "HYSTERIA-UDP"
 	ProtoAWG         = "AMNEZIA-WG"
@@ -140,8 +141,19 @@ type User struct {
 	LastResetAt int64  `json:"-"`            // unix of the last automatic quota reset
 	LastSeen    int64  `json:"last_seen"`    // unix of last activity (0 = never); 0 ⇒ offline
 
-	DeviceLimit   int `json:"device_limit"`   // max concurrent devices (unique IPs), 0 = unlimited
+	// DeviceLimit caps concurrent addresses: 0 = the panel-wide default
+	// (Settings.IPFallbackLimit), IPLimitUnlimited = none, N = N.
+	DeviceLimit int `json:"device_limit"`
+	// IPLimit is the address cap in force, DeviceLimit resolved against the default
+	// (0 = none). Computed on read.
+	IPLimit       int `json:"ip_limit"`
 	ActiveDevices int `json:"active_devices"` // computed: distinct IPs seen within DeviceOnlineWindow
+
+	// HWIDLimit caps how many installs may fetch the subscription (the HWID roster):
+	// 0 = the panel-wide default (Settings.HWIDFallbackLimit), HWIDLimitUnlimited =
+	// up to MaxDevicesPerUser, N = N. Separate from DeviceLimit so "no limit by
+	// address" never silently means "the default HWID limit". A plan writes both.
+	HWIDLimit int `json:"hwid_limit"`
 
 	// DeviceOverSince is when this user first went over their device limit (0 = not
 	// over it). The limit only cuts them off once they have been over it for
@@ -181,6 +193,12 @@ type User struct {
 	// same on every server; 0 until their tunnel key is first needed. Handed out, not
 	// derived from the id, so a panel's user ids can grow past the subnet's size.
 	AWGSlot int `json:"-"`
+	// AWGDevices are the user's extra AmneziaWG keys (AWGDevice), loaded where peers
+	// are built from users; nil elsewhere.
+	AWGDevices []AWGKey `json:"-"`
+	// AWGPick is the key a subscription answer writes the AmneziaWG configs with when
+	// it is not the main one (AWGIdentity). Set per request, never stored.
+	AWGPick *AWGKey `json:"-"`
 
 	// ExtraDevices are devices bought beyond the plan's own (already in DeviceLimit);
 	// PackData is traffic bought on top of its quota (already in DataLimit), gone at
@@ -297,9 +315,16 @@ type TariffPlan struct {
 	PeriodDays  int    `json:"period_days"`
 	DataLimit   int64  `json:"data_limit"`
 	DeviceLimit int    `json:"device_limit"`
+	// HWIDLimit is the HWID limit the plan gives (see User.HWIDLimit): -1 none, 0 the
+	// panel default, N. Bought devices are added to it as to DeviceLimit.
+	HWIDLimit   int    `json:"hwid_limit"`
 	SpeedLimit  int    `json:"speed_limit"` // kbit/s, 0 = unlimited
-	// The plan's own quota-refill cycle: daily | weekly | monthly | yearly, or ""
-	// for the derived default (free: every plan duration; paid: none inside the period).
+	// ResetPeriod is the plan's own quota-refill cycle: daily | weekly | monthly |
+	// yearly, or "" for the derived default — a free plan refills every plan duration
+	// (a rolling days:N), a paid one runs its quota over the whole period it was
+	// bought for. Explicit beats derived, so "monthly" on a free plan replaces its
+	// days:N. Applied on every plan assignment and, like the speed cap, re-stamped on
+	// existing subscribers when the plan is edited. See PlanResetPeriods.
 	ResetPeriod string `json:"reset_period"`
 	SortOrder   int    `json:"sort_order"`
 	Enabled     bool   `json:"enabled"`
@@ -313,6 +338,10 @@ type TariffPlan struct {
 	// limit and a term.
 	DevicePrice int `json:"device_price"`
 	DeviceMax   int `json:"device_max"`
+	// RenewWindowDays and MaxPrepaidDays are the plan's own renewal limits (see
+	// Settings.RenewWindowDays); 0 takes the billing settings' value.
+	RenewWindowDays int `json:"renew_window_days"`
+	MaxPrepaidDays  int `json:"max_prepaid_days"`
 }
 
 // SellsDevices reports whether the plan sells extra devices.
@@ -546,10 +575,14 @@ type Broadcast struct {
 	MediaName   string            `json:"media_name"`
 	Buttons     []BroadcastButton `json:"buttons"`
 	Audience    string            `json:"audience"`
-	Status      string            `json:"status"`
-	CreatedAt   int64             `json:"created_at"`
-	StartedAt   int64             `json:"started_at"`
-	FinishedAt  int64             `json:"finished_at"`
+	// GroupID narrows the audience to the members of one access group (0: none);
+	// GroupName is that group's name now, "" once it is deleted.
+	GroupID    int64  `json:"group_id"`
+	GroupName  string `json:"group_name"`
+	Status     string `json:"status"`
+	CreatedAt  int64  `json:"created_at"`
+	StartedAt  int64  `json:"started_at"`
+	FinishedAt int64  `json:"finished_at"`
 	// ScheduledAt is when a scheduled broadcast goes out; its audience is read then.
 	ScheduledAt int64 `json:"scheduled_at"`
 
@@ -1041,6 +1074,12 @@ type Settings struct {
 	MieruPort      int    `json:"-"`
 	MieruTransport string `json:"-"`
 
+	// VLESS-XHTTP-TLS (internal/xhttpfront): on XHTTPPath behind the decoy on the
+	// VLESS-TCP-TLS port, with its domain and certificate, on each user's UUID. The path
+	// is one for the fleet; a node's switch is its own (Node.XHTTPEnabled).
+	XHTTPEnabled bool   `json:"-"`
+	XHTTPPath    string `json:"-"`
+
 	// AnyTLS (internal/anytls): through the decoy behind the VLESS-TCP-TLS port, on each
 	// user's UUID, like NaiveProxy. A node's switch is its own (Node.AnyTLSEnabled).
 	AnyTLSEnabled bool `json:"-"`
@@ -1199,7 +1238,8 @@ type Settings struct {
 	// Every panel that offers HWID limiting works this way.
 	HWIDEnabled       bool `json:"-"`
 	HWIDRequire       bool `json:"-"` // refuse clients that send no x-hwid (default on)
-	HWIDFallbackLimit int  `json:"-"` // cap for users whose own device_limit is 0
+	HWIDFallbackLimit int  `json:"-"` // cap for users whose own hwid_limit is 0
+	IPFallbackLimit   int  `json:"-"` // address cap for users whose own device_limit is 0 (0 = none)
 	HWIDTTLDays       int  `json:"-"` // forget a device after N days of silence (0 = never)
 	// DeviceCountMode picks which counter enforces DeviceLimit: "auto" (the default),
 	// "hwid" or "both". See CountsIPAsDevice.
@@ -1232,6 +1272,7 @@ type Settings struct {
 	NaiveName       string `json:"-"`
 	MieruName       string `json:"-"`
 	AnyTLSName      string `json:"-"`
+	XHTTPName       string `json:"-"`
 	TrustTunnelName string `json:"-"`
 	MTProtoName     string `json:"-"`
 
@@ -1342,6 +1383,10 @@ type Settings struct {
 	// BillingManualLabel is its pay-button label; empty falls back to the dictionary.
 	BillingManualEnabled bool   `json:"-"`
 	BillingManualLabel   string `json:"-"`
+	// BillingReturnURL is where a payer lands after paying through a payment system
+	// when the flow brings no address of its own (the bot, an API call without one).
+	// Empty: the Mini App, else the user's subscription page.
+	BillingReturnURL string `json:"-"`
 
 	// WalletEnabled lets users keep a balance: top it up, pay for plans from it and
 	// have it renew their plan when it runs out. WalletTopupMin and WalletTopupMax
@@ -1367,6 +1412,11 @@ type Settings struct {
 	// quota; PlanChange lets users switch plans while one is active.
 	TrafficPacks []TrafficPack `json:"-"`
 	PlanChange   bool          `json:"-"`
+	// RenewWindowDays opens the renewal of an active plan only this many days before
+	// its end; MaxPrepaidDays caps the paid time a user may hold after a purchase
+	// (never below one period). 0 = no limit. A plan may set its own.
+	RenewWindowDays int `json:"-"`
+	MaxPrepaidDays  int `json:"-"`
 	// MiniAppPath is the Mini App's random address segment; TGMenuURL the address the
 	// user bot's menu button was last set to.
 	MiniAppPath string `json:"-"`
@@ -1425,6 +1475,8 @@ type Settings struct {
 	// MasterLabel is the panel server's display name in share-link / subscription
 	// config labels (multi-node: "<master> · VLESS"). Empty ⇒ no prefix.
 	MasterLabel string `json:"-"`
+	// MasterNote is the operator's note on the master's server card.
+	MasterNote string `json:"-"`
 
 	// GeoRefreshHours is how often to auto-refresh the geo databases (hours; 0 ⇒
 	// never — manual only). Applies to the master and is pushed to nodes.
@@ -1906,6 +1958,16 @@ func ValidSubPageURL(raw string) bool {
 	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" && u.User == nil
 }
 
+// ValidReturnURL reports whether raw is an absolute http(s) address without
+// credentials, up to 2048 characters — what a payer may be sent back to.
+func ValidReturnURL(raw string) bool {
+	if len(raw) > 2048 || strings.ContainsAny(raw, " \t\r\n") {
+		return false
+	}
+	u, err := url.Parse(raw)
+	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" && u.User == nil
+}
+
 // SubPageLoops reports whether raw sends the browser back to a subscription link of
 // this very panel — which would redirect it again, forever.
 func SubPageLoops(raw, host, subPath string) bool {
@@ -2163,6 +2225,8 @@ func (s *Settings) ProtoLabelFor(proto string, u *User) string {
 		custom = s.MieruName
 	case ProtoAnyTLS:
 		custom = s.AnyTLSName
+	case ProtoXHTTP:
+		custom = s.XHTTPName
 	case ProtoTrustTunnel:
 		custom = s.TrustTunnelName
 	case ProtoMTProto:
@@ -2316,6 +2380,34 @@ type EgressLane struct {
 	// URLs/Manual. The lane's traffic never leaves from here: with no exit judged alive
 	// it still goes to one, and with no exit at all it is dropped.
 	Via []CascadeExit `json:"via,omitempty"`
+
+	// Groups scopes the lane to the members of these access groups: its rules match
+	// only their connections, and a scoped lane with no domains or IPs takes all of
+	// their traffic. Empty means everyone. A group with no members (or one deleted
+	// since) adds nobody — a scoped lane never widens to everyone.
+	Groups []int64 `json:"groups,omitempty"`
+}
+
+// MaxLaneGroups caps the groups one lane may be scoped to.
+const MaxLaneGroups = 32
+
+// Scoped reports whether the lane applies only to members of some groups.
+func (l EgressLane) Scoped() bool { return len(l.Groups) > 0 }
+
+// TakesAll reports whether the lane names no destinations: scoped, it takes all of its
+// members' traffic at its place in the order.
+func (l EgressLane) TakesAll() bool {
+	for _, e := range l.Domains {
+		if strings.TrimSpace(e) != "" {
+			return false
+		}
+	}
+	for _, e := range l.IPs {
+		if strings.TrimSpace(e) != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // CascadeExit is one server a cascade lane leaves through, and the lane of that server
@@ -2437,6 +2529,14 @@ func (rc *RoutingConfig) ValidateLanes() error {
 		if strings.TrimSpace(l.Name) == "" {
 			return fieldErr("err.laneNoName", "у полосы «{{id}}» не задано название", map[string]any{"id": l.ID})
 		}
+		if len(l.Groups) > MaxLaneGroups {
+			return fieldErr("err.laneTooManyGroups", "у полосы «{{id}}» слишком много групп: максимум {{max}}", map[string]any{"id": l.ID, "max": MaxLaneGroups})
+		}
+		for _, g := range l.Groups {
+			if g <= 0 {
+				return fieldErr("err.laneBadGroup", "у полосы «{{id}}» неверная группа", map[string]any{"id": l.ID})
+			}
+		}
 		for _, e := range l.Via {
 			switch e.BridgeOr() {
 			case BridgeReality, BridgeVision, BridgeHysteria:
@@ -2543,3 +2643,11 @@ const (
 // enough sessions can do it by chance. internal/mieru serves UDP; the panel does not
 // offer it until that is fixed upstream. The stored value is kept for then.
 func MieruTransportOr(string) string { return MieruTCP }
+
+// MinXHTTPPathLen is the shortest VLESS-XHTTP-TLS path the panel makes (auth.RandomXHTTPPath
+// gives 16 characters after the slash).
+const MinXHTTPPathLen = 16
+
+// XHTTPOn reports whether the VLESS-XHTTP-TLS lane runs: switched on, with a path. The
+// path is the lane's address behind the decoy, so without one there is nothing to route.
+func (s *Settings) XHTTPOn() bool { return s.XHTTPEnabled && s.XHTTPPath != "" }

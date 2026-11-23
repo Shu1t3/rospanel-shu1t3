@@ -19,6 +19,7 @@ import (
 	"github.com/Shu1t3/rospanel-shu1t3/internal/model"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/payments"
 	"github.com/Shu1t3/rospanel-shu1t3/internal/store"
+	"github.com/Shu1t3/rospanel-shu1t3/internal/sub"
 )
 
 // escHTML escapes a dynamic value for the bots' HTML parse mode.
@@ -261,6 +262,31 @@ func (m *Manager) providerClient(key string) (payments.Client, error) {
 	return d.New(p.Config), nil
 }
 
+// userReturnURL sends a payer whose flow carries no return address (the bot) to
+// the operator's billing return address, else back to their Mini App when the
+// install has one, else to their subscription page while it is served — anywhere
+// but the generic t.me front page.
+func (m *Manager) userReturnURL(userID int64) string {
+	set, err := m.Settings()
+	if err != nil {
+		return ""
+	}
+	if set.BillingReturnURL != "" {
+		return set.BillingReturnURL
+	}
+	if u := sub.MiniAppURL(set); u != "" {
+		return u
+	}
+	if !set.SubPageReachable() {
+		return ""
+	}
+	u, err := m.store.GetUser(userID)
+	if err != nil || u == nil {
+		return ""
+	}
+	return sub.URL(set, u.SubToken)
+}
+
 // userBotOn reports whether the user bot runs — what Stars payments need.
 func (m *Manager) userBotOn() bool {
 	set, err := m.Settings()
@@ -371,14 +397,14 @@ func (m *Manager) PaymentWebhookURL(key string) string {
 	if set == nil || set.PaymentWebhookSecret == "" || set.Host == "" {
 		return ""
 	}
-	return "https://" + set.Host + "/" + set.PaymentWebhookSecret + "/" + key
+	return "https://" + model.URLHost(set.Host) + "/" + set.PaymentWebhookSecret + "/" + key
 }
 
 // StartPlanPayment creates an order plus a provider payment and returns the order
 // with its hosted pay URL. provider may be "" when exactly one method is enabled.
-// The payer is returned to Telegram after paying (the bot flow).
+// The payer is returned where startProviderOrder's fallback chain says (the bot flow).
 func (m *Manager) StartPlanPayment(ctx context.Context, lang i18n.Lang, userID, planID int64, provider string, periods int) (*model.PaymentOrder, error) {
-	return m.startPlanPayment(ctx, lang, userID, planID, provider, "https://t.me/", periods)
+	return m.startPlanPayment(ctx, lang, userID, planID, provider, "", periods)
 }
 
 // StartPlanPaymentReturn is StartPlanPayment for the web subscription page: it
@@ -462,6 +488,9 @@ func (m *Manager) startProviderOrder(ctx context.Context, d store.OrderDraft, pr
 	// them, so a plugin opening an order paid with itself is refused, not deadlocked).
 	callCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
 	defer cancel()
+	if strings.TrimSpace(returnURL) == "" {
+		returnURL = m.userReturnURL(d.UserID)
+	}
 	if strings.TrimSpace(returnURL) == "" {
 		returnURL = "https://t.me/"
 	}

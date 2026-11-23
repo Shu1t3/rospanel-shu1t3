@@ -97,6 +97,7 @@ func TestMCPFleetWritesReachTheStore(t *testing.T) {
 				// server. All three normalise together, so all three are checked.
 				"traffic_limit": float64(500 << 30), "traffic_period": "month",
 				"hide_when_over": true, "traffic_reset_day": float64(14),
+				"note": "exit for RU routes",
 			},
 			check: func(t *testing.T) map[string]any {
 				n := getNode(t)
@@ -114,6 +115,7 @@ func TestMCPFleetWritesReachTheStore(t *testing.T) {
 					"capacity": float64(n.Capacity), "hide_when_full": n.HideWhenFull,
 					"traffic_limit": float64(n.TrafficLimit), "traffic_period": n.TrafficPeriod,
 					"hide_when_over": n.HideWhenOver, "traffic_reset_day": float64(n.TrafficResetDay),
+					"note": n.Note,
 					// Routing round-trips as a struct; that it arrived non-nil is the
 					// landing test — its contents are model.RoutingConfig's own business.
 					"routing": n.Routing != nil,
@@ -158,8 +160,10 @@ func TestMCPFleetWritesReachTheStore(t *testing.T) {
 				"manual_label": "By transfer", "wallet": true, "topup_min": float64(150), "topup_max": float64(15000),
 				"ref_mode": "percent", "ref_percent": float64(15), "ref_days": float64(9),
 				"ref_first": true, "periods": []any{map[string]any{"periods": float64(3), "percent": float64(10)}},
-				"winback":      map[string]any{"enabled": true, "after_days": float64(10), "percent": float64(25), "valid_days": float64(5)},
-				"churn_survey": true,
+				"winback":           map[string]any{"enabled": true, "after_days": float64(10), "percent": float64(25), "valid_days": float64(5)},
+				"churn_survey":      true,
+				"return_url":        "https://example.com/paid",
+				"renew_window_days": float64(5), "max_prepaid_days": float64(60),
 			},
 			check: func(t *testing.T) map[string]any {
 				set, err := st.GetSettings()
@@ -173,9 +177,11 @@ func TestMCPFleetWritesReachTheStore(t *testing.T) {
 					"wallet": set.WalletEnabled, "topup_min": float64(set.WalletTopupMin), "topup_max": float64(set.WalletTopupMax),
 					"ref_mode": set.RefMode, "ref_percent": float64(set.RefPercent),
 					"ref_days": float64(set.RefDays), "ref_first": set.RefFirstOnly,
-					"periods":      len(set.BillingPeriods) == 1 && set.BillingPeriods[0].Periods == 3 && set.BillingPeriods[0].Percent == 10,
-					"winback":      set.Winback == model.WinbackSettings{Enabled: true, AfterDays: 10, Percent: 25, ValidDays: 5},
-					"churn_survey": set.ChurnSurvey,
+					"periods":           len(set.BillingPeriods) == 1 && set.BillingPeriods[0].Periods == 3 && set.BillingPeriods[0].Percent == 10,
+					"winback":           set.Winback == model.WinbackSettings{Enabled: true, AfterDays: 10, Percent: 25, ValidDays: 5},
+					"churn_survey":      set.ChurnSurvey,
+					"return_url":        set.BillingReturnURL,
+					"renew_window_days": float64(set.RenewWindowDays), "max_prepaid_days": float64(set.MaxPrepaidDays),
 				}
 			},
 		},
@@ -183,9 +189,10 @@ func TestMCPFleetWritesReachTheStore(t *testing.T) {
 			body: map[string]any{
 				"name": "Landed", "slug": "landed", "price_rub": float64(499),
 				"period_days": float64(31), "data_limit": float64(1 << 30),
-				"device_limit": float64(5), "speed_limit": float64(2048), "reset_period": "monthly",
+				"device_limit": float64(5), "hwid_limit": float64(4), "speed_limit": float64(2048), "reset_period": "monthly",
 				"sort_order": float64(3), "enabled": true, "group_ids": []any{},
 				"device_price": float64(50), "device_max": float64(3),
+				"renew_window_days": float64(7), "max_prepaid_days": float64(90),
 			},
 			// id picks create from update; a create is told to leave it out.
 			derived: []string{"id"},
@@ -198,11 +205,12 @@ func TestMCPFleetWritesReachTheStore(t *testing.T) {
 				return map[string]any{
 					"name": p.Name, "slug": p.Slug, "price_rub": float64(p.PriceRub),
 					"period_days": float64(p.PeriodDays), "data_limit": float64(p.DataLimit),
-					"device_limit": float64(p.DeviceLimit), "speed_limit": float64(p.SpeedLimit),
+					"device_limit": float64(p.DeviceLimit), "hwid_limit": float64(p.HWIDLimit), "speed_limit": float64(p.SpeedLimit),
 					"reset_period": p.ResetPeriod,
 					"sort_order":   float64(p.SortOrder), "enabled": p.Enabled,
 					"group_ids":    len(p.GroupIDs) == 0,
 					"device_price": float64(p.DevicePrice), "device_max": float64(p.DeviceMax),
+					"renew_window_days": float64(p.RenewWindowDays), "max_prepaid_days": float64(p.MaxPrepaidDays),
 				}
 			},
 		},

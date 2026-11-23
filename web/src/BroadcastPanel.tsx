@@ -1,17 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import i18n, { locale } from "./i18n";
-import { inPanelTz } from "./tz";
 import {
   type Broadcast,
   type BroadcastAudience,
   type BroadcastButton,
-  type Group,
   broadcastAudience,
   cancelBroadcast,
   createBroadcast,
+  listBroadcastGroups,
   listBroadcasts,
-  listGroups,
   pauseBroadcast,
   resumeBroadcast,
   retryBroadcast,
@@ -20,9 +18,10 @@ import {
 import { HtmlEditor } from "./HtmlEditor";
 import { AutoRules } from "./AutoRules";
 import { useMessageHooks } from "./messageHooks";
-import { useShowMore } from "./hooks";
+import { useRefreshTick, useShowMore } from "./hooks";
 import { errMessage, notifyError, notifySuccess } from "./notify";
 import { fromMoment, MomentField, type Moment, toMoment } from "./MomentField";
+import { inPanelTz } from "./tz";
 import {
   Badge,
   Button,
@@ -54,19 +53,16 @@ const audiences = (): { value: string; label: string; days?: boolean }[] => [
   { value: "seen", label: i18n.t("bc.audSeen"), days: true },
   { value: "unseen", label: i18n.t("bc.audUnseen"), days: true },
   { value: "never", label: i18n.t("bc.audNever") },
-  { value: "group", label: i18n.t("bc.audGroup") },
 ];
 
-// audienceLabel turns a stored audience ("seen:7", "group:3") back into words for the history,
+// audienceLabel turns a stored audience ("seen:7") back into words for the history,
 // where the run is over and the picker that produced it is long reset.
-function audienceLabel(a: string, groups?: Group[]): string {
-  const [kind, param] = a.split(":");
-  if (kind === "group") {
-    const g = groups?.find((x) => String(x.id) === param);
-    return g ? `${i18n.t("bc.audGroup")}: ${g.name}` : `${i18n.t("bc.audGroup")} #${param}`;
-  }
+function audienceLabel(b: Broadcast): string {
+  const [kind, days] = b.audience.split(":");
   const base = audiences().find((x) => x.value === kind)?.label ?? kind;
-  return param ? `${base} ${i18n.t("bc.days", { count: Number(param) })}` : base;
+  const label = days ? `${base} ${i18n.t("bc.days", { count: Number(days) })}` : base;
+  if (!b.group_id) return label;
+  return `${label} · ${b.group_name || i18n.t("bc.groupDeleted")}`;
 }
 
 const dayChoices = () =>
@@ -130,19 +126,23 @@ export function BroadcastPanel({ userBot }: { userBot: boolean }) {
   // re-polls this list, and collapsing it under the operator mid-read would be worse
   // than carrying the expansion.
   const history = useShowMore(list);
-  const [groups, setGroups] = useState<Group[]>([]);
-  const [selectedGroupId, setSelectedGroupId] = useState("");
   const [text, setText] = useState("");
   const [audienceKind, setAudienceKind] = useState("all");
   const [audienceDays, setAudienceDays] = useState("7");
-  const isGroup = audienceKind === "group";
   const needsDays = !!audiences().find((a) => a.value === audienceKind)?.days;
-  // What the server stores and resolves: the horizon or group id rides inside the value.
-  const audience: BroadcastAudience = isGroup
-    ? `group:${selectedGroupId}`
-    : needsDays
-      ? `${audienceKind}:${audienceDays}`
-      : audienceKind;
+  // What the server stores and resolves: the horizon rides inside the value.
+  const audience: BroadcastAudience = needsDays
+    ? `${audienceKind}:${audienceDays}`
+    : audienceKind;
+  // An access group narrows any audience but the one without accounts.
+  const [groups, setGroups] = useState<{ id: number; name: string; members: number }[]>([]);
+  const [groupPick, setGroupPick] = useState("0");
+  // Only a group still in the list: one deleted meanwhile falls back to "any group",
+  // the value the picker then shows.
+  const groupId =
+    audienceKind !== "unlinked" && groups.some((g) => String(g.id) === groupPick)
+      ? Number(groupPick)
+      : 0;
   // The inline keyboard, as rows the operator edits. Each carries a key of its own:
   // deleting the middle button must take that button's inputs with it, not shift the
   // one below into its DOM (and its caret).
@@ -168,15 +168,19 @@ export function BroadcastPanel({ userBot }: { userBot: boolean }) {
   // biome-ignore lint/correctness/useExhaustiveDependencies: runs once on mount; the loader is redefined every render, so listing it would refetch in a loop
   useEffect(() => {
     load().finally(() => setLoaded(true));
-    listGroups()
-      .then((g) => {
-        setGroups(g);
-        if (g.length > 0) {
-          setSelectedGroupId((prev) => prev || String(g[0].id));
-        }
-      })
-      .catch(() => setGroups([]));
   }, []);
+
+  // The groups and their member counts change on other screens: re-read every minute
+  // while the tab is visible, and on coming back to it.
+  const groupsTick = useRefreshTick(60_000);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the tick is the trigger
+  useEffect(() => {
+    listBroadcastGroups()
+      .then(setGroups)
+      .catch(() => {
+        /* no groups to offer — the picker stays hidden */
+      });
+  }, [groupsTick]);
 
   // Poll only while something is actually moving, and stop the moment it isn't.
   useEffect(() => {
@@ -192,35 +196,33 @@ export function BroadcastPanel({ userBot }: { userBot: boolean }) {
   }, [list]);
 
   useEffect(() => {
-    if (isGroup && !selectedGroupId) {
-      setReach(0);
-      setHookReach(0);
-      return;
-    }
     let dropped = false;
-    broadcastAudience(audience)
+    broadcastAudience(audience, groupId)
       .then((r) => {
         if (dropped) return;
         setReach(r.count);
         setHookReach(r.hook_users);
       })
-      .catch(() => !dropped && setReach(null));
+      .catch(() => {
+        if (dropped) return;
+        setReach(null);
+        // The group may have been deleted since the list was read: re-read it.
+        if (groupId) listBroadcastGroups().then(setGroups).catch(() => {});
+      });
     return () => {
       dropped = true;
     };
-  }, [audience, isGroup, selectedGroupId]);
+  }, [audience, groupId]);
 
   const limit = media ? CAPTION_MAX : TEXT_MAX;
   const overLimit = [...text].length > limit;
   const empty = !text.trim() && !media;
   const badButton = buttons.some((b) => !b.text.trim() || !b.url.trim());
-  const hasValidGroup =
-    !isGroup ||
-    (!!selectedGroupId && groups.some((g) => String(g.id) === selectedGroupId));
-  const canSend = !empty && !overLimit && !badButton && hasValidGroup;
+  const canSend = !empty && !overLimit && !badButton;
   const payload = {
     text,
     audience,
+    group_id: groupId,
     buttons: buttons.map((b) => ({ text: b.text, url: b.url })),
   };
 
@@ -334,24 +336,19 @@ export function BroadcastPanel({ userBot }: { userBot: boolean }) {
                 />
               </div>
             )}
-            {isGroup && (
-              <div className="flex w-full flex-wrap items-center gap-2 pt-1">
-                <span className={cn(MICRO, "w-full sm:w-16")}>{t("bc.group")}</span>
-                <div className="min-w-0 flex-1 sm:max-w-80">
-                  <Select
-                    data={
-                      groups.length === 0
-                        ? [{ value: "", label: t("bc.noGroups") }]
-                        : groups.map((g) => ({
-                            value: String(g.id),
-                            label: g.name,
-                          }))
-                    }
-                    value={selectedGroupId}
-                    onChange={setSelectedGroupId}
-                    placeholder={t("bc.pickGroup")}
-                  />
-                </div>
+            {groups.length > 0 && audienceKind !== "unlinked" && (
+              <div className="w-full min-w-0 sm:w-56">
+                <Select
+                  data={[
+                    { value: "0", label: t("bc.groupAny") },
+                    ...groups.map((g) => ({
+                      value: String(g.id),
+                      label: `${g.name} (${g.members})`,
+                    })),
+                  ]}
+                  value={groupId ? groupPick : "0"}
+                  onChange={setGroupPick}
+                />
               </div>
             )}
             {/* The count the operator is really deciding on. A sentence, not a
@@ -399,8 +396,6 @@ export function BroadcastPanel({ userBot }: { userBot: boolean }) {
                 reads as a rendering fault next to styled controls.
                 Hidden, driven by a button that says what it does. */}
             <input
-              id="bc_attachment_file"
-              name="bc_attachment_file"
               ref={fileRef}
               type="file"
               className="hidden"
@@ -527,7 +522,7 @@ export function BroadcastPanel({ userBot }: { userBot: boolean }) {
         ) : (
           <>
             {history.shown.map((b) => (
-              <BroadcastRow key={b.id} b={b} groups={groups} onControl={control} />
+              <BroadcastRow key={b.id} b={b} onControl={control} />
             ))}
             <ShowMore rest={history.rest} onClick={history.showMore} className="p-3.5" />
           </>
@@ -539,11 +534,9 @@ export function BroadcastPanel({ userBot }: { userBot: boolean }) {
 
 function BroadcastRow({
   b,
-  groups,
   onControl,
 }: {
   b: Broadcast;
-  groups: Group[];
   onControl: (fn: () => Promise<Broadcast>) => void;
 }) {
   // Every terminal state, skipped included — it is part of total, and omitting it
@@ -568,7 +561,7 @@ function BroadcastRow({
           {st.label}
         </Badge>
         <span className="truncate text-[11px] text-ink-muted">
-          {audienceLabel(b.audience, groups)}
+          {audienceLabel(b)}
         </span>
         {b.created_by && (
           <span className="truncate text-[11px] text-ink-muted">{b.created_by}</span>
