@@ -400,24 +400,6 @@ func toBroadcastButtonDTOs(buttons []model.BroadcastButton) []broadcastButtonDTO
 	return out
 }
 
-func fromBroadcastButtonDTO(d broadcastButtonDTO) model.BroadcastButton {
-	return model.BroadcastButton{
-		Text: d.Text,
-		URL:  d.URL,
-	}
-}
-
-func fromBroadcastButtonDTOs(buttons []broadcastButtonDTO) []model.BroadcastButton {
-	if buttons == nil {
-		return []model.BroadcastButton{}
-	}
-	out := make([]model.BroadcastButton, len(buttons))
-	for i := range buttons {
-		out[i] = fromBroadcastButtonDTO(buttons[i])
-	}
-	return out
-}
-
 type broadcastDTO struct {
 	HookUsers   int                  `json:"hook_users"`
 	ID          int64                `json:"id"`

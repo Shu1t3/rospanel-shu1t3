@@ -2,6 +2,7 @@ package opera
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -185,5 +186,8 @@ func (s *Supervisor) logLines(r io.Reader) {
 	sc.Buffer(make([]byte, 16*1024), 64*1024)
 	for sc.Scan() {
 		s.write(sc.Text())
+	}
+	if err := sc.Err(); err != nil && !errors.Is(err, io.ErrClosedPipe) && !errors.Is(err, os.ErrClosed) {
+		s.write(fmt.Sprintf("read error: %v", err))
 	}
 }
