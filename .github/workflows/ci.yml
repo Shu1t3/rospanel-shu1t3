@@ -12,6 +12,7 @@ on:
       - .release-please-manifest.json
       - CHANGELOG.md
       - internal/version/version.go
+      - docs/openapi.json
   workflow_dispatch:
 
 permissions:
@@ -58,7 +59,7 @@ jobs:
           case "$BEFORE" in ""|0000000000000000000000000000000000000000) full ;; esac
           git cat-file -e "$BEFORE^{commit}" 2>/dev/null || full
           other=$(git diff --name-only "$BEFORE" "$AFTER" |
-            grep -vxE '\.release-please-manifest\.json|CHANGELOG\.md|internal/version/version\.go' || true)
+            grep -vxE '\.release-please-manifest\.json|CHANGELOG\.md|internal/version/version\.go|docs/openapi\.json' || true)
           [ -n "$other" ] && full
           while read -r subject; do
             case "$subject" in
@@ -108,6 +109,10 @@ jobs:
   go:
     needs: frontend
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [server, packages]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -124,8 +129,14 @@ jobs:
       - name: go build
         run: go build ./...
       # -race needs the default (CGO-enabled) toolchain; ubuntu-latest ships gcc.
+      # Sharded into two matrix runners so the ~8m suite finishes in ~4m.
       - name: go test (race)
-        run: go test -race ./...
+        run: |
+          if [ "${{ matrix.shard }}" = "server" ]; then
+            go test -race ./internal/server/...
+          else
+            go list ./... | grep -v '/internal/server' | xargs go test -race
+          fi
 
   lint:
     needs: frontend

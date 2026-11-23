@@ -2,6 +2,7 @@
 /rospanel
 /rospanel-node
 /rospanel-debug
+/.bin/
 /coverage.out
 /coverage.html
 *.db
