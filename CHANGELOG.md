@@ -1,5 +1,26 @@
 # Changelog
 
+## [5.12.0](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.11.1...v5.12.0) (2026-11-23)
+
+
+### Features
+
+* **nodes:** operator notes on server cards ([fd169c0](https://github.com/Shu1t3/rospanel-shu1t3/commit/fd169c0b0753b8ec36305c7c367efb29bdd0162f))
+* **sub:** AmneziaWG 3.1 for Shadowrocket ([911b57b](https://github.com/Shu1t3/rospanel-shu1t3/commit/911b57b22faaef0dcbf1c8755fb1309d1729516f))
+* sync upstream v5.19.1 preserving fork safeguards ([035c609](https://github.com/Shu1t3/rospanel-shu1t3/commit/035c6098949b05c9a13f1b9429d328d9e4a5ee0d))
+
+
+### Bug Fixes
+
+* check scanner error in opera supervisor and remove unused dto mappers ([b5ab650](https://github.com/Shu1t3/rospanel-shu1t3/commit/b5ab650a0808ca57819522237fa67b8bcd7fef42))
+* **deps:** bump amneziawg-go to v3.1.20261116 ([7115b2b](https://github.com/Shu1t3/rospanel-shu1t3/commit/7115b2bb1eb1655852e3d68de1affefa2dc503e5))
+* **links:** bracket an IPv6 server address in links and URLs ([35d0b27](https://github.com/Shu1t3/rospanel-shu1t3/commit/35d0b27dfe985ef7ec90af75521ba7fc47c81dc6))
+* **links:** UDP over TCP and TrustTunnel for Shadowrocket ([f89788c](https://github.com/Shu1t3/rospanel-shu1t3/commit/f89788cca376447c15c4baf6d9dbb43760b510da))
+* **security:** print the default first-run password as a literal ([2d9bea0](https://github.com/Shu1t3/rospanel-shu1t3/commit/2d9bea0fba3fc7e924823f97bdd55e767b31f331))
+* **store:** stamp device-limit overruns in chunks of 900 ids ([09c4dda](https://github.com/Shu1t3/rospanel-shu1t3/commit/09c4dda5c778b73dcbf5d1aa08d5011f850be490))
+* **tls:** replace the fallback certificate after a host change ([8b1153a](https://github.com/Shu1t3/rospanel-shu1t3/commit/8b1153ac3e3c8d604f2988390de032ec342955d3))
+* **ui:** keep the custom value field visible in a settings row ([e0f5672](https://github.com/Shu1t3/rospanel-shu1t3/commit/e0f56723c56d175e43e3626751907d7675366dea))
+
 ## [5.11.1](https://github.com/Shu1t3/rospanel-shu1t3/compare/v5.11.0...v5.11.1) (2026-11-17)
 
 
