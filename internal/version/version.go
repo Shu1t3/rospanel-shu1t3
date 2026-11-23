@@ -1,3 +1,4 @@
+// Package version holds the panel release version.
 package version
 
 // Version is the current release, kept in sync automatically by release-please
