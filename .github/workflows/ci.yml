@@ -112,7 +112,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [server, packages]
+        shard: [server, store, other]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -129,14 +129,20 @@ jobs:
       - name: go build
         run: go build ./...
       # -race needs the default (CGO-enabled) toolchain; ubuntu-latest ships gcc.
-      # Sharded into two matrix runners so the ~8m suite finishes in ~4m.
+      # Sharded into three balanced matrix runners (~3.5m each).
       - name: go test (race)
         run: |
-          if [ "${{ matrix.shard }}" = "server" ]; then
-            go test -race ./internal/server/...
-          else
-            go list ./... | grep -v '/internal/server' | xargs go test -race
-          fi
+          case "${{ matrix.shard }}" in
+            server)
+              go test -race ./internal/server/...
+              ;;
+            store)
+              go test -race ./internal/store/... ./internal/core/...
+              ;;
+            other)
+              go list ./... | grep -vE '/internal/(server|store|core)' | xargs go test -race
+              ;;
+          esac
 
   lint:
     needs: frontend

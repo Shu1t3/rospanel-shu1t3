@@ -177,6 +177,7 @@ func TestOneUpstreamConnectionPerClientConnection(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}
 	up.mu.Lock()
