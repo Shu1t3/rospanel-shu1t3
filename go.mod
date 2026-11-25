@@ -7,18 +7,18 @@ require (
 	github.com/enfein/mieru/v3 v3.39.0
 	github.com/go-acme/lego/v4 v4.35.2
 	github.com/google/uuid v1.6.0
-	github.com/pion/dtls/v3 v3.1.15
+	github.com/pion/dtls/v3 v3.1.16
 	github.com/pion/transport/v5 v5.1.5
 	github.com/sagernet/sing v0.9.6
 	github.com/sagernet/sing-anytls v0.0.0-20260928104022-580984e4d8cb
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/tetratelabs/wazero v1.12.0
 	github.com/yuin/goldmark v1.8.7
-	golang.org/x/crypto v0.58.0
-	golang.org/x/net v0.62.0
+	golang.org/x/crypto v0.59.0
+	golang.org/x/net v0.63.0
 	golang.org/x/sys v0.50.0
 	golang.org/x/text v0.44.0
-	google.golang.org/grpc v1.84.0
+	google.golang.org/grpc v1.85.0
 	google.golang.org/protobuf v1.36.12
 	modernc.org/sqlite v1.62.0
 )
@@ -34,7 +34,7 @@ require (
 	github.com/pion/logging v0.2.4 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260706201446-f0a921348800 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260817212433-ac3dfec99bb1 // indirect
 	gvisor.dev/gvisor v0.0.0-20250606233247-e3c4c4cad86f // indirect
 	modernc.org/libc v1.80.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
